@@ -1148,7 +1148,7 @@ ops_routing_route_entry_action(int hw_unit,
     return rc;
 } /* ops_routing_route_entry_action */
 
-/* OPS_TODO : Remove once these macros are exposed by opennsl */
+/* TODO : Remove once these macros are exposed by opennsl */
 #define opennslSwitchHashMultipath (135)
 #define OPENNSL_HASH_ZERO          0x00000001
 int
@@ -1259,6 +1259,70 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool enable)
 
     return OPENNSL_E_NONE;
 }
+
+/*
+** TODO: Combine above neighbor l3_host_add/delete to use common
+** host action routine.
+*/
+/*
+** Add/Delete local host entries.
+*/
+int
+ops_routing_host_entry_action(int hw_unit, opennsl_vrf_t vrf_id,
+                              enum ofproto_host_action action,
+                              struct ofproto_l3_host *host_info)
+{
+    int rc = 0;
+    opennsl_l3_host_t l3host;
+    in_addr_t ipv4_addr;
+    struct in6_addr ipv6_addr;
+    uint8_t prefix_len;
+    int flags = OPENNSL_L3_HOST_LOCAL;
+
+    VLOG_DBG("%s: vrfid: %d, action: %d", __FUNCTION__, vrf_id, action);
+
+    if (!host_info) {
+        VLOG_ERR("Null host entry");
+        return EINVAL; /* Return error */
+    }
+
+    opennsl_l3_host_t_init(&l3host);
+    if (host_info->family == OFPROTO_ROUTE_IPV6) {
+        flags |= OPENNSL_L3_IP6;
+        ops_string_to_prefix(AF_INET6, host_info->ip_address, &ipv6_addr,
+                             &prefix_len);
+        memcpy(l3host.l3a_ip6_addr, &ipv6_addr, sizeof(struct in6_addr));
+    } else {
+        ops_string_to_prefix(AF_INET, host_info->ip_address, &ipv4_addr,
+                             &prefix_len);
+        l3host.l3a_ip_addr = ipv4_addr;
+    }
+
+    l3host.l3a_intf = 0;
+    l3host.l3a_vrf = vrf_id;
+    l3host.l3a_flags = flags;
+
+    switch (action) {
+    case OFPROTO_HOST_ADD:
+        rc = opennsl_l3_host_add(hw_unit, &l3host);
+        if (rc != OPENNSL_E_NONE) {
+            VLOG_ERR ("opennsl_l3_host_add failed: %x", rc);
+        }
+        break;
+    case OFPROTO_HOST_DELETE:
+        rc = opennsl_l3_host_delete(hw_unit, &l3host);
+        if (rc != OPENNSL_E_NONE) {
+            VLOG_ERR ("opennsl_l3_host_delete failed: %x", rc);
+        }
+        break;
+    default:
+        VLOG_ERR("Unknown l3 host action %d", action);
+        rc = EINVAL;
+        break;
+    }
+
+    return rc;
+} /* ops_routing_route_entry_action */
 
 static void
 l3_intf_print(struct ds *ds, int unit, int print_hdr,

@@ -1583,6 +1583,17 @@ l3_ecmp_hash_set(const struct ofproto *ofprotop, unsigned int hash, bool enable)
     return ops_routing_ecmp_hash_set(0, hash, enable);
 }
 
+/* Function to add, update, delete l3 local host entries */
+static int
+l3_host_action(const struct ofproto *ofprotop,
+                enum ofproto_host_action action,
+                struct ofproto_l3_host *hostp)
+{
+    struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofprotop);
+
+    return ops_routing_host_entry_action(0, ofproto->vrf_id, action, hostp);
+}
+
 const struct ofproto_class ofproto_bcm_provider_class = {
     init,
     enumerate_types,
@@ -1681,4 +1692,7 @@ const struct ofproto_class ofproto_bcm_provider_class = {
     l3_route_action,            /* l3 route action - install, update, delete */
     l3_ecmp_set,                /* enable/disable ECMP globally */
     l3_ecmp_hash_set,           /* enable/disable ECMP hash configs */
+    l3_host_action,             /* l3 local host action - install/update/delete*/
+                                /* OPS_TODO: Combine above add/delete_l3_host
+                                ** to use this common host action.*/
 };
