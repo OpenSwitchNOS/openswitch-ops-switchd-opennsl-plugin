@@ -96,6 +96,10 @@ extern int ops_routing_route_entry_action(int hw_unit,
                                          enum ofproto_route_action action,
                                          struct ofproto_route *routep);
 
+extern int ops_routing_host_entry_action(int hw_unit, opennsl_vrf_t vrf_id,
+                                         enum ofproto_host_action action,
+                                         struct ofproto_l3_host *host_info);
+
 extern int ops_routing_ecmp_set(int hw_unit, bool enable);
 extern int ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash,
                                     bool enable);
