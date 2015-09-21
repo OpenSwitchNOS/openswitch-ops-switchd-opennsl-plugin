@@ -33,6 +33,7 @@
 #include "ops-pbmp.h"
 #include "ops-port.h"
 #include "ops-vlan.h"
+#include "ops-routing.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_vlan);
 
@@ -76,6 +77,11 @@ ops_vlan_data_t *ops_vlans[OPS_VLAN_COUNT] = { NULL };
 
 unsigned int ops_internal_vlan_count = 0;
 ops_vlan_data_t *ops_internal_vlans[OPS_VLAN_COUNT] = { NULL };
+
+
+// KEY in ops_mac_move_egress_id_map
+char    hashstr[24];
+
 ////////////////////////////////// DEBUG ///////////////////////////////////
 
 static void
@@ -1040,7 +1046,6 @@ vlan_reconfig_on_link_change(int unit, opennsl_port_t hw_port, int link_is_up)
     }
 
 } // vlan_reconfig_on_link_change
-
 
 ///////////////////////////////// INIT /////////////////////////////////
 

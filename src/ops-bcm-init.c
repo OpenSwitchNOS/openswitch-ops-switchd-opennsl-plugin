@@ -36,6 +36,8 @@
 
 VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
 
+struct hmap ops_mac_move_egress_id_map;
+
 int
 ops_rx_init(int unit)
 {

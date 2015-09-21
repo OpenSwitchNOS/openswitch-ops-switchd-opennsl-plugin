@@ -24,6 +24,7 @@
 
 #include <ovs/dynamic-string.h>
 #include <opennsl/types.h>
+#include <opennsl/l2.h>
 
 extern void ops_vlan_dump(struct ds *ds, int vid);
 extern int ops_vlan_init(int hw_unit);
