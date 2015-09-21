@@ -57,6 +57,17 @@ struct ops_nexthop {
     int  l3_egress_id;
 };
 
+struct ops_egress_object_id {
+	struct 	hmap_node node;
+	int		egress_object_id;	/* id of vlan+mac entry in egress object table */
+};
+
+/* Hashmap of egress object ID's.
+ * key = vlan_id+mac_addr
+ * val = ID of vlan+mac entry in egress object table in ASIC
+ */
+extern struct hmap egress_id_map;
+
 extern int ops_l3_init(int);
 
 extern opennsl_l3_intf_t *ops_routing_enable_l3_interface(int hw_unit,

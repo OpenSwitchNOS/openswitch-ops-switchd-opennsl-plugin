@@ -106,7 +106,19 @@ ops_bcm_appl_init(void)
             VLOG_ERR("L3 subsystem init failed");
             return 1;
         }
+
+        /* register for mac-move. When move happens, ASIC sends a MAC delete
+         * message followed by MAC add message. There will be MOVE flag set in
+         * both the messages, differentiating it from regular add and delete
+         * messages. */
+        rc = opennsl_l2_addr_register(unit, ops_l2_table_cb, NULL);
+        if (rc) {
+            VLOG_ERR("L2 address registration failed");
+            return 1;
+        }
     }
+
+	hmap_init(&egress_id_map);
 
     return 0;
 
