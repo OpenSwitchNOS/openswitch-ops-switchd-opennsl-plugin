@@ -22,6 +22,7 @@
 
 #include <ovs/dynamic-string.h>
 #include <opennsl/types.h>
+#include <opennsl/l2.h>
 #include <opennsl/l3.h>
 #include <netinet/in.h>
 #include <ofproto/ofproto.h>
@@ -56,6 +57,18 @@ struct ops_nexthop {
     char *id;                         /* IP address or Port name */
     int  l3_egress_id;
 };
+
+/* Node keeping track of egress_object id's. Used only for mac-move scenarios */
+struct ops_mac_move_egress_id {
+    struct  hmap_node node;
+    int     egress_object_id;
+};
+
+/* Hashmap of egress object ID's. Only used for mac-moves.
+ * key = vlan_id + mac_addr
+ * val = ID of the row in Egress table (in ASIC) for given vlan_id and mac_addr.
+ */
+extern struct hmap ops_mac_move_egress_id_map;
 
 extern int ops_l3_init(int);
 
@@ -106,5 +119,8 @@ extern void ops_l3route_dump(struct ds *ds, int ipv6_enabled);
 
 extern void ops_l3egress_dump(struct ds *ds, int egressid);
 extern void ops_l3ecmp_egress_dump(struct ds *ds, int ecmpid);
+
+extern void ops_l3_mac_move_cb(int unit, opennsl_l2_addr_t *l2addr,
+                                int operation, void *userdata);
 
 #endif /* __OPS_ROUTING_H__ */
