@@ -33,6 +33,7 @@
 #include "ops-pbmp.h"
 #include "ops-port.h"
 #include "ops-vlan.h"
+#include "ops-routing.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_vlan);
 
@@ -76,6 +77,14 @@ ops_vlan_data_t *ops_vlans[OPS_VLAN_COUNT] = { NULL };
 
 unsigned int ops_internal_vlan_count = 0;
 ops_vlan_data_t *ops_internal_vlans[OPS_VLAN_COUNT] = { NULL };
+
+
+// KEY in egress_id hashmap
+char    hashstr[24];
+
+// Value in egress_id hashmap
+struct ops_egress_object_id    egress_id[MAX_SWITCH_UNIT_ID];
+
 ////////////////////////////////// DEBUG ///////////////////////////////////
 
 static void
@@ -1041,6 +1050,158 @@ vlan_reconfig_on_link_change(int unit, opennsl_port_t hw_port, int link_is_up)
 
 } // vlan_reconfig_on_link_change
 
+static struct ops_egress_object_id *
+ops_egress_id_lookup(char *hashstr_l, int    egress_object_id)
+{
+    struct ops_egress_object_id    *egress_id_node;
+
+    HMAP_FOR_EACH_WITH_HASH(egress_id_node, node, hash_string(hashstr_l, 0),
+                                                &egress_id_map) {
+        if (egress_id_node->egress_object_id == egress_object_id) {
+            return egress_id_node;
+        }
+    }
+
+    return NULL;
+}
+
+void
+ops_l2_table_add(int    unit,
+                 opennsl_l2_addr_t  *l2addr,
+                 void   *userdata)
+{
+    opennsl_l3_egress_t     *egress_object;
+    opennsl_if_t            egress_object_id=-1, *l3_intf=NULL;
+    opennsl_error_t         rc = OPENNSL_E_NONE;
+    bool                    mac_move_set=0;
+    struct ops_egress_object_id    *egress_id_node;
+
+    if (l2addr == NULL) {
+        VLOG_ERR("Invalid arguments. l2-addr is NULL");
+        return;
+    }
+
+    mac_move_set = l2addr->flags & OPENNSL_L2_MOVE_PORT;
+
+    if (mac_move_set == 0) {
+        /* Only handle _ADD_ due to mac-move */
+        VLOG_INFO("ADD call from ASIC, not involving mac-move");
+        return;
+    }
+
+    /* ADD call, due to mac-move.
+     * NOTE: From chip reference manual, the sequence of messages on mac-move is
+     * unclear: DELETE follows ADD or vice-versa.
+     *
+     * Handle both possibilities.
+     * */
+
+    memset(hashstr, 0, sizeof(hashstr));
+    snprintf(hashstr, 24, "%d:" ETH_ADDR_FMT, l2addr->vid,
+                                ETH_ADDR_ARGS(l2addr->mac));
+
+    egress_object = (opennsl_l3_egress_t *) xmalloc(sizeof(opennsl_l3_egress_t));
+    if (egress_object == NULL) {
+        VLOG_ERR("Failed allocating opennsl_l3_egress_t: unit=%d", unit);
+        return;
+        /* TODO: mac-move has potentially happened, but egress object is not
+         * reconfigured to correct port. There will be traffic drop. */
+    }
+
+    memcpy(egress_object->mac_addr, l2addr->mac, ETH_ALEN);
+    egress_object->vlan     = l2addr->vid;
+
+    /* egress_id is the id of row containing egress_object in ASIC */
+    opennsl_l3_egress_find(unit, egress_object, &egress_object_id);
+    if (rc != OPENNSL_E_NONE) {
+        VLOG_ERR("Failed retrieving egress object id: rc=%d unit=%d", rc,
+                    unit);
+        goto done;
+    }
+
+    egress_id_node = ops_egress_id_lookup(hashstr, egress_object_id);
+    if (egress_id_node == NULL) {
+        VLOG_INFO("Egress object id NOT found in process cache, possibly "
+                  "deleted: unit=%d", unit);
+    }
+
+    /* Update process cache with new egress id */
+    /* TODO: Should this be hmap_replace()? */
+    egress_id[unit].egress_object_id = egress_object_id;
+    hmap_insert(&egress_id_map, &(egress_id[unit].node), hash_string(hashstr, 0));
+
+    egress_object->flags    |= (OPENNSL_L3_REPLACE | OPENNSL_L3_WITH_ID);
+    egress_object->port     = l2addr->port; /* new port */
+
+    /* L3 interface must remain unaffected due to mac-move */
+    l3_intf     = &(egress_object->intf);
+
+    rc = opennsl_l3_egress_create(unit, egress_object->flags, egress_object,
+                                    l3_intf);
+    if (rc != OPENNSL_E_NONE) {
+        VLOG_ERR("Failed creation of egress object: rc=%d unit=%d", rc, unit);
+        goto done;
+    }
+
+done:
+    VLOG_INFO("Egress ID update due to ADD call from ASIC (mac-move)");
+
+    free(egress_object);    /* TODO: In success case, should this be free'd? */
+}
+
+void
+ops_l2_table_delete(int    unit,
+                    opennsl_l2_addr_t  *l2addr,
+                    void   *userdata)
+{
+    bool                    mac_move_set=0;
+
+    if (l2addr == NULL) {
+        VLOG_ERR("Invalid arguments. l2-addr is NULL");
+        return;
+    }
+
+    mac_move_set = l2addr->flags & OPENNSL_L2_MOVE_PORT;
+
+    if (mac_move_set == 0) {
+        /* Only handle _ADD_ due to mac-move */
+        VLOG_INFO("DELETE call from ASIC, not involving mac-move");
+        return;
+    }
+
+    /* mac_move is set, but do nothing */
+    VLOG_INFO("Egress ID update due to DELETE call from ASIC (mac-move)");
+}
+
+
+/* This function can get called by ASIC for following events:
+ *  Add, Delete, Mac-Learn, Mac-Age, & Mac-Move
+ *
+ *  Currently, it handles Add, Delete and Mac-Move events. */
+void
+ops_l2_table_cb(int    unit,
+                 opennsl_l2_addr_t  *l2addr,
+                 int    operation,
+                 void   *userdata)
+{
+    if (l2addr == NULL) {
+        VLOG_ERR("Invalid arguments. l2-addr is NULL");
+        return;
+    }
+
+    switch(operation) {
+        case OPENNSL_L2_CALLBACK_ADD:
+            ops_l2_table_add(unit, l2addr, userdata);
+            break;
+        case OPENNSL_L2_CALLBACK_DELETE:
+            ops_l2_table_delete(unit, l2addr, userdata);
+            break;
+        case OPENNSL_L2_CALLBACK_MOVE_EVENT:
+            break;
+    }
+
+    VLOG_INFO("Callback from ASIC (for possibly mac-move)");
+}
 
 ///////////////////////////////// INIT /////////////////////////////////
 

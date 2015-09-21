@@ -24,6 +24,7 @@
 
 #include <ovs/dynamic-string.h>
 #include <opennsl/types.h>
+#include <opennsl/l2.h>
 
 extern void ops_vlan_dump(struct ds *ds, int vid);
 extern int ops_vlan_init(int hw_unit);
@@ -41,5 +42,10 @@ extern void bcmsdk_add_native_untagged_ports(int vid, opennsl_pbmp_t *pbm);
 extern void bcmsdk_del_native_untagged_ports(int vid, opennsl_pbmp_t *pbm);
 
 extern void vlan_reconfig_on_link_change(int unit, opennsl_port_t hw_port, int link_is_up);
+
+extern void ops_l2_table_cb(int unit,
+                            opennsl_l2_addr_t *l2addr,
+                            int operation,
+                            void *userdata);
 
 #endif /* __OPS_VLAN_H__ */
