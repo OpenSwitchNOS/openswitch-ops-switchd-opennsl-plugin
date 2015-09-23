@@ -1,9 +1,10 @@
-﻿OPS-SWITCHD-BCM-PLUGIN
+﻿OPS-SWITCHD-OPENNSL-PLUGIN
 ======================
 
-What is ops-switchd-bcm-plugin?
+What is ops-switchd-opennsl-plugin?
 ------------------
-ops-switchd-bcm-plugin is the repo for the OpenSwitch Broadcom switch driver.
+ops-switchd-opennsl-plugin is the repo for the OpenSwitch Switch driver plugin
+for Broadcom based switch chip.
 
 What is the structure of the repository?
 ----------------------------------------
@@ -18,7 +19,7 @@ Apache 2.0 license. For more details refer to [COPYING](COPYING)
 
 What other documents are available?
 -----------------------------------
-For the high level design of ops-switchd-bcm-plugin, refer to [DESIGN.md](DESIGN.md)
+For the high level design of ops-switchd-opennsl-plugin, refer to [DESIGN.md](DESIGN.md)
 For answers to common questions, read [FAQ.md](FAQ.md)
 For what has changed since last release, refer to [NEWS](NEWS)
 For the current list of contributors and maintainers, refer to [AUTHORS.md](AUTHORS.md)
