@@ -640,6 +640,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
 
         bundle = xmalloc(sizeof *bundle);
 
+        bundle->enable = true;
         bundle->ofproto = ofproto;
         hmap_insert(&ofproto->bundles, &bundle->hmap_node,
                     hash_pointer(aux, 0));
@@ -785,7 +786,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
 
         if (bundle->l3_intf) {
             /* if reserved vlan changed or removed */
-            if (bundle->l3_intf->l3a_vid != vlan_id) {
+            if (bundle->l3_intf->l3a_vid != vlan_id || !s->enable) {
                 ops_routing_disable_l3_interface(hw_unit, hw_port, bundle->l3_intf);
                 bundle->l3_intf = NULL;
                 bundle->hw_unit = 0;
@@ -793,7 +794,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
             }
         }
 
-        if (vlan_id && !bundle->l3_intf) {
+        if (vlan_id && !bundle->l3_intf && s->enable) {
 
             /* If interface type is not internal create l3 interface, else
              * create an l3 vlan interface on every hw_unit. */
@@ -1066,6 +1067,8 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     bcmsdk_destroy_pbmp(temp_pbm);
 
 done:
+    /* Save enable/dsiable on bundle */
+    bundle->enable = s->enable;
     /* Done with VLAN configuration.  Save the new information. */
     bundle->vlan_mode = s->vlan_mode;
     bundle->vlan = s->vlan;
