@@ -40,6 +40,12 @@ static void netdev_change_seq_changed(const struct netdev *) __attribute__((__un
 
 void
 init(void) {
+    int ret = 0;
+    ret = register_bcm_extensions();
+    if (ret != 0){
+        VLOG_ERR("ASIC Plugin already exists, omitting initialization\n");
+	return;
+    }
     ovs_bcm_init();
 }
 

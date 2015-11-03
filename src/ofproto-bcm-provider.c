@@ -38,8 +38,12 @@
 #include "netdev-bcmsdk.h"
 #include "platform-defines.h"
 #include "ofproto-bcm-provider.h"
+#include "asic-plugin.h"
+#include "ofproto/ofproto-extensions.h"
 
 VLOG_DEFINE_THIS_MODULE(ofproto_bcm_provider);
+
+#define switchd_bcm_plugin_MAGIC    0x363E1C23
 
 COVERAGE_DEFINE(ofproto_bcm_provider_expired);
 COVERAGE_DEFINE(rev_reconfigure_bcm);
@@ -60,6 +64,51 @@ static void port_unconfigure_ips(struct ofbundle *bundle);
 
 /* vrf id avalability bitmap */
 static unsigned long *available_vrf_ids = NULL;
+
+/* Funtion prototypes */
+static int add_l3_host_entry(const struct ofproto *ofproto, void *aux,
+                             bool is_ipv6_addr, char *ip_addr,
+                             char *next_hop_mac_addr, int *l3_egress_id);
+static int delete_l3_host_entry(const struct ofproto *ofproto, void *aux,
+                                bool is_ipv6_addr, char *ip_addr,
+                                int *l3_egress_id);
+static int get_l3_host_hit_bit(const struct ofproto *ofproto, void *aux,
+                           bool is_ipv6_addr, char *ip_addr, bool *hit_bit);
+static int l3_route_action(const struct ofproto *ofproto,
+                           enum ofproto_route_action action,
+                           struct ofproto_route *route);
+static int l3_ecmp_set(const struct ofproto *ofproto, bool enable);
+static int l3_ecmp_hash_set(const struct ofproto *ofproto, unsigned int hash,
+                            bool enable);
+
+/* Interface structure */
+struct asic_plugin_interface bcm_plugin_interface = {
+    .magic = switchd_bcm_plugin_MAGIC,
+    .major = asic_plugin_MAJOR,
+    .minor = asic_plugin_MINOR,
+    .add_l3_host_entry = &add_l3_host_entry,
+    .delete_l3_host_entry = &delete_l3_host_entry,
+    .get_l3_host_hit_bit = &get_l3_host_hit_bit,
+    .l3_route_action = &l3_route_action,
+    .l3_ecmp_set = &l3_ecmp_set,
+    .l3_ecmp_hash_set = &l3_ecmp_hash_set
+};
+
+/* Internal register function */
+int register_bcm_extensions(){
+    if (register_asic_plugin_magic(switchd_bcm_plugin_MAGIC) != 0) {
+        VLOG_INFO("There is already an asic-plugin registered\n");
+        return EINVAL;
+    }
+    VLOG_INFO("Registering switchd_bcm_plugin ofproto_extensions\n");
+    if (register_ofproto_extension(switchd_bcm_plugin_MAGIC,
+				 (void *)&bcm_plugin_interface) < 0) {
+        VLOG_ERR("Failed to register bcm interface\n");
+        return EINVAL;
+    }
+    VLOG_INFO("Bcm plugin extensions registered ok\n");
+    return 0;
+}
 
 static void
 available_vrf_ids_init() {
@@ -2050,10 +2099,4 @@ const struct ofproto_class ofproto_bcm_provider_class = {
     group_modify,               /* group_modify */
     group_get_stats,            /* group_get_stats */
     get_datapath_version,       /* get_datapath_version */
-    add_l3_host_entry,          /* Add l3 host entry */
-    delete_l3_host_entry,       /* Delete l3 host entry */
-    get_l3_host_hit_bit,        /* Get l3 host entry hit bits */
-    l3_route_action,            /* l3 route action - install, update, delete */
-    l3_ecmp_set,                /* enable/disable ECMP globally */
-    l3_ecmp_hash_set,           /* enable/disable ECMP hash configs */
 };
