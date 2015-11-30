@@ -139,6 +139,21 @@ OpenSwitch supports monitoring of MMU buffer space consumption (buffer statistic
 
 Switchd uses bufmon layer API's to configure the switch hardware and for statistics collection from the switch hardware. In switchd the thread "bufmon_stats_thread" is responsible for collecting statistics periodically from the switch hardware, and it will also monitor for threshold crossed trigger notifications from the switch hardware. The same thread will notify the switchd main thread to push counter statistics into the database.
 
+### L3 loopback interface
+Netdev class "l3loopback" is registered to handle L3 loopback interfaces. This class has minimal set of api's (alloc/construct/distruct/dealloc) registered to handle creation and deletion of L3 loopback interface. No other configurations are done in ASIC via netdev for loopback interface.
+And via ofproto, only ip address configuration are allowed for loopback interfaces.
+
+### L3 subinterface
+Netdev class "subinterface" is registered to handle L3 subinterfaces, This class has api's to handle basic netdev operations (alloc/construct/distruct/dealloc), and an api set_config() to handle subinterface 802.1q vlan tag, mac address and parent hardware port ID configurations.
+Following are the actions done on subinterface creation:
+-Create the l3_interface using the vrf, vlanid, mac, and parent hw_port.
+-Create KNET filter to retain the vlan tag, instead of stripping.
+-Create FP rule on the parent hw_port to drop packets whose dest mac doesn’t matche MyStationTCAM, to avoid switching on the subinterface vlanid.
+-Add the subinterface vlanid to the trunk portbitmap.
+-Ip address configuration.
+-If vlanid is changed delete all above configurations and reconfigure using new vlanid.
+
+
 ## References
 [OpenvSwitch Porting Guide](http://git.openvswitch.org/cgi-bin/gitweb.cgi?p=openvswitch;a=blob;f=PORTING)
 [Broadcom OpenNSL](https://github.com/Broadcom-Switch/OpenNSL)
