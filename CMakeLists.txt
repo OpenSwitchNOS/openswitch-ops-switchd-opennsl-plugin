@@ -25,6 +25,7 @@ set (SOURCES ${SRC_DIR}/bcm.c
              ${SRC_DIR}/bufmon-bcm-provider.c
              ${SRC_DIR}/ops-bcm-init.c
              ${SRC_DIR}/ops-bufmon.c
+             ${SRC_DIR}/ops-classifier.c
              ${SRC_DIR}/ops-debug.c
              ${SRC_DIR}/ops-knet.c
              ${SRC_DIR}/ops-lag.c

@@ -39,4 +39,13 @@
  ********************************************************************/
 extern char * bcmsdk_datapath_version(void);
 
+/* Return code */
+#define OPS_OK   0
+#define OPS_FAIL 1
+
+/* priority of IFP group */
+enum ops_cls_group_priority {
+    OPS_GROUP_PRI_IPv4 = 0,
+};
+
 #endif /* __PLATFORM_DEFINES_H__ */

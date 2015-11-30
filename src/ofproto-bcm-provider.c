@@ -35,6 +35,7 @@
 #include "ops-lag.h"
 #include "ops-routing.h"
 #include "ops-knet.h"
+#include "ops-classifier.h"
 #include "netdev-bcmsdk.h"
 #include "platform-defines.h"
 #include "ofproto-bcm-provider.h"
@@ -92,7 +93,7 @@ bcmsdk_provider_ofport_node_cast(const struct ofport *ofport)
            CONTAINER_OF(ofport, struct bcmsdk_provider_ofport_node, up) : NULL;
 }
 
-static inline struct bcmsdk_provider_node *
+struct bcmsdk_provider_node *
 bcmsdk_provider_node_cast(const struct ofproto *ofproto)
 {
     ovs_assert(ofproto->ofproto_class == &ofproto_bcm_provider_class);
@@ -495,7 +496,7 @@ handle_trunk_vlan_changes(unsigned long *old_trunks, unsigned long *new_trunks,
     bitmap_free(added_vlans);
 }
 
-static struct ofbundle *
+struct ofbundle *
 bundle_lookup(const struct bcmsdk_provider_node *ofproto, void *aux)
 {
     struct ofbundle *bundle;
@@ -2054,6 +2055,7 @@ l3_ecmp_hash_set(const struct ofproto *ofprotop, unsigned int hash, bool enable)
     return ops_routing_ecmp_hash_set(0, hash, enable);
 }
 
+
 const struct ofproto_class ofproto_bcm_provider_class = {
     init,
     enumerate_types,
@@ -2158,4 +2160,12 @@ const struct ofproto_class ofproto_bcm_provider_class = {
     l3_route_action,            /* l3 route action - install, update, delete */
     l3_ecmp_set,                /* enable/disable ECMP globally */
     l3_ecmp_hash_set,           /* enable/disable ECMP hash configs */
+
+    ops_cls_pd_apply,           /* ops-classifier functions */
+    ops_cls_pd_remove,
+    ops_cls_pd_replace,
+    ops_cls_pd_list_update,
+    ops_cls_pd_statistics_get,
+    ops_cls_pd_statistics_clear,
+    ops_cls_pd_statistics_clear_all
 };

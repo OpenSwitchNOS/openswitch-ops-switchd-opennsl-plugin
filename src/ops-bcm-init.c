@@ -20,6 +20,7 @@
  */
 
 #include <openvswitch/vlog.h>
+#include <ovs/uuid.h>
 
 #include <sal/driver.h>
 #include <opennsl/error.h>
@@ -32,6 +33,7 @@
 #include "ops-port.h"
 #include "ops-routing.h"
 #include "ops-vlan.h"
+#include "ops-classifier.h"
 #include "ops-debug.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
@@ -104,6 +106,12 @@ ops_bcm_appl_init(void)
         rc = ops_l3_init(unit);
         if (rc) {
             VLOG_ERR("L3 subsystem init failed");
+            return 1;
+        }
+
+        rc = ops_classifier_init(unit);
+        if (rc) {
+            VLOG_ERR("Classifier subsystem init failed");
             return 1;
         }
     }
