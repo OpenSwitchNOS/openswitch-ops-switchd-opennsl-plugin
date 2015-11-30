@@ -1,8 +1,32 @@
 # High level design of ops-switchd-opennsl-plugin
-ops-switchd-opennsl-plugin is *OpenSwitch* switch driver plugin for Broadcom switch ASICs.
+
+## Contents
+
+  * [High level design of ops-switchd-opennsl-plugin](#high-level-design-of-ops-switchd-opennsl-plugin)
+    * [Contents](#contents)
+    * [Overview](#overview)
+    * [Terminology](#terminology)
+      * [In OVS-DB](#in-ovs-db)
+      * [In ops-switchd](#in-ops-switchd)
+      * [In switchd-opennsl-plugin](#in-switchd-opennsl-plugin)
+        * [In netdev layer](#in-netdev-layer)
+        * [In ofproto layer](#in-ofproto-layer)
+        * [In bufmon layer](#in-bufmon-layer)
+        * [In OpenNSL API code](#in-opennsl-api-code)
+    * [Design](#design)
+      * [Physical interface configuration](#physical-interface-configuration)
+        * [Trunk/LAG configuration](#trunklag-configuration)
+        * [Layer2 switching](#layer2-switching)
+      * [Layer3 routing](#layer3-routing)
+      * [Code details](#code-details)
+        * [Asynchronous notifications](#asynchronous-notifications)
+      * [Buffer monitoring](#buffer-monitoring)
+      * [L3 loopback interface](#l3-loopback-interface)
+      * [L3 subinterface](#l3-subinterface)
+    * [References](#references)
 
 ## Overview
-*OpenSwitch* is a database driven network operating system (NOS) for Open Compute Project (OCP) compliant switch hardware.
+*OpenSwitch* is a database driven network operating system (NOS) for Open Compute Project (OCP) compliant switch hardware.  ops-switchd-opennsl-plugin is *OpenSwitch* switch driver plugin for Broadcom switch ASICs.
 
 The following diagram depicts high level relations between various daemons in the OpenSwitch:
 
@@ -134,10 +158,38 @@ Switchd plugin cannot directly modify the ovs-db. ops-switchd is the only layer 
 
 ops-switchd layer collects basic interface statistics once every five seconds by default. User can increase this value to higher than five seconds as needed.
 
-### Buffer Monitoring
+### Buffer monitoring
 OpenSwitch supports monitoring of MMU buffer space consumption (buffer statistics and monitoring) inside the switch hardware. The bufmond Python script is responsible for adding counter details into the ovs-db bufmon table. ops-switchd configures switch hardware based on buffer monitoring  configuration in the ovs-db bufmon table.
 
 Switchd uses bufmon layer API's to configure the switch hardware and for statistics collection from the switch hardware. In switchd the thread "bufmon_stats_thread" is responsible for collecting statistics periodically from the switch hardware, and it will also monitor for threshold crossed trigger notifications from the switch hardware. The same thread will notify the switchd main thread to push counter statistics into the database.
+
+### L3 loopback interface
+The Netdev class "l3loopback" is registered to handle L3 loopback interfaces. This class has a minimal set of api's (alloc/construct/distruct/dealloc) registered to handle creation and deletion of L3 loopback interfaces. No other configurations are done in ASIC via netdev for loopback interfaces.
+
+And via ofproto, only IP address configurations are allowed for loopback interfaces. When a loopback interface is deleted, corresponding IP addresses are removed from ASIC.
+
+### L3 subinterface
+The Netdev class "subinterface" is registered to handle L3 subinterfaces. This class has APIs  to handle basic netdev operations (alloc/construct/distruct/dealloc), and an API set_config() to handle a subinterface 802.1q VLAN tag, MAC address,  and parent hardware port ID configurations.
+Following are the actions done on subinterface creation:
+- Create a VLAN if it does not already exist.
+- Create the L3 interface using the VRF, VLAN ID, MAC, and parent hardware port properties. If the VLAN ID is not configured, the L3 interface cannot be created.
+- Create a KNET filter to retain the VLAN tag.
+- Create an FP rule on the parent port to drop packets that has a destination MAC not matching MyStationTCAM, to avoid switching on the subinterface VLAN ID.
+- Update the parent interface in the trunk bitmap and the subinterface bitmap for the VLAN.
+- Configure the IP addresses.
+
+Following are the actions done on subinterface deletion:
+-Delete the L3 interface created for the subinterface using the netdev `distruct`operation.
+-Delete the VLAN, if it has not been created by the user. In this case "not been created by the user" means VLANS created for L2.
+-If the VLAN already exists, just clear the parent port bit from the trunk and the subinterface bitmap.
+
+Following are the actions done on subinterface vlan config change:
+-If user changes VLAN of a subinterface, delete the old subinterface and then create new subinterface with new VLAN.
+-If the new VLAN already exists, just add the parent port bit to the trunk and the subinterface bitmap.
+-If a VLAN doesn't exist, create a new VLAN and update the trunk and the subinterface bitmap with a parent port bit.
+
+If a VLAN is deleted without deleting the subinterface, the VLAN is not deleted from ASIC and the parent port bit is left set in the trunk bitmap and subinterface bitmap.
+
 
 ## References
 [OpenvSwitch Porting Guide](http://git.openvswitch.org/cgi-bin/gitweb.cgi?p=openvswitch;a=blob;f=PORTING)
