@@ -139,6 +139,34 @@ OpenSwitch supports monitoring of MMU buffer space consumption (buffer statistic
 
 Switchd uses bufmon layer API's to configure the switch hardware and for statistics collection from the switch hardware. In switchd the thread "bufmon_stats_thread" is responsible for collecting statistics periodically from the switch hardware, and it will also monitor for threshold crossed trigger notifications from the switch hardware. The same thread will notify the switchd main thread to push counter statistics into the database.
 
+### L3 loopback interface
+Netdev class "l3loopback" is registered to handle L3 loopback interfaces. This class has minimal set of api's (alloc/construct/distruct/dealloc) registered to handle creation and deletion of L3 loopback interface. No other configurations are done in ASIC via netdev for loopback interface.
+And via ofproto, only ip address configuration are allowed for loopback interfaces. On delete of loopback interface, corresponding ip addresses will be removed from asic.
+
+### L3 subinterface
+Netdev class "subinterface" is registered to handle L3 subinterfaces, This class has api's to handle basic netdev operations (alloc/construct/distruct/dealloc), and an api set_config() to handle subinterface 802.1q vlan tag, mac address and parent hardware port ID configurations.
+Following are the actions done on subinterface creation:
+-Create vlan if vlan already does not exist.
+-Create the l3 interface using the vrf, vlanid, mac, and parent harware port. If vlanid is not configured l3 interface is not created.
+-Create KNET filter to retain the vlan tag, instead of stripping.
+-Create FP rule on the parent port to drop packets whose dest mac doesnot match MyStationTCAM, to avoid switching on the subinterface vlanid.
+-Update the parent interface to trunk bitmap and to subinterface bitmap for the vlan.
+-Ip address configuration.
+
+Following are the actions done on subinterface deletion:
+-Destroy the l3 interface created for the subinterface.
+-Destroy the vlan if vlan is not created by user. Here user created vlans means vlans created for L2.
+-Else if vlan already exists then just clear the parent port bit from trunk and subinterface bitmap.
+
+Following are the actions done on subinterface vlan config change:
+-If user changes vlan on a subinterface then, we will destroy the old subinterface and then create new subinterface with new vlan.
+-If new vlan exists then just add parent port bit to trunk and subinterface bitmap.
+-Else create new vlan and update the trunk and subinterface bitmap with parent port bit.
+
+Following are the actions done on vlan deletion without deleting subinterface:
+-The vlan will not be deleted from asic and the parent port bit will be left set in the trunk bitmap and subinterface bitmap.
+
+
 ## References
 [OpenvSwitch Porting Guide](http://git.openvswitch.org/cgi-bin/gitweb.cgi?p=openvswitch;a=blob;f=PORTING)
 [Broadcom OpenNSL](https://github.com/Broadcom-Switch/OpenNSL)
