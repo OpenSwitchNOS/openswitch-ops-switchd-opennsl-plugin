@@ -1,4 +1,4 @@
 [gerrit]
-host=review.openswitch.net
+host=review.hpnos.io
 port=29418
 project=openswitch/ops-switchd-opennsl-plugin.git

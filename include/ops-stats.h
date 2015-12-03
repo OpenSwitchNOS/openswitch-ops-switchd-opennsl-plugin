@@ -22,6 +22,35 @@
 #ifndef __OPS_STAT_H__
 #define __OPS_STAT_H__ 1
 
+#include <ofproto/ofproto.h>
+#include "local_bcm_api.h"
+
+struct ops_stats_egress_id {
+    struct   hmap_node egress_node;
+    int      egress_object_id;
+    uint32_t egress_num_id;
+    uint32_t egress_stat_id;
+};
+
+struct ops_l3_stats_ingress {
+    int      ingress_vlan_id;
+    uint32_t ingress_num_id;
+    uint32_t ingress_stat_id;        
+};
+
+struct ops_deleted_stats {
+    uint32_t del_packets;
+    uint32_t del_bytes;
+    uint32_t del_drop_packets;
+};
+
 extern int bcmsdk_get_port_stats(int hw_unit, int hw_port, struct netdev_stats *stats);
 
+extern int bcmsdk_get_l3_egress_stats(struct ops_deleted_stats *del_stats,
+                               struct netdev_stats *stats, int egress_object_id,
+                               uint32_t egress_num_id);
+
+extern int bcmsdk_get_l3_ingress_stats(struct ops_deleted_stats *del_stats,
+                               struct netdev_stats *stats, int ingress_vlan_id,
+                               uint32_t ingress_num_id);
 #endif /* __OPS_STAT_H__ */

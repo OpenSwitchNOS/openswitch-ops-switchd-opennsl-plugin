@@ -23,6 +23,7 @@
 #include <ofproto/ofproto-provider.h>
 #include <opennsl/types.h>
 #include <opennsl/l3.h>
+#include "local_bcm_api.h"
 
 /* No bfd/cfm status change. */
 #define NO_STATUS_CHANGE -1
@@ -49,6 +50,8 @@ struct ofbundle {
     struct bcmsdk_provider_node *ofproto; /* Owning ofproto. */
     void *aux;                  /* Key supplied by ofproto's client. */
     char *name;                 /* Identifier for log messages. */
+    ofp_port_t *slaves;         /* OpenFlow port numbers for slaves. */
+    size_t num_slaves;          /* number of slaves */
 
     /* Configuration. */
     struct ovs_list ports;      /* Contains "struct ofport"s. */
