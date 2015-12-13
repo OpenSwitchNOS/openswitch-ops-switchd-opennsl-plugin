@@ -49,6 +49,8 @@ struct ofbundle {
     struct bcmsdk_provider_node *ofproto; /* Owning ofproto. */
     void *aux;                  /* Key supplied by ofproto's client. */
     char *name;                 /* Identifier for log messages. */
+    ofp_port_t *slaves;         /* OpenFlow port numbers for slaves. */
+    size_t n_slaves;
 
     /* Configuration. */
     struct ovs_list ports;      /* Contains "struct ofport"s. */
@@ -79,8 +81,6 @@ struct ofbundle {
     char *ip6_address;
     struct hmap secondary_ip4addr; /* List of secondary IP address */
     struct hmap secondary_ip6addr; /* List of secondary IPv6 address */
-
-    int vlan_knet_filter_ids[3]; /* Filter ID for vlan interface */
 };
 
 struct bcmsdk_provider_ofport_node {

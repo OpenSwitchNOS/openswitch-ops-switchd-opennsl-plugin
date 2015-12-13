@@ -145,7 +145,60 @@ int bcmsdk_knet_ifid_get_by_name(char *if_name, int hw_unit)
 }
 
 void
-bcmsdk_knet_port_filter_create(char *name, int hw_unit, opennsl_port_t hw_port,
+bcmsdk_knet_port_bpdu_filter_create(char *name, int hw_unit, opennsl_port_t hw_port,
+                               int knet_if_id, int *knet_filter_id)
+{
+    opennsl_knet_filter_t knet_filter;
+    opennsl_error_t rc = OPENNSL_E_NONE;
+
+    /* Create filter for BPDU */
+
+    opennsl_knet_filter_t_init(&knet_filter);
+
+    knet_filter.type = OPENNSL_KNET_FILTER_T_RX_PKT;
+
+    snprintf(knet_filter.desc, OPENNSL_KNET_FILTER_DESC_MAX,
+             "knet_filter_bpdu_%s", name);
+
+    knet_filter.priority = KNET_FILTER_PRIO_BPDU;
+    knet_filter.dest_type = OPENNSL_KNET_DEST_T_NETIF;
+    knet_filter.dest_id = knet_if_id;
+    knet_filter.flags |= OPENNSL_KNET_FILTER_F_STRIP_TAG;
+    knet_filter.match_flags |= (OPENNSL_KNET_FILTER_M_INGPORT | OPENNSL_KNET_FILTER_M_RAW);
+    knet_filter.m_ingport = hw_port;
+
+     knet_filter.raw_size = 24;
+     memset(knet_filter.m_raw_data, 0, FILTER_RAW_DATA_SIZE);
+     memset(knet_filter.m_raw_mask, 0, FILTER_RAW_DATA_SIZE);
+
+     /* BPDU - based on dst mac */
+     knet_filter.m_raw_data[0] = 0x01;
+     knet_filter.m_raw_data[1] = 0x80;
+     knet_filter.m_raw_data[2] = 0xC2;
+     knet_filter.m_raw_data[3] = 0x00;
+     knet_filter.m_raw_data[4] = 0x00;
+
+     /* Populate filter mask */
+     knet_filter.m_raw_mask[0] = 0xFF;
+     knet_filter.m_raw_mask[1] = 0xFF;
+     knet_filter.m_raw_mask[2] = 0xFF;
+     knet_filter.m_raw_mask[3] = 0xFF;
+     knet_filter.m_raw_mask[4] = 0xFF;
+
+    rc = opennsl_knet_filter_create(hw_unit, &knet_filter);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Error creating KNET filter rule. unit=%d intf_name=%s hw_port=%d rc=%s",
+                 hw_unit, name, hw_port, opennsl_errmsg(rc));
+        *knet_filter_id = 0;
+    }
+
+    /* Store the filter ID. */
+    *knet_filter_id = knet_filter.id;
+
+} /* bcmsdk_knet_port_bpdu_filter_create */
+
+void
+bcmsdk_knet_l3_port_filter_create(int hw_unit, int vid, opennsl_port_t hw_port,
                                int knet_if_id, int *knet_filter_id)
 {
     opennsl_knet_filter_t knet_filter;
@@ -160,18 +213,20 @@ bcmsdk_knet_port_filter_create(char *name, int hw_unit, opennsl_port_t hw_port,
     knet_filter.type = OPENNSL_KNET_FILTER_T_RX_PKT;
 
     snprintf(knet_filter.desc, OPENNSL_KNET_FILTER_DESC_MAX,
-             "knet_filter_%s", name);
+             "knet_filter_l3_%d", vid);
 
     knet_filter.priority = KNET_FILTER_PRIO_PORT;
     knet_filter.dest_type = OPENNSL_KNET_DEST_T_NETIF;
     knet_filter.dest_id = knet_if_id;
     knet_filter.flags |= OPENNSL_KNET_FILTER_F_STRIP_TAG;
-    knet_filter.match_flags |= OPENNSL_KNET_FILTER_M_INGPORT;
+    knet_filter.match_flags |= OPENNSL_KNET_FILTER_M_INGPORT | OPENNSL_KNET_FILTER_M_VLAN;
     knet_filter.m_ingport = hw_port;
+    knet_filter.m_vlan = vid;
+
     rc = opennsl_knet_filter_create(hw_unit, &knet_filter);
     if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("Error creating KNET filter rule. unit=%d intf_name=%s hw_port=%d rc=%s",
-                 hw_unit, name, hw_port, opennsl_errmsg(rc));
+        VLOG_ERR("Error creating KNET filter rule. unit=%dhw_port=%d rc=%s",
+                 hw_unit, hw_port, opennsl_errmsg(rc));
         *knet_filter_id = 0;
     }
 
@@ -180,6 +235,41 @@ bcmsdk_knet_port_filter_create(char *name, int hw_unit, opennsl_port_t hw_port,
 
 } /* bcmsdk_knet_port_filter_create */
 
+void
+bcmsdk_knet_subinterface_filter_create(int hw_unit, opennsl_port_t hw_port,
+                               int knet_if_id, int *knet_filter_id)
+{
+    opennsl_knet_filter_t knet_filter;
+    opennsl_error_t rc = OPENNSL_E_NONE;
+
+    /* Create BCM KNET network filter.
+     * BCM diag commands:
+     *  BCM.0> knet filter create DestType=NetIF DestID=XX StripTag=yes Desc=knet_filter_xeN
+     */
+    opennsl_knet_filter_t_init(&knet_filter);
+
+    knet_filter.type = OPENNSL_KNET_FILTER_T_RX_PKT;
+    snprintf(knet_filter.desc, OPENNSL_KNET_FILTER_DESC_MAX,
+                  "knet_filter_subinterface");
+
+    knet_filter.priority = KNET_FILTER_PRIO_SUBINTF;
+    knet_filter.dest_type = OPENNSL_KNET_DEST_T_NETIF;
+    knet_filter.dest_id = knet_if_id;
+    knet_filter.match_flags |= OPENNSL_KNET_FILTER_M_INGPORT;
+    knet_filter.m_ingport = hw_port;
+
+    rc = opennsl_knet_filter_create(hw_unit, &knet_filter);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Error creating KNET filter rule. unit=%dhw_port=%d rc=%s",
+                 hw_unit, hw_port, opennsl_errmsg(rc));
+        *knet_filter_id = 0;
+    }
+
+    /* Store the filter ID. */
+    *knet_filter_id = knet_filter.id;
+
+} /* bcmsdk_knet_port_filter_create */
+#if 0
 static int bcmsdk_knet_vlan_arp_filter_create(int knet_dst_id, opennsl_vlan_t vid,
                                               opennsl_knet_filter_t *knet_filter)
 {
@@ -272,7 +362,7 @@ static int bcmsdk_knet_vlan_ipv6_filter_create(int knet_dst_id, opennsl_vlan_t v
     rc = opennsl_knet_filter_create(0, knet_filter);
     return rc;
 }
-
+#endif
 /*
  * Fuction to create knet filters for Vlan interface
  * 3 filters to be created to send ARP, IPv4 and IPv6
@@ -282,6 +372,7 @@ void
 bcmsdk_knet_vlan_interface_filter_create(char *knet_dst_if_name,  opennsl_vlan_t vid,
                                          int *knet_filter_id)
 {
+#if 0
     opennsl_knet_filter_t knet_filter;
     opennsl_error_t rc = OPENNSL_E_NONE;
     int knet_dst_id = bcmsdk_knet_ifid_get_by_name(knet_dst_if_name, 0);
@@ -312,6 +403,7 @@ bcmsdk_knet_vlan_interface_filter_create(char *knet_dst_if_name,  opennsl_vlan_t
                  0, knet_dst_if_name,opennsl_errmsg(rc));
         knet_filter_id[2] = 0;
     }
+#endif
 } /* bcmsdk_knet_vlan_interface_filter_create */
 
 void
@@ -329,6 +421,26 @@ bcmsdk_knet_filter_delete(char *name, int hw_unit, int knet_filter_id)
     }
 } /* bcmsdk_knet_filter_delete */
 
+void bcmsdk_knet_bridge_normal_create(char *knet_dst_if_name,
+        int *knet_filter_id)
+{
+    opennsl_knet_filter_t knet_filter;
+
+    opennsl_knet_filter_t_init(&knet_filter);
+
+    int knet_dst_id = bcmsdk_knet_ifid_get_by_name(knet_dst_if_name, 0);
+
+    knet_filter.type = OPENNSL_KNET_FILTER_T_RX_PKT;
+    snprintf(knet_filter.desc, OPENNSL_KNET_FILTER_DESC_MAX,
+             "knet_filter_bridge_normal");
+
+    knet_filter.priority = KNET_FILTER_PRIO_BRIDGE_NORMAL;
+    knet_filter.dest_type = OPENNSL_KNET_DEST_T_NETIF;
+    knet_filter.dest_id = knet_dst_id;
+
+    opennsl_knet_filter_create(0, &knet_filter);
+    return;
+}
 ///////////////////////////////// DEBUG/DUMP /////////////////////////////////
 
 /* Note:  See knet.h, OPENNSL_KNET_NETIF_T_xxx */

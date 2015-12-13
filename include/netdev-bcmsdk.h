@@ -24,11 +24,22 @@
                              (strlen((s1)) == strlen((s2))) && \
                              (!strncmp((s1), (s2), strlen((s2)))))
 
+typedef enum knet_filter_e {
+    BPDU_FILTER,
+    L3_PORT,
+    SUBINTERFACE,
+    BRIDGE_NORMAL
+}knet_filter_t;
+
 /* BCM SDK provider API. */
 extern void netdev_bcmsdk_register(void);
 extern void netdev_bcmsdk_get_hw_info(struct netdev *netdev,
                                       int *hw_unit, int *hw_id, uint8_t *mac);
 extern void netdev_bcmsdk_link_state_callback(int hw_unit, int hw_id,
                                               int link_status);
+extern void
+netdev_bcmsdk_get_subintf_vlan(struct netdev *netdev, opennsl_vlan_t *vlan);
+extern void handle_knet_filter(struct netdev *netdev_, opennsl_vlan_t vlan_id, bool enable, knet_filter_t type);
+extern bool is_vlan_membership_empty(int vid);
 
 #endif /* netdev-bcmsdk.h */

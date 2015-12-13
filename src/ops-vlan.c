@@ -53,6 +53,7 @@ typedef struct ops_vlan_data {
     opennsl_pbmp_t cfg_trunk_ports[MAX_SWITCH_UNITS];
     opennsl_pbmp_t cfg_native_tag_ports[MAX_SWITCH_UNITS];
     opennsl_pbmp_t cfg_native_untag_ports[MAX_SWITCH_UNITS];
+    opennsl_pbmp_t cfg_subinterface_ports[MAX_SWITCH_UNITS];
 
     // Bitmaps of interfaces actually installed in h/w.
     // Only interfaces that are linked up are installed.
@@ -60,6 +61,7 @@ typedef struct ops_vlan_data {
     opennsl_pbmp_t hw_trunk_ports[MAX_SWITCH_UNITS];
     opennsl_pbmp_t hw_native_tag_ports[MAX_SWITCH_UNITS];
     opennsl_pbmp_t hw_native_untag_ports[MAX_SWITCH_UNITS];
+    opennsl_pbmp_t hw_subinterface_ports[MAX_SWITCH_UNITS];
 
 } ops_vlan_data_t;
 
@@ -95,6 +97,8 @@ show_vlan_data(struct ds *ds, ops_vlan_data_t *vlanp)
                       _SHR_PBMP_FMT(vlanp->cfg_native_tag_ports[unit], pfmt));
         ds_put_format(ds, "  configured native untagged ports=%s\n",
                       _SHR_PBMP_FMT(vlanp->cfg_native_untag_ports[unit], pfmt));
+        ds_put_format(ds, "  configured subinterface ports=%s\n",
+                      _SHR_PBMP_FMT(vlanp->cfg_subinterface_ports[unit], pfmt));
         ds_put_format(ds, "\n");
         ds_put_format(ds, "  installed access ports=%s\n",
                       _SHR_PBMP_FMT(vlanp->hw_access_ports[unit], pfmt));
@@ -104,6 +108,8 @@ show_vlan_data(struct ds *ds, ops_vlan_data_t *vlanp)
                       _SHR_PBMP_FMT(vlanp->hw_native_tag_ports[unit], pfmt));
         ds_put_format(ds, "  installed native untagged ports=%s\n",
                       _SHR_PBMP_FMT(vlanp->hw_native_untag_ports[unit], pfmt));
+        ds_put_format(ds, "  installed subinterface ports=%s\n",
+                      _SHR_PBMP_FMT(vlanp->hw_subinterface_ports[unit], pfmt));
     }
     ds_put_format(ds, "\n");
 
@@ -433,6 +439,7 @@ get_vlan_data(int vid, bool internal)
     }
 
     vlanp->vid = vid;
+    VLOG_DBG("get_vlan_data setting hw_created to 0\n");
     vlanp->hw_created = 0;
 
     if (internal) {
@@ -449,10 +456,12 @@ get_vlan_data(int vid, bool internal)
         OPENNSL_PBMP_CLEAR(vlanp->cfg_trunk_ports[unit]);
         OPENNSL_PBMP_CLEAR(vlanp->cfg_native_tag_ports[unit]);
         OPENNSL_PBMP_CLEAR(vlanp->cfg_native_untag_ports[unit]);
+        OPENNSL_PBMP_CLEAR(vlanp->cfg_subinterface_ports[unit]);
         OPENNSL_PBMP_CLEAR(vlanp->hw_access_ports[unit]);
         OPENNSL_PBMP_CLEAR(vlanp->hw_trunk_ports[unit]);
         OPENNSL_PBMP_CLEAR(vlanp->hw_native_tag_ports[unit]);
         OPENNSL_PBMP_CLEAR(vlanp->hw_native_untag_ports[unit]);
+        OPENNSL_PBMP_CLEAR(vlanp->hw_subinterface_ports[unit]);
     }
 
     return vlanp;
@@ -483,7 +492,8 @@ free_vlan_data(int vid, bool internal)
         if (OPENNSL_PBMP_NOT_NULL(vlanp->cfg_access_ports[unit])     ||
             OPENNSL_PBMP_NOT_NULL(vlanp->cfg_trunk_ports[unit])      ||
             OPENNSL_PBMP_NOT_NULL(vlanp->cfg_native_tag_ports[unit]) ||
-            OPENNSL_PBMP_NOT_NULL(vlanp->cfg_native_untag_ports[unit])) {
+            OPENNSL_PBMP_NOT_NULL(vlanp->cfg_native_untag_ports[unit]) ||
+            OPENNSL_PBMP_NOT_NULL(vlanp->cfg_subinterface_ports[unit])) {
             any_member = 1;
         }
     }
@@ -513,12 +523,14 @@ bcmsdk_create_vlan(int vid, bool internal)
 
     SW_VLAN_DBG("%s entry: vid=%d", __FUNCTION__, vid);
 
+    VLOG_DBG("get vlan pointer for vid = %d\n", vid);
     vlanp = get_vlan_data(vid, internal);
     if (!vlanp) {
         VLOG_ERR("Failed to get VLAN data for VID %d", vid);
         return -1;
     }
 
+    VLOG_DBG("vid = %d hw_created flag = %d\n", vid, vlanp->hw_created);
     if (vlanp->hw_created) {
         VLOG_WARN("Duplicated %s VLAN creation request, VID=%d", internal ? "inetrnal" : "", vid);
     }
@@ -532,11 +544,14 @@ bcmsdk_create_vlan(int vid, bool internal)
 
         hw_create_vlan(unit, vid);
         vlanp->hw_created = 1;
+        VLOG_DBG("vid %d created in hw\n", vid);
 
         if (internal) {
+            VLOG_INFO("Don't configure any bitmap\n");
             continue;
         }
 
+        VLOG_DBG("Set all bitmaps to zero\n");
         bcm_pbm = vlanp->cfg_access_ports[unit];
         OPENNSL_PBMP_AND(bcm_pbm, linkup_pbm);
         if (OPENNSL_PBMP_NOT_NULL(bcm_pbm)) {
@@ -572,6 +587,14 @@ bcmsdk_create_vlan(int vid, bool internal)
             hw_add_ports_to_vlan(unit, bcm_pbm, bcm_pbm, vid, 0);
             vlanp->hw_native_untag_ports[unit] = bcm_pbm;
         }
+
+        bcm_pbm = vlanp->cfg_subinterface_ports[unit];
+        OPENNSL_PBMP_AND(bcm_pbm, linkup_pbm);
+        if (OPENNSL_PBMP_NOT_NULL(bcm_pbm)) {
+            // Add the ports as tagged members of the VLAN.
+            hw_add_ports_to_vlan(unit, bcm_pbm, g_empty_pbm, vid, 0);
+            vlanp->hw_subinterface_ports[unit] = bcm_pbm;
+        }
     }
 
     SW_VLAN_DBG("done");
@@ -579,6 +602,51 @@ bcmsdk_create_vlan(int vid, bool internal)
 
 } // bcmsdk_create_vlan
 
+bool
+is_vlan_membership_empty(int vid)
+{
+    bool rc = true;
+    int unit;
+    ops_vlan_data_t *vlanp = ops_vlans[vid];
+
+    vlanp = ops_vlans[vid];
+
+    if (vlanp) {
+        opennsl_pbmp_t bcm_pbm;
+
+        // Unconfigure all member ports & destroy
+        // VLAN in h/w on all switch chip units.
+        for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
+            bcm_pbm = vlanp->hw_access_ports[unit];
+            if (OPENNSL_PBMP_NOT_NULL(bcm_pbm)) {
+                rc = false;
+            }
+
+            bcm_pbm = vlanp->hw_trunk_ports[unit];
+            if (OPENNSL_PBMP_NOT_NULL(bcm_pbm)) {
+                rc = false;
+            }
+
+            bcm_pbm = vlanp->hw_native_tag_ports[unit];
+            if (OPENNSL_PBMP_NOT_NULL(bcm_pbm)) {
+                rc = false;
+            }
+
+            bcm_pbm = vlanp->hw_native_untag_ports[unit];
+            if (OPENNSL_PBMP_NOT_NULL(bcm_pbm)) {
+                rc = false;
+            }
+
+            bcm_pbm = vlanp->hw_subinterface_ports[unit];
+            if (OPENNSL_PBMP_NOT_NULL(bcm_pbm)) {
+                rc = false;
+            }
+        }
+    }
+
+    SW_VLAN_DBG("done");
+    return rc;
+}
 int
 bcmsdk_destroy_vlan(int vid, bool internal)
 {
@@ -620,6 +688,17 @@ bcmsdk_destroy_vlan(int vid, bool internal)
                 OPENNSL_PBMP_CLEAR(vlanp->hw_native_untag_ports[unit]);
             }
 
+            bcm_pbm = vlanp->hw_subinterface_ports[unit];
+            if (OPENNSL_PBMP_NOT_NULL(bcm_pbm)) {
+                /* Add the ports as tagged members of the VLAN. with only
+                   subinterface bitmap */
+                hw_add_ports_to_vlan(unit, bcm_pbm, g_empty_pbm, vid, 0);
+                vlanp->hw_trunk_ports[unit] = bcm_pbm;
+                vlanp->cfg_trunk_ports[unit] = bcm_pbm;
+                continue;
+            }
+
+            VLOG_DBG("Destroy vlan and set hw_craeted to zero\n");
             hw_destroy_vlan(unit, vid);
             vlanp->hw_created = 0;
         }
@@ -675,7 +754,8 @@ bcmsdk_add_access_ports(int vid, opennsl_pbmp_t *pbm, bool internal)
         // in h/w, go ahead and configure it.
         if (vlanp->hw_created && OPENNSL_PBMP_NOT_NULL(bcm_pbm)) {
             // Add access ports as strictly untagged members of the VLAN.
-            hw_add_ports_to_vlan(unit, bcm_pbm, bcm_pbm, vid, 1);
+//            hw_add_ports_to_vlan(unit, bcm_pbm, bcm_pbm, vid, 1);
+            hw_add_ports_to_vlan(unit, bcm_pbm, bcm_pbm, vid, 0);
             OPENNSL_PBMP_OR(vlanp->hw_access_ports[unit], bcm_pbm);
         }
     }
@@ -766,6 +846,7 @@ bcmsdk_add_trunk_ports(int vid, opennsl_pbmp_t *pbm)
 
         // If any port is left, and VLAN is already created
         // in h/w, go ahead and configure it.
+        VLOG_DBG("vlanp->hw_created = %d\n", vlanp->hw_created);
         if (vlanp->hw_created && OPENNSL_PBMP_NOT_NULL(bcm_pbm)) {
             // Add the ports as tagged members of the VLAN.
             hw_add_ports_to_vlan(unit, bcm_pbm, g_empty_pbm, vid, 0);
@@ -776,6 +857,95 @@ bcmsdk_add_trunk_ports(int vid, opennsl_pbmp_t *pbm)
     SW_VLAN_DBG("done");
 
 } // bcmsdk_add_trunk_ports
+
+void
+bcmsdk_add_subinterface_ports(int vid, opennsl_pbmp_t *pbm)
+{
+    int unit;
+    ops_vlan_data_t *vlanp = NULL;
+
+    // A TRUNK port carries packets on one or more specified
+    // VLANs specified in the trunks column (often,  on  every
+    // VLAN).  A packet that ingresses on a trunk port is in the
+    // VLAN specified in its 802.1Q header, or VLAN 0 if the
+    // packet has no 802.1Q header.  A packet that egresses
+    // through a trunk port will have an 802.1Q header if it has
+    // a nonzero VLAN ID.
+    //
+    // Any packet that ingresses on a trunk port tagged with a
+    // VLAN that the port does not trunk is dropped.
+    //
+    // OpenSwitch NOTE: h/w switches does not support VLAN 0.
+
+    SW_VLAN_DBG("%s entry: vid=%d", __FUNCTION__, vid);
+
+    vlanp = get_vlan_data(vid, false);
+    if (!vlanp) {
+        VLOG_ERR("Failed to allocate & save trunk ports "
+                 "for VID %d", vid);
+        return;
+    }
+
+    for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
+        opennsl_pbmp_t bcm_pbm;
+
+        // Save trunk port membership info.
+        bcm_pbm = pbm[unit];
+        OPENNSL_PBMP_OR(vlanp->cfg_subinterface_ports[unit], bcm_pbm);
+
+        // Filter out ports that are not linked up.
+        OPENNSL_PBMP_AND(bcm_pbm, ops_get_link_up_pbm(unit));
+
+        // If any port is left, and VLAN is already created
+        // in h/w, go ahead and configure it.
+        VLOG_DBG("vlanp->hw_created = %d\n",vlanp->hw_created);
+        if (vlanp->hw_created && OPENNSL_PBMP_NOT_NULL(bcm_pbm)) {
+            // Add the ports as tagged members of the VLAN.
+            hw_add_ports_to_vlan(unit, bcm_pbm, g_empty_pbm, vid, 0);
+            OPENNSL_PBMP_OR(vlanp->hw_subinterface_ports[unit], bcm_pbm);
+        }
+    }
+
+    SW_VLAN_DBG("done");
+
+} // bcmsdk_add_trunk_ports
+
+void
+bcmsdk_del_subinterface_ports(int vid, opennsl_pbmp_t *pbm)
+{
+    SW_VLAN_DBG("%s entry: vid=%d", __FUNCTION__, vid);
+
+    if (ops_vlans[vid] != NULL) {
+        int unit;
+        ops_vlan_data_t *vlanp = ops_vlans[vid];
+
+        for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
+            opennsl_pbmp_t bcm_pbm;
+
+            // Update trunk port membership info.
+            bcm_pbm = pbm[unit];
+            OPENNSL_PBMP_REMOVE(vlanp->cfg_subinterface_ports[unit], bcm_pbm);
+
+            // Only need to worry about ports that are actually
+            // configured in h/w.
+            OPENNSL_PBMP_AND(bcm_pbm, vlanp->hw_subinterface_ports[unit]);
+            if (OPENNSL_PBMP_NOT_NULL(bcm_pbm)) {
+                hw_del_ports_from_vlan(unit, bcm_pbm, g_empty_pbm, vid, 0);
+                OPENNSL_PBMP_REMOVE(vlanp->hw_subinterface_ports[unit], bcm_pbm);
+            }
+        }
+
+        // Free VLAN data if necessary.
+        free_vlan_data(vid, false);
+
+    } else {
+        VLOG_WARN("Trying to delete trunk port on VLAN %d, "
+                  "but VLAN does not exist.", vid);
+    }
+
+    SW_VLAN_DBG("done");
+
+} // bcmsdk_del_trunk_ports
 
 void
 bcmsdk_del_trunk_ports(int vid, opennsl_pbmp_t *pbm)
@@ -1014,6 +1184,12 @@ vlan_reconfig_on_link_change(int unit, opennsl_port_t hw_port, int link_is_up)
                     } else if (OPENNSL_PBMP_MEMBER(vlanp->cfg_native_untag_ports[unit], hw_port)) {
                         hw_add_ports_to_vlan(unit, pbm, pbm, vid, 0);
                         OPENNSL_PBMP_OR(vlanp->hw_native_untag_ports[unit], pbm);
+
+                    }
+
+                    if (OPENNSL_PBMP_MEMBER(vlanp->cfg_subinterface_ports[unit], hw_port)) {
+                        hw_add_ports_to_vlan(unit, pbm, g_empty_pbm, vid, 0);
+                        OPENNSL_PBMP_OR(vlanp->hw_subinterface_ports[unit], pbm);
                     }
                 } else {
                     // Link has gone down.
@@ -1033,6 +1209,12 @@ vlan_reconfig_on_link_change(int unit, opennsl_port_t hw_port, int link_is_up)
                     } else if (OPENNSL_PBMP_MEMBER(vlanp->hw_native_untag_ports[unit], hw_port)) {
                         hw_del_ports_from_vlan(unit, pbm, pbm, vid, 0);
                         OPENNSL_PBMP_PORT_REMOVE(vlanp->hw_native_untag_ports[unit], hw_port);
+
+                    }
+
+                    if (OPENNSL_PBMP_MEMBER(vlanp->hw_subinterface_ports[unit], hw_port)) {
+                        hw_del_ports_from_vlan(unit, pbm, g_empty_pbm, vid, 0);
+                        OPENNSL_PBMP_PORT_REMOVE(vlanp->hw_subinterface_ports[unit], hw_port);
                     }
                 }
             }
