@@ -18,7 +18,6 @@
  */
 
 #include <errno.h>
-
 #include <seq.h>
 #include <coverage.h>
 #include <vlan-bitmap.h>
@@ -972,6 +971,16 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         bundle->l3_intf = NULL;
         bundle->hw_unit = 0;
         bundle->hw_port = -1;
+        bundle->num_slaves = s->n_slaves;
+        VLOG_DBG(" numslaves is %zu", bundle->num_slaves);
+        bundle->slaves =
+            (ofp_port_t *) xmalloc(bundle->num_slaves * (sizeof(ofp_port_t)));
+        if (bundle->slaves == NULL) {
+            VLOG_ERR("Failed allocating memory for bundle->slaves");
+            return 1; /* Return error */
+        }
+        memcpy(bundle->slaves, s->slaves,
+               (bundle->num_slaves * (sizeof(ofp_port_t))));
 
         list_init(&bundle->ports);
         bundle->vlan_mode = PORT_VLAN_ACCESS;
@@ -1115,6 +1124,11 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         uint8_t mac[ETH_ADDR_LEN];
         const char *type = NULL;
 
+        /* Stats specific variables */
+        uint32_t ing_stat_id = 0;
+        uint32_t ing_num_id = 0;
+        int rc = 0;
+
         port = get_ofp_port(bundle->ofproto, s->slaves[0]);
         if (!port) {
             VLOG_ERR("slave is not in the ports");
@@ -1162,6 +1176,51 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                             unit, ofproto->vrf_id, vlan_id,
                             mac);
                 }
+
+                /* Create Ingress stat object using the vlan id */
+                rc = opennsl_stat_group_create(0, opennslStatObjectIngL3Intf,
+                                  opennslStatGroupModeTrafficType, &ing_stat_id,
+                                  &ing_num_id);
+                if (rc) {
+                    VLOG_ERR("Failed to create bcm stat group for ingress id %d",
+                              vlan_id);
+                    return 1; /* Return error */
+                }
+                VLOG_DBG("opennsl_stat_group_create SUCCESS for ing id %d"
+                         ", ing_stat_id %d, ing_num_id %d", vlan_id,
+                          ing_stat_id, ing_num_id);
+
+                /* Attach stat to customized group mode */
+                rc = opennsl_stat_custom_group_create(0, l3_stats_mode_id,
+                         opennslStatObjectIngL3Intf, &ing_stat_id, &ing_num_id);
+                if (rc) {
+                    VLOG_ERR("Failed to create custom stat group for ing id %d",
+                              vlan_id);
+                    return 1; /* Return error */
+                }
+                VLOG_DBG("opennsl custom stat group create SUCCESS for ing id %d"
+                         ", ing_stat_id %d, ing_num_id %d", vlan_id,
+                          ing_stat_id, ing_num_id);
+
+                rc = opennsl_l3_ingress_stat_attach(0, vlan_id, ing_stat_id);
+                if (rc) {
+                    VLOG_ERR("Failed to attach stat obj, for ingress id %d",
+                              vlan_id);
+                    return 1; /* Return error */
+                }
+                VLOG_DBG("opennsl_l3_ingress_stat_attach SUCCESS for ing id %d",
+                          vlan_id);
+
+                rc = netdev_bcmsdk_set_l3_ingress_stat_obj(port->up.netdev,
+                                                     vlan_id,
+                                                     ing_stat_id,
+                                                     ing_num_id);
+                if (rc) {
+                    VLOG_ERR("Failed to set l3 ingress stats obj for vlanid %d",
+                              vlan_id);
+                    return 1; /* Return error */
+                }
+                VLOG_DBG("Successfully set l3 ingress stat objects data");
             }
         }
     }
@@ -1840,6 +1899,8 @@ add_l3_host_entry(const struct ofproto *ofproto_, void *aux,
 {
     struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
     struct ofbundle *port_bundle;
+    struct bcmsdk_provider_ofport_node *port;
+    const char *type;
     int rc = 0;
 
     port_bundle = bundle_lookup(ofproto, aux);
@@ -1857,8 +1918,24 @@ add_l3_host_entry(const struct ofproto *ofproto_, void *aux,
                                    port_bundle->l3_intf->l3a_vid);
     if (rc) {
         VLOG_ERR("Failed to add L3 host entry for ip %s", ip_addr);
+        return rc;
     }
 
+    port = get_ofp_port(port_bundle->ofproto, port_bundle->slaves[0]);
+    type = netdev_get_type(port->up.netdev);
+
+    if (!(strncmp(OVSREC_INTERFACE_TYPE_INTERNAL, type, 8)) &&
+                                             (port_bundle->num_slaves == 1)) {
+        VLOG_DBG("in the IF before entering netdev_bcmsdk_set_l3_egress_id");
+        rc = netdev_bcmsdk_set_l3_egress_id(port->up.netdev, *l3_egress_id);
+        if (rc) {
+            VLOG_ERR("Failed to set l3 egress data in netdev bcmsdk for egress"
+                     " object, %d", *l3_egress_id);
+            return 1; /* Return error */
+        }
+    }
+    VLOG_DBG("netdev_bcmsdk_set_l3_egress_id SUCCESS for egr id %d",
+              *l3_egress_id);
 
     return rc;
 } /* add_l3_host_entry */
@@ -1871,12 +1948,27 @@ delete_l3_host_entry(const struct ofproto *ofproto_, void *aux,
 {
     struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
     struct ofbundle *port_bundle;
+    struct bcmsdk_provider_ofport_node *port;
+    const char *type;
     int rc = 0;
 
     port_bundle = bundle_lookup(ofproto, aux);
     if (port_bundle == NULL) {
         VLOG_ERR("Failed to get port bundle");
         return 1; /* Return error */
+    }
+
+    port = get_ofp_port(port_bundle->ofproto, port_bundle->slaves[0]);
+    type = netdev_get_type(port->up.netdev);
+
+    if (!(strncmp(OVSREC_INTERFACE_TYPE_INTERNAL, type, 8))) {/* use max size */
+        VLOG_DBG("in the IF before entering netdev_bcmsdk_remove_l3_egress_id");
+        rc = netdev_bcmsdk_remove_l3_egress_id(port->up.netdev, *l3_egress_id);
+        if (rc) {
+            VLOG_ERR("Failed to remove l3 egress data in netdev bcmsdk for "
+                     " egress object, %d", *l3_egress_id);
+            return 1; /* Return error */
+        }
     }
 
     rc = ops_routing_delete_host_entry(port_bundle->hw_unit,

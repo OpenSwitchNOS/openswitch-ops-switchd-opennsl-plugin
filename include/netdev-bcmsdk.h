@@ -31,4 +31,14 @@ extern void netdev_bcmsdk_get_hw_info(struct netdev *netdev,
 extern void netdev_bcmsdk_link_state_callback(int hw_unit, int hw_id,
                                               int link_status);
 
+extern int netdev_bcmsdk_set_l3_ingress_stat_obj(const struct netdev *netdev_,
+                                                 const int vlan_id,
+                                                 const uint32_t ing_stat_id,
+                                                 const uint32_t ing_num_id);
+
+extern int netdev_bcmsdk_set_l3_egress_id(const struct netdev *netdev,
+                                          const int l3_egress_id);
+
+extern int netdev_bcmsdk_remove_l3_egress_id(const struct netdev *netdev,
+                                             const int l3_egress_id);
 #endif /* netdev-bcmsdk.h */
