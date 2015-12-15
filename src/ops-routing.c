@@ -39,6 +39,7 @@
 #include "ops-knet.h"
 #include "platform-defines.h"
 #include "openswitch-dflt.h"
+#include "local_bcm_api.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_routing);
 
@@ -50,12 +51,60 @@ opennsl_mac_t LOCAL_MAC =  {0x0,0x0,0x01,0x02,0x03,0x04};
 char    egress_id_key[24];
 struct hmap ops_mac_move_egress_id_map;
 
+/* l3 ingress stats related globals */
+uint32_t l3_stats_mode_id = 0;
+
 /* all routes in asic*/
 struct ops_route_table{
    struct hmap routes;
 };
 
 struct ops_route_table ops_rtable;
+
+static int l3_ingress_stats_init()
+{
+    int rc = 0;
+    int total_counters=2;
+    int num_selectors=4;
+    uint32_t flags = OPENNSL_STAT_GROUP_MODE_INGRESS;
+    opennsl_stat_group_mode_attr_selector_t attr_selectors[4];
+
+    /* Selector0 for KNOWN_L3UC_PKT. Assigned to 1st counter. */
+    opennsl_stat_group_mode_attr_selector_t_init(&attr_selectors[0]);
+    attr_selectors[0].counter_offset = 0;
+    attr_selectors[0].attr = opennslStatGroupModeAttrPktType;
+    attr_selectors[0].attr_value = opennslStatGroupModeAttrPktTypeKnownL3UC;
+
+    /* Selector1 for UNKNOWN_L3UC_PKT. Assigned to 1st counter. */
+    opennsl_stat_group_mode_attr_selector_t_init(&attr_selectors[1]);
+    attr_selectors[1].counter_offset = 0;
+    attr_selectors[1].attr = opennslStatGroupModeAttrPktType;
+    attr_selectors[1].attr_value = opennslStatGroupModeAttrPktTypeUnknownL3UC;
+
+    /* Selector2 for KNOWN_IPMC. Assigned to 2nd counter. */
+    opennsl_stat_group_mode_attr_selector_t_init(&attr_selectors[2]);
+    attr_selectors[2].counter_offset = 1;
+    attr_selectors[2].attr = opennslStatGroupModeAttrPktType;
+    attr_selectors[2].attr_value = opennslStatGroupModeAttrPktTypeKnownIPMC;
+
+    /* Selector3 for UNKNOWN_IPMC. Assigned to 2nd counter. */
+    opennsl_stat_group_mode_attr_selector_t_init(&attr_selectors[3]);
+    attr_selectors[3].counter_offset = 1;
+    attr_selectors[3].attr = opennslStatGroupModeAttrPktType;
+    attr_selectors[3].attr_value = opennslStatGroupModeAttrPktTypeUnknownIPMC;
+
+    /* Create customized stat mode */
+    rc = opennsl_stat_group_mode_id_create(0, flags,
+                    total_counters, num_selectors, attr_selectors,
+                    &l3_stats_mode_id);
+    if (rc) {
+        VLOG_ERR("Failed to create stat group mode id");
+        return 1; /* Return error */
+    }
+    VLOG_DBG("opennsl stat group mode id create SUCCESS");
+
+    return rc;
+}
 
 int
 ops_l3_init(int unit)
@@ -264,6 +313,15 @@ ops_l3_init(int unit)
         VLOG_ERR("L2 address registration failed");
         return 1;
     }
+
+    /* initialize the l3 ingress stats related mode selectors */
+    rc = l3_ingress_stats_init();
+    if (rc) {
+        VLOG_ERR("L3 Ingress stats init failed");
+        return 1; /* Return error */
+    }
+    VLOG_DBG("L3 Ingress stats init SUCCESS, l3_stats_mode_id is %d",
+              l3_stats_mode_id);
 
     return 0;
 }

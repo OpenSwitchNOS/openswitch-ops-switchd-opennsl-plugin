@@ -26,6 +26,8 @@
 
 #include <openvswitch/vlog.h>
 #include <netdev.h>
+#include "ops-stats.h"
+#include <inttypes.h>
 
 VLOG_DEFINE_THIS_MODULE(ops_stats);
 
@@ -69,6 +71,101 @@ opennsl_stat_val_t stat_arr[MAX_STATS] =
     /* rx_crc_errors */
     opennsl_spl_snmpEtherStatsCRCAlignErrors /* 12 */
 };
+
+int bcmsdk_get_l3_ingress_stats(int hw_unit, struct netdev_stats *stats,
+                                int ingress_vlan_id, uint32_t ingress_num_id)
+{
+    int rc = 0;
+    uint32_t counter_index[10];
+    opennsl_stat_value_t count_arr[10];
+
+    /* Get packet stats */
+    /* Initialize the stat structures for fetching packet details*/
+    memset(counter_index, 0 , 10);
+    opennsl_stat_value_t_init(&(count_arr[0]));
+    VLOG_DBG("opennsl_stat_init packets SUCCESS for l3 ingress vlan id: %d",
+              ingress_vlan_id);
+
+    rc = opennsl_l3_ingress_stat_counter_get(hw_unit, ingress_vlan_id,
+                                         opennslL3StatInPackets, ingress_num_id,
+                                         &(counter_index[0]),
+                                         &(count_arr[0]));
+    if (rc) {
+        VLOG_ERR("Failed to get stat input packets for l3 ingress vlan id: %d",
+                  ingress_vlan_id);
+        return 1; /* Return error */
+    }
+
+    stats->rx_packets = count_arr[0].packets;
+    VLOG_DBG(" stats->rx_packets = %" PRIu64, stats->rx_packets);
+
+    /* Get bytes stats */
+    /* Initialize the stat structures for fetching packet details*/
+    memset(counter_index, 0 , 10);
+    opennsl_stat_value_t_init(&(count_arr[0]));
+    VLOG_DBG("opennsl_stat_init bytes SUCCESS for l3 ingress vlan id: %d",
+              ingress_vlan_id);
+
+    rc = opennsl_l3_ingress_stat_counter_get(hw_unit, ingress_vlan_id,
+                                         opennslL3StatInBytes, ingress_num_id,
+                                         &(counter_index[0]),
+                                         &(count_arr[0]));
+    if (rc) {
+        VLOG_ERR("Failed to get stat input bytes for l3 ingress vlan id: %d",
+                  ingress_vlan_id);
+        return 1; /* Return error */
+    }
+    stats->rx_bytes = count_arr[0].bytes;
+    VLOG_DBG(" stats->rx_bytes = %" PRIu64, stats->rx_bytes);
+
+    return rc;
+}
+
+int bcmsdk_get_l3_egress_stats(int hw_unit, struct netdev_stats *stats,
+                               int egress_object_id, uint32_t egress_num_id)
+{
+    int rc = 0;
+    uint32_t counter_index[10];
+    opennsl_stat_value_t count_arr[10];
+
+    /* Initialize the stat structures for fetching packet details*/
+    memset(counter_index, 0 , 10);
+    opennsl_stat_value_t_init(&(count_arr[0]));
+    VLOG_DBG("opennsl_stat_init packets SUCCESS for l3 egress id: %d",
+              egress_object_id);
+
+    rc = opennsl_l3_egress_stat_counter_get(hw_unit, egress_object_id,
+                                      opennslL3StatOutPackets,
+                                      egress_num_id, &(counter_index[0]),
+                                      &(count_arr[0]));
+    if (rc) {
+        VLOG_ERR("Failed to get stat output packets for l3 egress id: %d",
+                 egress_object_id);
+        return 1; /* Return error */
+    }
+    stats->tx_packets += count_arr[0].packets;
+    VLOG_DBG(" stats->tx_packets = %" PRIu64, stats->tx_packets);
+
+    /* Initialize the stat structures for fetching bytes details*/
+    memset(counter_index, 0 , 10);
+    opennsl_stat_value_t_init(&(count_arr[0]));
+    VLOG_DBG("opennsl_stat_init bytes SUCCESS for l3 egress id: %d",
+              egress_object_id);
+
+    rc = opennsl_l3_egress_stat_counter_get(hw_unit, egress_object_id,
+                                      opennslL3StatOutBytes,
+                                      egress_num_id, &(counter_index[0]),
+                                      &(count_arr[0]));
+    if (rc) {
+        VLOG_ERR("Failed to get stat output bytes for l3 egress id: %d",
+                 egress_object_id);
+        return 1; /* Return error */
+    }
+    stats->tx_bytes += count_arr[0].bytes;
+    VLOG_DBG(" stats->tx_bytes = %" PRIu64, stats->tx_bytes);
+
+    return rc;
+}
 
 int
 bcmsdk_get_port_stats(int hw_unit, int hw_port, struct netdev_stats *stats)
