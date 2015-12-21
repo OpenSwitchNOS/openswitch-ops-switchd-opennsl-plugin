@@ -75,18 +75,6 @@ def intervlan_knet_test(**kwargs):
     LogOutput('info', "Verified vlan interface in ASIC")
 
     LogOutput('info', "Verify knet filters in ASIC")
-    appctl_command = "ovs-appctl plugin/debug knet filter"
-    retStruct = switch.DeviceInteract(command=appctl_command)
-    buf = retStruct.get('buffer')
-
-    assert "knet_filter_arp_vlan10" in buf, \
-           'ARP filter for intervlan not configured in ASIC'
-    assert "knet_filter_ipv4_vlan10" in buf, \
-           'IPv4 filter for intervlan not configured in ASIC'
-    assert "knet_filter_ipv6_vlan10" in buf, \
-           'IPv6 filter for intervlan not configured in ASIC'
-
-    LogOutput('info', "Verify knet filters in ASIC")
 
     LogOutput('info', "Uncofiguring VLAN interface")
 
