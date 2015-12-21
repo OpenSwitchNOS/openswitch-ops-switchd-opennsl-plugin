@@ -39,7 +39,12 @@ extern void bcmsdk_add_native_tagged_ports(int vid, opennsl_pbmp_t *pbm);
 extern void bcmsdk_del_native_tagged_ports(int vid, opennsl_pbmp_t *pbm);
 extern void bcmsdk_add_native_untagged_ports(int vid, opennsl_pbmp_t *pbm);
 extern void bcmsdk_del_native_untagged_ports(int vid, opennsl_pbmp_t *pbm);
+extern void bcmsdk_add_subinterface_ports(int vid, opennsl_pbmp_t *pbm);
+extern void bcmsdk_del_subinterface_ports(int vid, opennsl_pbmp_t *pbm);
 
 extern void vlan_reconfig_on_link_change(int unit, opennsl_port_t hw_port, int link_is_up);
+extern bool is_vlan_membership_empty(int vid);
+extern bool is_user_created_vlan(int vid);
+extern void set_created_by_user(int vid, bool status);
 
 #endif /* __OPS_VLAN_H__ */
