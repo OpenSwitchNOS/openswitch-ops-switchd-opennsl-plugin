@@ -1830,6 +1830,18 @@ get_netflow_ids(const struct ofproto *ofproto_ OVS_UNUSED,
     return;
 }
 
+static int
+set_sflow(struct ofproto *ofproto_ OVS_UNUSED,
+         const struct ofproto_sflow_options *sflow_options OVS_UNUSED)
+{
+    if (sflow_options) {
+
+    } else {
+    }
+
+    return 0;
+}
+
 /* Ft to add l3 host entry */
 static int
 add_l3_host_entry(const struct ofproto *ofproto_, void *aux,
@@ -1987,7 +1999,7 @@ const struct ofproto_class ofproto_bcm_provider_class = {
     packet_out,
     NULL,                       /* may implement set_netflow */
     get_netflow_ids,
-    NULL,                       /* may implement set_sflow */
+    set_sflow,                  /* may implement set_sflow */
     NULL,                       /* may implement set_ipfix */
     NULL,                       /* may implement set_cfm */
     cfm_status_changed,

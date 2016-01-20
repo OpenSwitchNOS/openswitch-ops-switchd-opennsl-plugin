@@ -19,6 +19,8 @@
  * Purpose: Main file for the implementation of OpenSwitch BCM SDK application initialization.
  */
 
+#include <ctype.h>
+
 #include <openvswitch/vlog.h>
 
 #include <sal/driver.h>
@@ -33,14 +35,69 @@
 #include "ops-routing.h"
 #include "ops-vlan.h"
 #include "ops-debug.h"
+#include "ops-sflow.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
+
+#define OPENNSL_RX_REASON_GET(_reasons, _reason) \
+     (((_reasons).pbits[(_reason)/32]) & (1U << ((_reason)%32)))
+
+extern SFLAgent *ops_sflow_agent;
+
+extern int
+opennsl_rx_register(int, const char *, opennsl_rx_cb_f, uint8, void *, uint32);
+
+/* This callback is also doing the job of sending sFlow pkts to collectors.
+ * This has bad/unpredictable consequences. Callback should queue up pkts
+ * received from ASIC and return asap. This is PoC code and necessary
+ * changes will be made after Dill Sprint. Temporarily, configure a sampling
+ * rate of low value (say 1 in 10 pkts, when incoming rate is 1 pkt/s as in
+ * case of 'ping'). */
+
+opennsl_rx_t cb(int unit, opennsl_pkt_t *pkt, void *cookie)
+{
+    if (!pkt) {
+        VLOG_ERR("%s:%d; Invalid pkt sent by ASIC", __FUNCTION__, __LINE__);
+        return 1;
+    }
+
+    if (OPENNSL_RX_REASON_GET(pkt->reserved25, 59)) {
+        VLOG_ERR("%s:%d; opennslRxReasonSampleDest. Ingress pkt.",
+                __FUNCTION__, __LINE__);
+
+        //print_pkt(pkt);
+
+        /* Write incoming data to Receivers buffer. When buffer is full,
+         * data is sent to Collectors. */
+        ops_sflow_write_sampled_pkt(pkt);
+    }
+
+    if (OPENNSL_RX_REASON_GET(pkt->reserved25, 60)) {
+        VLOG_ERR("%s:%d; opennslRxReasonSampleSource. Egress pkt.",
+                __FUNCTION__, __LINE__);
+
+        //print_pkt(pkt);
+
+        /* Write incoming data to Receivers buffer. When buffer is full,
+         * data is sent to Collectors. */
+        ops_sflow_write_sampled_pkt(pkt);
+    }
+
+    return 1;   /* TODO: Rename to appropriate enum. */
+}
 
 int
 ops_rx_init(int unit)
 {
     opennsl_error_t  rc = OPENNSL_E_NONE;
     opennsl_rx_cfg_t rx_cfg;
+
+    rc = opennsl_rx_register(unit,
+                            "sFlow",
+                            cb,
+                            100,
+                            NULL,
+                            -1);
 
     /* Get the current RX config settings. */
     (void)opennsl_rx_cfg_get(unit, &rx_cfg);
@@ -104,6 +161,12 @@ ops_bcm_appl_init(void)
         rc = ops_l3_init(unit);
         if (rc) {
             VLOG_ERR("L3 subsystem init failed");
+            return 1;
+        }
+
+        rc = ops_sflow_init(unit);
+        if (rc) {
+            VLOG_ERR("sflow init failed");
             return 1;
         }
     }
