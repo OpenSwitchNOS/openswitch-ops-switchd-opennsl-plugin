@@ -46,7 +46,6 @@
 
 VLOG_DEFINE_THIS_MODULE(ops_debug);
 
-
 uint32 slog_level = 0x0;
 
 // OPS_TODO: for BPDU TX/RX debugging.
