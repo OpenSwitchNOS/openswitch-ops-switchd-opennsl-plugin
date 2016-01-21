@@ -1724,11 +1724,11 @@ rule_construct(struct rule *rule_ OVS_UNUSED)
     return 0;
 }
 
-static enum ofperr
-rule_insert(struct rule *rule_ OVS_UNUSED)
-    OVS_REQUIRES(ofproto_mutex)
+static void rule_insert(struct rule *rule, struct rule *old_rule,
+                    bool forward_stats)
+OVS_REQUIRES(ofproto_mutex)
 {
-    return 0;
+    return;
 }
 
 static void
@@ -1756,13 +1756,6 @@ rule_execute(struct rule *rule OVS_UNUSED, const struct flow *flow OVS_UNUSED,
              struct ofpbuf *packet OVS_UNUSED)
 {
     return 0;
-}
-
-static void
-rule_modify_actions(struct rule *rule_ OVS_UNUSED, bool reset_counters OVS_UNUSED)
-    OVS_REQUIRES(ofproto_mutex)
-{
-    return;
 }
 
 static struct bcmsdk_provider_group
@@ -1825,7 +1818,7 @@ set_frag_handling(struct ofproto *ofproto_ OVS_UNUSED,
 }
 
 static enum ofperr
-packet_out(struct ofproto *ofproto_ OVS_UNUSED, struct ofpbuf *packet OVS_UNUSED,
+packet_out(struct ofproto *ofproto_ OVS_UNUSED, struct dp_packet *packet OVS_UNUSED,
            const struct flow *flow OVS_UNUSED,
            const struct ofpact *ofpacts OVS_UNUSED, size_t ofpacts_len OVS_UNUSED)
 {
@@ -1964,6 +1957,7 @@ const struct ofproto_class ofproto_bcm_provider_class = {
     NULL,                       /* may implement type_get_memory_usage */
     NULL,                       /* may implement flush */
     query_tables,
+    NULL,
     port_alloc,
     port_construct,
     port_destruct,
@@ -1990,8 +1984,6 @@ const struct ofproto_class ofproto_bcm_provider_class = {
     rule_dealloc,
     rule_get_stats,
     rule_execute,
-    NULL,                       /* rule_premodify_actions */
-    rule_modify_actions,
     set_frag_handling,
     packet_out,
     NULL,                       /* may implement set_netflow */
@@ -2001,6 +1993,13 @@ const struct ofproto_class ofproto_bcm_provider_class = {
     NULL,                       /* may implement set_cfm */
     cfm_status_changed,
     NULL,                       /* may implement get_cfm_status */
+    NULL,                       /* may implement set_lldp */
+    NULL,                       /* may implement get_lldp_status */
+    NULL,                       /* may implement set_aa */
+    NULL,                       /* may implement aa_mapping_set */
+    NULL,                       /* may implement aa_mapping_unset */
+    NULL,                       /* may implement aa_vlan_get_queued */
+    NULL,                       /* may implement aa_vlan_get_queue_size */
     NULL,                       /* may implement set_bfd */
     bfd_status_changed,
     NULL,                       /* may implement get_bfd_status */
