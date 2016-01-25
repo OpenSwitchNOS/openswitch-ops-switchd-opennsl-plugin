@@ -1888,6 +1888,62 @@ delete_l3_host_entry(const struct ofproto *ofproto_, void *aux,
     return rc;
 } /* delete_l3_host_entry */
 
+static int
+set_sflow(struct ofproto *ofproto_ OVS_UNUSED,
+         const struct ofproto_sflow_options *oso)
+{
+    int target_count=0;
+    const char *target_name;
+    uint32_t    rate;
+
+    if (oso == NULL) { /* disable sflow */
+        ops_sflow_agent_disable();
+        return 0;
+    }
+
+    VLOG_DBG("sflow config: sampling: %d, header: %d, "
+            "agent_dev: %s, num_targets: %zd",
+            oso->sampling_rate, oso->header_len, oso->agent_device,
+            sset_count(&oso->targets));
+
+    /* No targets or sampling rate. Nothing to do. */
+    if (sset_is_empty(&oso->targets) || oso->sampling_rate == 0) {
+        VLOG_DBG("sflow: targets or sampling_rate not set (%zd %d).",
+                sset_count(&oso->targets), oso->sampling_rate);
+        ops_sflow_agent_disable();
+        return 0;
+    }
+
+    if (sflow_options == NULL) {
+        VLOG_DBG("sflow: Initialize sFlow agent with input options.");
+        ops_sflow_agent_enable(oso);
+        return 0;
+    } else if (ops_sflow_options_equal(oso, sflow_options)) {
+        VLOG_DBG("sflow: options are unchanged.");
+        return 0;
+    }
+
+    /* sFlow Agent exists. It's options has changed, update Agent. */
+
+    /* Sampling rate has changed. */
+    rate = oso->sampling_rate;
+    if (sflow_options->sampling_rate != rate) {
+        sflow_options->sampling_rate = rate;
+        ops_sflow_set_sampling_rate(0, 0, rate, rate);
+        VLOG_DBG("sflow: sampling rate applied on sFlow Agent:%d", rate);
+    }
+
+    /* OPS_TOOD: Use Agent interface name to set source IP for sFlow Agent */
+
+    /* Collector IP settings */
+    SSET_FOR_EACH(target_name, &oso->targets) {
+        VLOG_DBG("sflow: target [%d] : [%s]", target_count++, target_name);
+        ops_sflow_set_collector_ip(target_name, SFLOW_COLLECTOR_DFLT_PORT);
+    }
+
+    return 0;
+}
+
 /* Ft to get BCM host data-path hit-bit */
 static int
 get_l3_host_hit_bit(const struct ofproto *ofproto_, void *aux,
@@ -1987,7 +2043,7 @@ const struct ofproto_class ofproto_bcm_provider_class = {
     packet_out,
     NULL,                       /* may implement set_netflow */
     get_netflow_ids,
-    NULL,                       /* may implement set_sflow */
+    set_sflow,                  /* may implement set_sflow */
     NULL,                       /* may implement set_ipfix */
     NULL,                       /* may implement set_cfm */
     cfm_status_changed,

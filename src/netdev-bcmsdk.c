@@ -876,7 +876,7 @@ netdev_bcmsdk_link_state_callback(int hw_unit, int hw_id, int link_status)
     // Wakeup poll_block() function.
     seq_change(connectivity_seq_get());
 }
-
+
 /* Helper functions. */
 
 static const struct netdev_class bcmsdk_class = {

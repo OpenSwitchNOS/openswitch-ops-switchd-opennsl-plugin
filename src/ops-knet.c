@@ -285,6 +285,62 @@ bcmsdk_knet_filter_delete(char *name, int hw_unit, int knet_filter_id)
     }
 } /* bcmsdk_knet_filter_delete */
 
+void bcmsdk_knet_sflow_source_filter_create(int *knet_filter_id)
+{
+    opennsl_error_t rc;
+
+    opennsl_knet_filter_t knet_filter;
+    opennsl_knet_filter_t_init(&knet_filter);
+
+    knet_filter.type = OPENNSL_KNET_FILTER_T_RX_PKT;
+    knet_filter.match_flags = OPENNSL_KNET_FILTER_M_REASON;
+    knet_filter.flags |= OPENNSL_KNET_FILTER_F_STRIP_TAG;
+    snprintf(knet_filter.desc, OPENNSL_KNET_FILTER_DESC_MAX, "sflow_source_filter");
+
+    knet_filter.priority = 0x5;
+    knet_filter.dest_type = 2;
+    OPENNSL_RX_REASON_SET(knet_filter.m_reason, opennslRxReasonSampleSource);
+
+    rc = opennsl_knet_filter_create(0, &knet_filter);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to create KNET filter for sflow source sampling.");
+        *knet_filter_id = 0;
+    } else {
+        VLOG_DBG("Successfully created KNET filter for sflow source sampling.");
+        *knet_filter_id = knet_filter.id;
+    }
+
+    return;
+}
+
+void bcmsdk_knet_sflow_dest_filter_create(int *knet_filter_id)
+{
+    int rc;
+
+    opennsl_knet_filter_t knet_filter;
+    opennsl_knet_filter_t_init(&knet_filter);
+
+    knet_filter.type = OPENNSL_KNET_FILTER_T_RX_PKT;
+    knet_filter.match_flags = OPENNSL_KNET_FILTER_M_REASON;
+    knet_filter.flags |= OPENNSL_KNET_FILTER_F_STRIP_TAG;
+    snprintf(knet_filter.desc, OPENNSL_KNET_FILTER_DESC_MAX, "sflow_dest_filter");
+
+    knet_filter.priority = 0x5;
+    knet_filter.dest_type = 2;
+    OPENNSL_RX_REASON_SET(knet_filter.m_reason, opennslRxReasonSampleDest);
+
+    rc = opennsl_knet_filter_create(0, &knet_filter);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to create KNET filter for sflow destination sampling.");
+        *knet_filter_id = 0;
+    } else {
+        VLOG_DBG("Successfully created KNET filter for sflow source sampling.");
+        *knet_filter_id = knet_filter.id;
+    }
+
+    return;
+}
+
 void bcmsdk_knet_bridge_normal_filter_create(char *knet_dst_if_name,
         int *knet_filter_id)
 {

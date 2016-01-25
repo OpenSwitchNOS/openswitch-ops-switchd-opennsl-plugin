@@ -24,6 +24,8 @@
 #include <opennsl/types.h>
 #include <opennsl/l3.h>
 
+#include "ops-sflow.h"
+
 /* No bfd/cfm status change. */
 #define NO_STATUS_CHANGE -1
 

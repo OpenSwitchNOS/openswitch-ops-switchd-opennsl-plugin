@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Hewlett-Packard Development Company, L.P.
+ * Copyright (C) 2015-2016 Hewlett Packard Enterprise Development Company, L.P.
  * All Rights Reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -19,6 +19,8 @@
  * Purpose: Main file for the implementation of OpenSwitch BCM SDK application initialization.
  */
 
+#include <ctype.h>
+
 #include <openvswitch/vlog.h>
 
 #include <sal/driver.h>
@@ -33,14 +35,58 @@
 #include "ops-routing.h"
 #include "ops-vlan.h"
 #include "ops-debug.h"
+#include "ops-sflow.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
+
+#define OPENNSL_RX_REASON_GET(_reasons, _reason) \
+     (((_reasons).pbits[(_reason)/32]) & (1U << ((_reason)%32)))
+
+extern SFLAgent *ops_sflow_agent;
+
+extern int
+opennsl_rx_register(int, const char *, opennsl_rx_cb_f, uint8, void *, uint32);
+
+/* TODO: This callback is also sending sFlow pkts to collectors. It must
+ * do minimal computation in order to receive subsequent sFlow pkts.
+ * Callback should queue up pkts received from ASIC and return.
+ * Temporarily, configure a low sampling rate (say 1 in 10 pkts, when
+ * incoming rate is 1 pkt/s as in case of 'ping'). Eventually, a different
+ * thread will process incoming pkts.
+ */
+
+opennsl_rx_t opennsl_rx_callback(int unit, opennsl_pkt_t *pkt, void *cookie)
+{
+    if (!pkt) {
+        VLOG_ERR("Invalid pkt sent by ASIC");
+        return OPENNSL_RX_HANDLED;
+    }
+
+    if (OPENNSL_RX_REASON_GET(pkt->reserved25, opennslRxReasonSampleDest) ||
+        OPENNSL_RX_REASON_GET(pkt->reserved25, opennslRxReasonSampleSource)) {
+
+        VLOG_DBG("%s:%d; sFlow's sampled pkt.", __FUNCTION__, __LINE__);
+
+        /* Write incoming data to Receivers buffer. When buffer is full,
+         * data is sent to Collectors. */
+        ops_sflow_write_sampled_pkt(pkt);
+    }
+
+    return OPENNSL_RX_HANDLED;
+}
 
 int
 ops_rx_init(int unit)
 {
     opennsl_error_t  rc = OPENNSL_E_NONE;
     opennsl_rx_cfg_t rx_cfg;
+
+    rc = opennsl_rx_register(unit,
+                            "opennsl rx callback function",
+                            opennsl_rx_callback,
+                            100,    /* Relative priority of callback. 0 is lowest */
+                            NULL,   /* No data is passed to callback. */
+                            -1);
 
     /* Get the current RX config settings. */
     (void)opennsl_rx_cfg_get(unit, &rx_cfg);
@@ -104,6 +150,12 @@ ops_bcm_appl_init(void)
         rc = ops_l3_init(unit);
         if (rc) {
             VLOG_ERR("L3 subsystem init failed");
+            return 1;
+        }
+
+        rc = ops_sflow_init(unit);
+        if (rc) {
+            VLOG_ERR("sflow init failed");
             return 1;
         }
     }
