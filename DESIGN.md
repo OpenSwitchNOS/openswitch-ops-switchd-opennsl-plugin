@@ -21,6 +21,7 @@
      * [Buffer monitoring](#buffer-monitoring)
      * [L3 loopback interface](#l3-loopback-interface)
      * [L3 subinterface](#l3-subinterface)
+     * [L3 interface statistics](#l3-interface-statistics)
    * [References](#references)
 
 ## Overview
@@ -191,6 +192,8 @@ Following are the actions done on subinterface vlan config change:
 
 If a VLAN is deleted without deleting the subinterface, the VLAN is not deleted from the ASIC, and the parent port bit is left set in the trunk bitmap and subinterface bitmap.
 
+### L3 interface statistics
+For L3 interface statistics Field Processor(FP) are programmed to count unicast and multicast ipv4 and ipv6 packet types. These FPs are programed when an L3 interface is created and removed when an L3 interface is removed. And these FP's have statistics objects associated with them which are polled periodically to get number of L3 packets and bytes.
 
 ## References
 [OpenvSwitch Porting Guide](http://git.openvswitch.org/cgi-bin/gitweb.cgi?p=openvswitch;a=blob;f=PORTING)
