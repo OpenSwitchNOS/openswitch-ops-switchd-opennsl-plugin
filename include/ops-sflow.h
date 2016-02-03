@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2016 Hewlett Packard Enterprise Development Company, L.P.
+ * (C) Copyright 2015-2016 Hewlett Packard Enterprise Development Company, L.P.
  * All Rights Reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -63,9 +63,7 @@
 /* TODO: Get total ports on current platform */
 #define OPS_TOTAL_PORTS_AS5712   10
 
-#define SFLOW_DFLT_AGENT_IP4        "10.10.10.1"
-#define SFLOW_DFLT_COLLECTOR_IP4    "20.20.20.2"
-#define SFLOW_COLLECTOR_DFLT_PORT "6343" // default sflow port
+#define SFLOW_COLLECTOR_DFLT_PORT   "6343"
 
 /* sFlow parameters */
 extern SFLAgent *ops_sflow_agent;
@@ -75,7 +73,6 @@ extern struct ofproto_sflow_options *sflow_options;
 extern int knet_sflow_source_filter_id;
 extern int knet_sflow_dest_filter_id;
 
-extern void bcm_port_config_t_init(opennsl_port_config_t *);
 extern int opennsl_port_sample_rate_set(int unit, int port, int ingress_rate, int egress_rate);
 extern int opennsl_port_sample_rate_get(int unit, int port, int *ingress_rate, int *egress_rate);
 
@@ -90,10 +87,13 @@ extern bool
 ops_sflow_options_equal(const struct ofproto_sflow_options *oso1,
                         const struct ofproto_sflow_options *oso2);
 
-void
+extern void
 ops_sflow_set_sampling_rate(const int unit, const int port,
                             const int ingress_rate, const int egress_rate);
 
-void ops_sflow_set_collector_ip(const char *ip, const char *port);
+extern void ops_sflow_set_collector_ip(const char *ip, const char *port);
+
+extern void
+ops_sflow_agent_ip(const char *ip, const int af);
 
 #endif /* __OPS_SFLOW_H__ */

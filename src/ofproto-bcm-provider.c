@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2009, 2010, 2011, 2012, 2013, 2014 Nicira, Inc.
- * Copyright (C) 2015 Hewlett-Packard Development Company, L.P.
+ * (C) Copyright 2015-2016 Hewlett Packard Enterprise Development Company, L.P.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,6 +35,7 @@
 #include "ops-lag.h"
 #include "ops-routing.h"
 #include "ops-knet.h"
+#include "ops-sflow.h"
 #include "netdev-bcmsdk.h"
 #include "platform-defines.h"
 #include "ofproto-bcm-provider.h"
@@ -1893,27 +1894,45 @@ set_sflow(struct ofproto *ofproto_ OVS_UNUSED,
          const struct ofproto_sflow_options *oso)
 {
     int target_count=0;
-    const char *target_name;
+    const char *collector_ip;
+    char *port, *vrf, *af;
     uint32_t    rate;
 
     if (oso == NULL) { /* disable sflow */
+        VLOG_DBG("Input sflow options are NULL (maybe sflow (or collectors) is "
+                "not configured or disabled)");
+
         ops_sflow_agent_disable();
+
+        if (sflow_options) {
+            free(sflow_options);
+            sflow_options = NULL;
+        }
         return 0;
     }
 
-    VLOG_DBG("sflow config: sampling: %d, header: %d, "
-            "agent_dev: %s, num_targets: %zd",
-            oso->sampling_rate, oso->header_len, oso->agent_device,
-            sset_count(&oso->targets));
+    /* No targets/collectors, sFlow Agent can't exist. */
+    if (sset_is_empty(&oso->targets)) {
+        VLOG_DBG("sflow targets not set. Disable sFlow Agent.");
 
-    /* No targets or sampling rate. Nothing to do. */
-    if (sset_is_empty(&oso->targets) || oso->sampling_rate == 0) {
-        VLOG_DBG("sflow: targets or sampling_rate not set (%zd %d).",
-                sset_count(&oso->targets), oso->sampling_rate);
         ops_sflow_agent_disable();
+
+        /* if 'sflow_options' have any targets, clear them. */
+        if (sflow_options) {
+            sset_clear(&sflow_options->targets);
+        }
         return 0;
     }
 
+    /* Sampling rate not configured in CLI. Can't create sFlow Agent. This
+     * scenario is only possible at initiation. Once sFlow Agent is created,
+     * it will always have a sampling rate. */
+    if (oso->sampling_rate == 0) {
+        VLOG_DBG("sflow sampling_rate not set. Cannot create sFlow Agent.");
+        return 0;
+    }
+
+    /* sFlow Agent create, for first time. */
     if (sflow_options == NULL) {
         VLOG_DBG("sflow: Initialize sFlow agent with input options.");
         ops_sflow_agent_enable(oso);
@@ -1925,6 +1944,12 @@ set_sflow(struct ofproto *ofproto_ OVS_UNUSED,
 
     /* sFlow Agent exists. It's options has changed, update Agent. */
 
+    VLOG_DBG("sflow config: sampling: %d, num_targets: %zd, hdr len: %d,"
+             "agent dev: %s, agent ip: %s",
+            oso->sampling_rate, sset_count(&oso->targets), oso->header_len,
+            (oso->agent_device)? oso->agent_device: "NULL",
+            (oso->agent_ip)? oso->agent_ip: "NULL");
+
     /* Sampling rate has changed. */
     rate = oso->sampling_rate;
     if (sflow_options->sampling_rate != rate) {
@@ -1933,14 +1958,37 @@ set_sflow(struct ofproto *ofproto_ OVS_UNUSED,
         VLOG_DBG("sflow: sampling rate applied on sFlow Agent:%d", rate);
     }
 
-    /* OPS_TOOD: Use Agent interface name to set source IP for sFlow Agent */
+    /* Source IP for sFlow Agent has changed. */
+    if (strcmp(sflow_options->agent_ip, oso->agent_ip) != 0) {
+        sflow_options->agent_ip = oso->agent_ip;
 
-    /* Collector IP settings */
-    SSET_FOR_EACH(target_name, &oso->targets) {
-        VLOG_DBG("sflow: target [%d] : [%s]", target_count++, target_name);
-        ops_sflow_set_collector_ip(target_name, SFLOW_COLLECTOR_DFLT_PORT);
+        af = strchr(oso->agent_ip, ':');
+        if (af == NULL) { /* IPv4 */
+            ops_sflow_agent_ip(oso->agent_ip, AF_INET);
+        } else {
+            ops_sflow_agent_ip(oso->agent_ip, AF_INET6);
+        }
     }
 
+    /* Collector ip -- could be of form ip/port/vrf */
+    SSET_FOR_EACH(collector_ip, &oso->targets) {
+        VLOG_DBG("sflow: target [%d] : [%s]", target_count++, collector_ip);
+
+        /* retreive port info, if configured */
+        if ((port = strchr(collector_ip, '/')) != NULL) {
+            *port = '\0';
+            port++;
+            /* save vrf name */
+            if ((vrf=strchr(port, '/')) != NULL) {
+                *vrf = '\0';
+                vrf++;
+            }
+        } else {
+            port = SFLOW_COLLECTOR_DFLT_PORT;
+        }
+
+        ops_sflow_set_collector_ip(collector_ip, port);
+    }
     return 0;
 }
 
