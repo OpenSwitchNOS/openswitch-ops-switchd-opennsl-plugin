@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2016 Hewlett Packard Enterprise Development Company, L.P.
+ * (C) Copyright 2015-2016 Hewlett Packard Enterprise Development Company, L.P.
  * All Rights Reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -35,8 +35,8 @@
 VLOG_DEFINE_THIS_MODULE(ops_sflow);
 
 /* sFlow parameters */
-SFLAgent *ops_sflow_agent;
-struct ofproto_sflow_options *sflow_options;
+SFLAgent *ops_sflow_agent = NULL;
+struct ofproto_sflow_options *sflow_options = NULL;
 
 /* sFlow knet filter id's */
 int knet_sflow_source_filter_id;
@@ -90,47 +90,81 @@ ops_sflow_options_equal(const struct ofproto_sflow_options *oso1,
             string_is_equal(oso1->agent_device, oso2->agent_device));
 }
 
+/* Ethernet Hdr (18 bytes)
+ *  DMAC SMAC EtherType VLAN EtherTYpe
+ *   6    6       2      2     2   <-- bytes
+ */
+/* IPv4 Hdr (14 fields, of which 13 are required. Minimum 16 bytes)
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |Version|  IHL  |Type of Service|          Total Length         |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |         Identification        |Flags|      Fragment Offset    |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |  Time to Live |    Protocol   |         Header Checksum       |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                       Source Address                          |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                    Destination Address                        |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                    Options                    |    Padding    |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+*/
 void
 print_pkt(const opennsl_pkt_t *pkt)
 {
     uint8   i;
 
-    if (!pkt)
+    if (pkt == NULL) {
         return;
+    }
 
-    VLOG_ERR("[%s:%d]; # of blocks=%d, pkt_len=%d, tot_len=%d",
+    VLOG_DBG("[%s:%d]; # of blocks=%d, pkt_len=%d, tot_len=%d",
             __FUNCTION__, __LINE__, pkt->blk_count,
             pkt->pkt_len, pkt->tot_len);
 
-    VLOG_ERR("[%s:%d]; vlan=%d, src_port=%d, dest_port=%d, "
+    VLOG_DBG("[%s:%d]; vlan=%d, src_port=%d, dest_port=%d, "
             "rx_port=%d, untagged=%d, vtag0=%d, vtag1=%d, "
             "vtag2=%d, vtag3=%d", __FUNCTION__, __LINE__,
             pkt->vlan, pkt->src_port, pkt->dest_port, pkt->rx_port,
             pkt->rx_untagged, pkt->_vtag[0], pkt->_vtag[1],
             pkt->_vtag[2], pkt->_vtag[3]);
 
+#define PKT pkt->pkt_data[i].data
+
     for(i=0; i<pkt->blk_count; i++) {
-        VLOG_ERR("[%s:%d]; blk num=%d, blk len=%d", __FUNCTION__, __LINE__,
+        VLOG_DBG("[%s:%d]; blk num=%d, blk len=%d", __FUNCTION__, __LINE__,
                 i, pkt->pkt_data[i].len);
 
-        /* print only 18 bytes:
-         *  6 bytes DMAC
-         *  6 bytes SMAC
-         *  4 bytes 802.1q
-         *  2 bytes Ethernet Hdr
-         */
-            VLOG_ERR("%02X %02X %02X %02X %02X %02X "
-                    "%02X %02X %02X %02X %02X %02X "
-                    "%02X %02X %02X %02X %02X %02X ",
-                    pkt->pkt_data[i].data[0], pkt->pkt_data[i].data[1],
-                    pkt->pkt_data[i].data[2], pkt->pkt_data[i].data[3],
-                    pkt->pkt_data[i].data[4], pkt->pkt_data[i].data[5],
-                    pkt->pkt_data[i].data[6], pkt->pkt_data[i].data[7],
-                    pkt->pkt_data[i].data[8], pkt->pkt_data[i].data[9],
-                    pkt->pkt_data[i].data[10], pkt->pkt_data[i].data[11],
-                    pkt->pkt_data[i].data[12], pkt->pkt_data[i].data[13],
-                    pkt->pkt_data[i].data[14], pkt->pkt_data[i].data[15],
-                    pkt->pkt_data[i].data[16], pkt->pkt_data[i].data[17]);
+        VLOG_DBG("==============ETHERNET HEADER===============");
+        VLOG_DBG("DMAC: %02X:%02X:%02X:%02X:%02X:%02X",
+                pkt->pkt_data[i].data[0], pkt->pkt_data[i].data[1],
+                pkt->pkt_data[i].data[2], pkt->pkt_data[i].data[3],
+                pkt->pkt_data[i].data[4], pkt->pkt_data[i].data[5]);
+
+        VLOG_DBG("SMAC: %02X:%02X:%02X:%02X:%02X:%02X",
+                pkt->pkt_data[i].data[6], pkt->pkt_data[i].data[7],
+                pkt->pkt_data[i].data[8], pkt->pkt_data[i].data[9],
+                pkt->pkt_data[i].data[10], pkt->pkt_data[i].data[11]);
+
+        VLOG_DBG("EtherType: %02X%02X Vlan: %02X%02X EtherType: %02X%02X",
+                pkt->pkt_data[i].data[12], pkt->pkt_data[i].data[13],
+                pkt->pkt_data[i].data[14], pkt->pkt_data[i].data[15],
+                pkt->pkt_data[i].data[16], pkt->pkt_data[i].data[17]);
+
+        VLOG_DBG("==============IPv4  HEADER===============");
+        VLOG_DBG("Ver/IHL: %02X ToS: %02X Len: %02X%02X",
+                pkt->pkt_data[i].data[18], pkt->pkt_data[i].data[19],
+                pkt->pkt_data[i].data[20], pkt->pkt_data[i].data[21]);
+
+        VLOG_DBG("Src: %02X.%02X.%02X.%02X",
+                pkt->pkt_data[i].data[30], pkt->pkt_data[i].data[31],
+                pkt->pkt_data[i].data[32], pkt->pkt_data[i].data[33]);
+
+        VLOG_DBG("Dest: %02X.%02X.%02X.%02X",
+                pkt->pkt_data[i].data[34], pkt->pkt_data[i].data[35],
+                pkt->pkt_data[i].data[36], pkt->pkt_data[i].data[37]);
     }
 }
 
@@ -144,7 +178,7 @@ void ops_sflow_write_sampled_pkt(opennsl_pkt_t *pkt)
     SFLSampler              *sampler;
 
     if (pkt == NULL) {
-        VLOG_ERR("%s:%d; NULL sFlow pkt received.", __FUNCTION__, __LINE__);
+        VLOG_ERR("NULL sFlow pkt received. Can't be buffered.");
         return;
     }
 
@@ -166,7 +200,6 @@ void ops_sflow_write_sampled_pkt(opennsl_pkt_t *pkt)
     memset(&fs, 0, sizeof fs);
 
     /* Sampled header. */
-    /* Code from ofproto-dpif-sflow.c */
     memset(&hdrElem, 0, sizeof hdrElem);
     hdrElem.tag = SFLFLOW_HEADER;
     header = &hdrElem.flowType.header;
@@ -183,9 +216,9 @@ void ops_sflow_write_sampled_pkt(opennsl_pkt_t *pkt)
                                 sampler->sFlowFsMaximumHeaderSize);
 
     /* TODO: OpenNSL saves incoming data blocks as an array of structs
-     * (containing {len, data} pairs). Is pointing 'header_bytes' to
+     * containing {len, data} pairs. Is pointing 'header_bytes' to
      * beginning of this array sufficient? */
-    header->header_bytes = (uint8_t *)pkt->pkt_data;
+    header->header_bytes = (uint8_t *)pkt->pkt_data[0].data;
 
     /* Submit the flow sample to be encoded into the next datagram. */
     SFLADD_ELEMENT(&fs, &hdrElem);
@@ -194,6 +227,7 @@ void ops_sflow_write_sampled_pkt(opennsl_pkt_t *pkt)
     ovs_mutex_unlock(&mutex);
 }
 
+/* Set sampling rate in sFlow Agent and also in ASIC. */
 void
 ops_sflow_set_sampling_rate(const int unit, const int port,
                             const int ingress_rate, const int egress_rate)
@@ -202,21 +236,25 @@ ops_sflow_set_sampling_rate(const int unit, const int port,
     opennsl_port_t tempPort = 0;
     opennsl_port_config_t port_config;
     SFLSampler  *sampler;
+    uint32_t    dsIndex;
+    SFLDataSource_instance  dsi;
 
     VLOG_DBG("%s:%d, port: %d, ing: %d, egr: %d", __FUNCTION__, __LINE__, port,
             ingress_rate, egress_rate);
 
     /* Retrieve the port configuration of the unit */
     rc = opennsl_port_config_get (unit, &port_config);
-    if (rc == -1) {
-        VLOG_ERR("[%s:%d]: Failed to retrieve port config", __FUNCTION__, __LINE__);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to retrieve port config. Can't set sampling rate. "
+                "(rc=%s)", opennsl_errmsg(rc));
         return;
     }
 
     if (port) { /* set for specific port */
         rc = opennsl_port_sample_rate_set(unit, port, ingress_rate, egress_rate);
-        if (rc != OPENNSL_E_NONE) {
-            VLOG_ERR("Failed to set sampling rate on port: %d, (error-%d)", port, rc);
+        if (OPENNSL_FAILURE(rc)) {
+            VLOG_ERR("Failed to set sampling rate on port: %d, (error-%s).",
+                    port, opennsl_errmsg(rc));
             return;
         }
 
@@ -225,8 +263,9 @@ ops_sflow_set_sampling_rate(const int unit, const int port,
         OPENNSL_PBMP_ITER (port_config.e, tempPort) {
             opennsl_port_sample_rate_set(unit, tempPort, ingress_rate,
                                     egress_rate);
-            if (rc != OPENNSL_E_NONE) {
-                VLOG_ERR("Failed to set sampling rate on port: %d, (error-%d)", port, rc);
+            if (OPENNSL_FAILURE(rc)) {
+                VLOG_ERR("Failed to set sampling rate on port: %d, (error-%s)",
+                        port, opennsl_errmsg(rc));
                 return;
             }
         }
@@ -234,14 +273,15 @@ ops_sflow_set_sampling_rate(const int unit, const int port,
 
     /* set sampling rate on Sampler corresponding to 'port' */
     if (ops_sflow_agent) {
-        sampler = ops_sflow_agent->samplers;
+        dsIndex = 1000 + sflow_options->sub_id;
+        SFL_DS_SET(dsi, SFL_DSCLASS_PHYSICAL_ENTITY, dsIndex, 0);
+        sampler = sfl_agent_getSampler(ops_sflow_agent, &dsi);
 
         if (sampler == NULL) {
-            VLOG_ERR("[%s:%d]: There is no Sampler for port: %d", __FUNCTION__, __LINE__, port);
+            VLOG_ERR("There is no Sampler for sFlow Agent.");
             return;
         }
 
-        /* TODO: ingress rate or egress rate? Pick ingress, for now. */
         sfl_sampler_set_sFlowFsPacketSamplingRate(sampler, ingress_rate);
     }
 }
@@ -288,19 +328,21 @@ ops_sflow_show (struct unixctl_conn *conn, int argc, const char *argv[],
 
     if (argc > 1) { /* sflow for specific port */
         rc = opennsl_port_sample_rate_get(0, port, &ingress_rate, &egress_rate);
-        if (rc != OPENNSL_E_NONE) {
-            VLOG_ERR("Failed to get sample rate for port: %d", port);
+        if (OPENNSL_FAILURE(rc)) {
+            VLOG_ERR("Failed to get sample rate for port: %d (error-%s)",
+                    port, opennsl_errmsg(rc));
             goto done;
         }
-        ds_put_format(&ds, "\t%2d\t%6d\t\t\t%6d\n", port, ingress_rate, egress_rate);
+        ds_put_format(&ds, "\t%2d\t%6d\t\t%6d\n", port, ingress_rate, egress_rate);
     } else { /* sflow on all ports of switch */
         for(idx = 1; idx <= port; idx++) {
             rc = opennsl_port_sample_rate_get(0, idx, &ingress_rate, &egress_rate);
-            if (rc != OPENNSL_E_NONE) {
-                VLOG_ERR("Failed on port (%d) while getting global sample rate", idx);
+            if (OPENNSL_FAILURE(rc)) {
+                VLOG_ERR("Failed on port (%d) while getting global sample rate "
+                        "(error-%s)", idx, opennsl_errmsg(rc));
                 goto done;
             }
-            ds_put_format(&ds, "\t%2d\t%6d\t\t\t%6d\n", idx, ingress_rate, egress_rate);
+            ds_put_format(&ds, "\t%2d\t%6d\t\t%6d\n", idx, ingress_rate, egress_rate);
         }
     }
 
@@ -347,13 +389,17 @@ ops_sflow_agent_enable(struct ofproto_sflow_options *oso)
     SFLDataSource_instance dsi;
     SFLAddress  agentIP;
     struct in_addr myIP;
+    struct in6_addr myIP6;
     uint32_t    dsIndex;
     time_t      now;
-    const char  *receiver_addr;
+    const char  *collector_ip;
+    char        *port, *vrf;
     uint32_t    rate;
+    int         __af;
+    void        *addr;
 
     if(sflow_options == NULL) {
-        VLOG_ERR("ofproto_sflow_options is NULL");
+        VLOG_DBG("ofproto_sflow_options is NULL. Create new options.");
         sflow_options = xmalloc(sizeof *sflow_options);
         memset (sflow_options, 0, sizeof *sflow_options);
 
@@ -368,19 +414,39 @@ ops_sflow_agent_enable(struct ofproto_sflow_options *oso)
     if (ops_sflow_agent == NULL) {
         ops_sflow_agent = ops_sflow_alloc();
     } else {
-        VLOG_ERR("sFlow Agent is already created. Nothing to do.");
+        VLOG_DBG("sFlow Agent is already created. Nothing to do.");
         return;
     }
 
-    agentIP.type = SFLADDRESSTYPE_IP_V4;
+    /* set IP on sFlow agent. */
+    if (oso->agent_device) {
+        VLOG_DBG("Agent device: %s", oso->agent_device);
+        if (strchr(oso->agent_device, ':'))  {
+            memset(&myIP6, 0, sizeof myIP6);
+            __af = AF_INET6;
+           agentIP.type = SFLADDRESSTYPE_IP_V6;
+           addr = &myIP6;
+        } else {
+            memset(&myIP, 0, sizeof myIP);
+            __af = AF_INET;
+            agentIP.type = SFLADDRESSTYPE_IP_V4;
+           addr = &myIP;
+        }
 
-    memset(&myIP, 0, sizeof myIP);
-    // Agents' source IP. Sent in pkt shipped to Collectors.
-    // TODO: Get interface IP from interface name.
-    if (inet_aton(SFLOW_DFLT_AGENT_IP4, &myIP) == 0) {
-       VLOG_ERR("Invalid src IP for sFlow Agent. Assign 0 and proceed.");
+        if (inet_pton(__af, oso->agent_device, addr) != 1) {
+            VLOG_DBG("sFlow Agent device IP is invalid. Use default.");
+            inet_pton(AF_INET, SFLOW_DFLT_AGENT_IP4, &myIP);
+            agentIP.type = SFLADDRESSTYPE_IP_V4;
+        }
+
+        if (agentIP.type == SFLADDRESSTYPE_IP_V4) {
+            agentIP.address.ip_v4.addr = myIP.s_addr;
+            VLOG_DBG("Agent's IP: %d", agentIP.address.ip_v4.addr);
+        } else {
+            memcpy(agentIP.address.ip_v6.addr, myIP6.s6_addr, 16);
+            VLOG_DBG("Agent's IP6");
+        }
     }
-    agentIP.address.ip_v4.addr = myIP.s_addr;
 
     time (&now);    // current time.
 
@@ -396,9 +462,6 @@ ops_sflow_agent_enable(struct ofproto_sflow_options *oso)
             ops_sflow_agent_error_cb,
             NULL);  /* Each receiver will send pkts to collector. */
 
-    /* TODO: May be Receiver should not be added when sFlow Agent is
-     * created. Perhaps it should be added only when collector ip is
-     * explicitly configured. */
     /* RECEIVER: aka Collector */
     receiver = sfl_agent_addReceiver(ops_sflow_agent);
     sfl_receiver_set_sFlowRcvrOwner(receiver, "Openswitch sFlow Receiver");
@@ -406,9 +469,22 @@ ops_sflow_agent_enable(struct ofproto_sflow_options *oso)
 
     /* Receiver IP settings.
      * TODO: Enhance to support multiple receivers and any port. */
-    SSET_FOR_EACH(receiver_addr, &oso->targets) {
-        VLOG_ERR("sflow: receiver_addr: [%s]", receiver_addr);
-        ops_sflow_set_collector_ip(receiver_addr, SFLOW_COLLECTOR_DFLT_PORT);
+    SSET_FOR_EACH(collector_ip, &oso->targets) {
+        VLOG_DBG("sflow: collector_ip: [%s]", collector_ip);
+
+        // port
+        if ((port = strchr(collector_ip, '/')) != NULL) {
+            *port = '\0';
+            port++;
+            // vrf
+            if ((vrf=strchr(port, '/')) != NULL) {
+                *vrf = '\0';
+            }
+        } else {
+            port = SFLOW_COLLECTOR_DFLT_PORT;
+        }
+
+        ops_sflow_set_collector_ip(collector_ip, port);
     }
 
     /* SAMPLER: OvS lib for sFlow seems to encourage one Sampler per
@@ -432,19 +508,38 @@ ops_sflow_agent_enable(struct ofproto_sflow_options *oso)
     sfl_sampler_set_sFlowFsReceiver(sampler, 1);    // only 1 receiver. Will enhance...
 
     /* Install KNET filters for source and destination sampling */
-    bcmsdk_knet_sflow_source_filter_create(&knet_sflow_source_filter_id);
-    bcmsdk_knet_sflow_dest_filter_create(&knet_sflow_dest_filter_id);
+    bcmsdk_knet_sflow_filter_create(&knet_sflow_source_filter_id, opennslRxReasonSampleSource, "sFlow Source Sample");
+    bcmsdk_knet_sflow_filter_create(&knet_sflow_dest_filter_id, opennslRxReasonSampleDest, "sFlow Dest Sample");
+
+    VLOG_DBG("knet filter id --> source:%d, dest:%d", knet_sflow_source_filter_id, knet_sflow_dest_filter_id);
 }
 
 void
 ops_sflow_agent_disable()
 {
     if (ops_sflow_agent) {
-        sfl_agent_release(ops_sflow_agent);
+        VLOG_DBG("KNET filter IDs: source %d, dest %d",
+                knet_sflow_source_filter_id, knet_sflow_dest_filter_id);
+
+        /* Clear sampling rates on ASIC */
+        if (knet_sflow_source_filter_id || knet_sflow_dest_filter_id) {
+            ops_sflow_set_sampling_rate(0, 0, 0, 0);
+        }
 
         /* Remove KNET filters */
-        bcmsdk_knet_filter_delete("sflow source filter", 0, knet_sflow_source_filter_id);
-        bcmsdk_knet_filter_delete("sflow dest filter", 0, knet_sflow_dest_filter_id);
+        if (knet_sflow_source_filter_id > 1) {
+            bcmsdk_knet_filter_delete("sflow source filter", 0, knet_sflow_source_filter_id);
+            knet_sflow_source_filter_id = 0;
+        }
+
+        if (knet_sflow_dest_filter_id > 1) {
+            bcmsdk_knet_filter_delete("sflow dest filter", 0, knet_sflow_dest_filter_id);
+            knet_sflow_dest_filter_id = 0;
+        }
+
+        /* Delete sFlow Agent */
+        sfl_agent_release(ops_sflow_agent);
+        ops_sflow_agent = NULL;
     }
 }
 
@@ -465,7 +560,7 @@ ops_sflow_agent_fn(struct unixctl_conn *conn, int argc, const char *argv[],
 }
 
 void
-ops_sflow_agent_ip(const char *ip, const int __af, const bool set)
+ops_sflow_agent_ip(const char *ip, const int __af)
 {
     struct in_addr addr;
     struct in6_addr addr6;
@@ -474,8 +569,7 @@ ops_sflow_agent_ip(const char *ip, const int __af, const bool set)
     SFLAddress  myIP;
 
     if (ops_sflow_agent == NULL) {
-        VLOG_ERR("%s:%d; sFlow Agent is not running. Can't set Agent Address.",
-                __FUNCTION__, __LINE__);
+        VLOG_DBG("sFlow Agent is not running. Can't set Agent Address.");
         return;
     }
 
@@ -488,8 +582,7 @@ ops_sflow_agent_ip(const char *ip, const int __af, const bool set)
 
     /* validate input IP addr */
     if (inet_pton(__af, ip, ptr) <= 0) {
-        VLOG_ERR("%s:%d; Invalid interface address. Failed to assign IP.",
-                __FUNCTION__, __LINE__);
+        VLOG_ERR("Invalid interface address. Failed to assign IP.");
         return;
     }
 
@@ -503,8 +596,7 @@ ops_sflow_agent_ip(const char *ip, const int __af, const bool set)
 
     sfl_agent_set_agentAddress(ops_sflow_agent, &myIP);
 
-    VLOG_ERR("%s:%d; Successfully set sFlow Agent Address to=%s",
-            __FUNCTION__, __LINE__, ip);
+    VLOG_DBG("Successfully set sFlow Agent Address to=%s", ip);
 }
 
 /* Handles '[no] sflow agent-interface <intf-name>' in CLI */
@@ -514,13 +606,10 @@ ops_sflow_agent_intf(struct unixctl_conn *conn, int argc, const char *argv[],
 {
     char *ip;
     int  __af;
-    bool set = false;
 
     if (strncmp(argv[1], "delete", 6) == 0) {
-        set = false;
         ip = SFLOW_DFLT_AGENT_IP4;
     } else {
-        set = true;
         ip = (char *)argv[2];
     }
 
@@ -531,11 +620,12 @@ ops_sflow_agent_intf(struct unixctl_conn *conn, int argc, const char *argv[],
         __af = AF_INET;
     }
 
-    ops_sflow_agent_ip(ip, __af, set);
+    ops_sflow_agent_ip(ip, __af);
 
     unixctl_command_reply(conn, '\0');
 }
 
+/* Set an IP address on receiver/collector. */
 void
 ops_sflow_set_collector_ip(const char *ip, const char *port)
 {
@@ -555,16 +645,16 @@ ops_sflow_set_collector_ip(const char *ip, const char *port)
     /* v6 address */
     if (strchr(ip, ':')) {
         memset(&myIP6, 0, sizeof myIP6);
-        if (inet_pton(AF_INET6, ip, &myIP6) < 0) {
-            VLOG_ERR("Invalid collector IP:%s", ip);
+        if (inet_pton(AF_INET6, ip, &myIP6) <= 0) {
+            VLOG_ERR("Invalid collector IP:%s", ip); /* TODO: release agent? */
             return;
         }
         receiverIP.type = SFLADDRESSTYPE_IP_V6;
         memcpy(receiverIP.address.ip_v6.addr, myIP6.s6_addr, 16);
     } else { /* v4 address */
         memset(&myIP, 0, sizeof myIP);
-        if (inet_pton(AF_INET, ip, &myIP) < 0) {
-            VLOG_ERR("Invalid collector IP:%s", ip);
+        if (inet_pton(AF_INET, ip, &myIP) <= 0) {
+            VLOG_ERR("Invalid collector IP:%s", ip); /* TODO: release agent? */
             return;
         }
         receiverIP.type = SFLADDRESSTYPE_IP_V4;
@@ -581,7 +671,7 @@ ops_sflow_set_collector_ip(const char *ip, const char *port)
 
     sfl_receiver_set_sFlowRcvrPort(receiver, portN);
 
-    VLOG_ERR("Set IP/port (%s/%d) on receiver", ip, portN);
+    VLOG_DBG("Set IP/port (%s/%d) on receiver", ip, portN);
 }
 
 /* This function creates a receiver and sets an IP for it. */
