@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015-2016 Hewlett Packard Enterprise Development Company, L.P.
+ * (C) Copyright 2015-2016 Hewlett Packard Enterprise Development Company, L.P.
  * All Rights Reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -42,8 +42,6 @@ VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
 #define OPENNSL_RX_REASON_GET(_reasons, _reason) \
      (((_reasons).pbits[(_reason)/32]) & (1U << ((_reason)%32)))
 
-extern SFLAgent *ops_sflow_agent;
-
 extern int
 opennsl_rx_register(int, const char *, opennsl_rx_cb_f, uint8, void *, uint32);
 
@@ -54,7 +52,6 @@ opennsl_rx_register(int, const char *, opennsl_rx_cb_f, uint8, void *, uint32);
  * incoming rate is 1 pkt/s as in case of 'ping'). Eventually, a different
  * thread will process incoming pkts.
  */
-
 opennsl_rx_t opennsl_rx_callback(int unit, opennsl_pkt_t *pkt, void *cookie)
 {
     if (!pkt) {
@@ -62,10 +59,12 @@ opennsl_rx_t opennsl_rx_callback(int unit, opennsl_pkt_t *pkt, void *cookie)
         return OPENNSL_RX_HANDLED;
     }
 
+    /* sFlow's sampled pkt */
     if (OPENNSL_RX_REASON_GET(pkt->reserved25, opennslRxReasonSampleDest) ||
         OPENNSL_RX_REASON_GET(pkt->reserved25, opennslRxReasonSampleSource)) {
 
-        VLOG_DBG("%s:%d; sFlow's sampled pkt.", __FUNCTION__, __LINE__);
+        /* Uncomment to print the sampled pkt info */
+        print_pkt(pkt);
 
         /* Write incoming data to Receivers buffer. When buffer is full,
          * data is sent to Collectors. */

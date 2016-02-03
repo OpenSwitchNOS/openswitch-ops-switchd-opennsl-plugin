@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Hewlett-Packard Development Company, L.P.
+ * (C) Copyright 2015-2016 Hewlett Packard Enterprise Development Company, L.P.
  * All Rights Reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -23,8 +23,6 @@
 #include <ofproto/ofproto-provider.h>
 #include <opennsl/types.h>
 #include <opennsl/l3.h>
-
-#include "ops-sflow.h"
 
 /* No bfd/cfm status change. */
 #define NO_STATUS_CHANGE -1
