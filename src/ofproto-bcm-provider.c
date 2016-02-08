@@ -542,6 +542,7 @@ bundle_destroy(struct ofbundle *bundle)
     if (!bundle) {
         return;
     }
+    VLOG_INFO("Sourav : bundle destroy, destroying bundle = %s\n", bundle->name);
 
     LIST_FOR_EACH_SAFE (port, next_port, bundle_node, &bundle->ports) {
 
@@ -973,7 +974,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     }
 
     if (!bundle) {
-        VLOG_DBG("  creating NEW bundle %s", s->name);
+        VLOG_INFO("Sourav :  creating NEW bundle %s", s->name);
 
         bundle = xmalloc(sizeof *bundle);
 
@@ -999,6 +1000,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
 
         bundle->ip4_address = NULL;
         bundle->ip6_address = NULL;
+        bundle->l3_lag_enabled = false;
         hmap_init(&bundle->secondary_ip4addr);
         hmap_init(&bundle->secondary_ip6addr);
     }
@@ -1008,7 +1010,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         bundle->name = xstrdup(s->name);
     }
 
-    VLOG_INFO("%s: bundle->name=%s, bundle->bond_hw_handle=%d, "
+    VLOG_INFO("Sourav : %s: bundle->name=%s, bundle->bond_hw_handle=%d, "
              "n_slaves=%d, s->bond=%p, "
              "s->hw_bond_should_exist=%d, "
              "s->bond_handle_alloc_only=%d",
@@ -1028,10 +1030,12 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         /* Create a h/w LAG if there is more than one member present
            in the bundle or if requested by upper layer. */
         bcmsdk_create_lag(&bundle->bond_hw_handle);
-        VLOG_DBG("%s: Allocated bond_hw_handle# %d for port %s",
+        bundle->l3_lag_enabled = true;
+        VLOG_INFO("%s: Allocated bond_hw_handle# %d for port %s",
                  __FUNCTION__, bundle->bond_hw_handle, s->name);
         if (s->bond_handle_alloc_only) {
-            return 0;
+            VLOG_INFO("Sourav : Leaving bundle set function\n");
+//            return 0;
         }
     } else if ((-1 != bundle->bond_hw_handle) &&
                (false == s->hw_bond_should_exist)) {
@@ -1040,35 +1044,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         bundle->bond_hw_handle = -1;
     }
 
-    /* Update set of ports. */
-    ok = true;
-    for (i = 0; i < s->n_slaves; i++) {
-        if (!bundle_add_port(bundle, s->slaves[i], NULL)) {
-            ok = false;
-        }
-    }
-    if (!ok || list_size(&bundle->ports) != s->n_slaves) {
-        struct bcmsdk_provider_ofport_node *next_port;
-
-        LIST_FOR_EACH_SAFE (port, next_port, bundle_node, &bundle->ports) {
-            for (i = 0; i < s->n_slaves; i++) {
-                if (s->slaves[i] == port->up.ofp_port) {
-                    goto found;
-                }
-            }
-
-            bundle_del_port(port);
-        found: ;
-        }
-    }
-    ovs_assert(list_size(&bundle->ports) <= s->n_slaves);
-
-    if (list_is_empty(&bundle->ports)) {
-        bundle_destroy(bundle);
-        return 0;
-    }
-
-    VLOG_DBG("s->n_slaves: %zu\n", s->n_slaves);
+    VLOG_INFO("Sourav : Above vrf if s->n_slaves: %zu\n", s->n_slaves);
 
     /* For l3-loopback interfaces, just configure ips */
     port = get_ofp_port(bundle->ofproto, s->slaves[0]);
@@ -1082,21 +1058,22 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     /* for now, we don't support L3 on top of LAG */
     if (ofproto->vrf &&
         (ofproto->vrf_id != BCM_MAX_VRFS)
-        && s->n_slaves == 1) {
+        && s->n_slaves >= 1) {
         struct bcmsdk_provider_ofport_node *port;
         int hw_unit, hw_port;
         opennsl_vlan_t vlan_id;
         uint8_t mac[ETH_ADDR_LEN];
 
+        VLOG_INFO("Sourav : s->n_slaves = %zu\n", s->n_slaves);
         port = get_ofp_port(bundle->ofproto, s->slaves[0]);
         if (!port) {
             VLOG_ERR("slave is not in the ports\n");
         }
 
         type = netdev_get_type(port->up.netdev);
-        VLOG_DBG("type = %s\n", type);
+        VLOG_INFO("Sourav : type = %s\n", type);
         netdev_bcmsdk_get_hw_info(port->up.netdev, &hw_unit, &hw_port, mac);
-        VLOG_DBG("Got all important info hw_unit = %d, hw_port = %d\n", hw_unit, hw_port);
+        VLOG_INFO("Sourav : Got all important info hw_unit = %d, hw_port = %d\n", hw_unit, hw_port);
 
         /* For internal vlan interfaces, we get vlanid from tag column
          * For regular l3 interfaces we will get from internal vlan id from
@@ -1113,17 +1090,19 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                                    "internal_vlan_id", 0);
         }
 
-        if (bundle->l3_intf) {
+        if (bundle->l3_intf && bundle->l3_lag_enabled == false) {
+            VLOG_INFO("Sourav : destroying l3 interface for %s\n", bundle->name);
             /* if reserved vlan changed/removed or if port status is disabled */
             if (bundle->l3_intf->l3a_vid != vlan_id || !s->enable) {
                 VLOG_DBG("call disable s-enable = %d or vid(%d) != vlan_id(%d)\n",
                            s->enable, bundle->l3_intf->l3a_vid, vlan_id);
                 if (strcmp(type, OVSREC_INTERFACE_TYPE_VLANSUBINT) == 0) {
-                    VLOG_DBG("disable l3 subinterface");
+                    VLOG_INFO("disable l3 subinterface\n");
                     ops_routing_disable_l3_subinterface(hw_unit, hw_port,
                                                         bundle->l3_intf,
                                                         port->up.netdev);
                 } else if (strcmp(type, OVSREC_INTERFACE_TYPE_SYSTEM) == 0) {
+                    VLOG_INFO("Sourav : disable l3 interface %s\n", bundle->name);
                     ops_routing_disable_l3_interface(hw_unit, hw_port,
                                                      bundle->l3_intf,
                                                      port->up.netdev);
@@ -1141,13 +1120,21 @@ bundle_set(struct ofproto *ofproto_, void *aux,
             /* If interface type is not internal create l3 interface, else
              * create an l3 vlan interface on every hw_unit. */
             if (strcmp(type, OVSREC_INTERFACE_TYPE_SYSTEM) == 0) {
-                VLOG_DBG("enable system l3 interfaces\n");
+                VLOG_INFO("Sourav : enable system l3 interfaces, or L3 lag\n");
+                VLOG_INFO("Sourav : Creating l3 interface for bundle %s", bundle->name);
                 bundle->l3_intf = ops_routing_enable_l3_interface(
-                        hw_unit, hw_port, ofproto->vrf_id, vlan_id,
-                        mac, port->up.netdev);
+                            hw_unit, hw_port, ofproto->vrf_id, vlan_id,
+                            mac, port->up.netdev);
                 if (bundle->l3_intf) {
                     bundle->hw_unit = hw_unit;
                     bundle->hw_port = hw_port;
+                    VLOG_INFO("Sourav : s->name = %s, bundle->name = %s,slave name = %s\n",
+                               s->name, bundle->name, netdev_get_name(port->up.netdev));
+                    if (strcmp(bundle->name,netdev_get_name(port->up.netdev)) != 0) {
+                        VLOG_INFO("Sourav : l3_lag_enabled false set to true for %s\n",
+                                   bundle->name);
+                        bundle->l3_lag_enabled = true;
+                    }
                 }
             } else if (strcmp(type, OVSREC_INTERFACE_TYPE_VLANSUBINT) == 0) {
                 VLOG_DBG("enable subinetrface l3\n");
@@ -1168,6 +1155,80 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                 }
             }
         }
+        VLOG_INFO("Sourav : Got all important info hw_unit = %d, hw_port = %d\n", hw_unit, hw_port);
+        VLOG_INFO("Sourav : 10. list_size(&bundle->ports) = %zu, s->n_slaves %zu\n",
+                       list_size(&bundle->ports), s->n_slaves);
+        /* Update the l3 interface with new LAG membership list */
+        if ((list_size(&bundle->ports) != s->n_slaves) &&
+             bundle->l3_intf &&
+             bundle->l3_lag_enabled == true) {
+            struct bcmsdk_provider_ofport_node *next_port;
+            opennsl_pbmp_t lag_pbmp;
+            OPENNSL_PBMP_CLEAR(lag_pbmp);
+
+            VLOG_INFO("Sourav : list_size(&bundle->ports) = %zu, s->n_slaves %zu\n",
+                       list_size(&bundle->ports), s->n_slaves);
+            /* Add/delete vlan bit map from bundle->l3_intf->l3a_vid
+               Also add/delete knet */
+            /* if new port is added the bundle previous count is less */
+            if (list_size(&bundle->ports) < s->n_slaves) {
+                for (i = 0; i < s->n_slaves; i++) {
+                    LIST_FOR_EACH_SAFE (port, next_port, bundle_node, &bundle->ports) {
+                        if (s->slaves[i] == port->up.ofp_port) {
+                            goto found2;
+                        }
+                    }
+
+                    OPENNSL_PBMP_CLEAR(lag_pbmp);
+                    port = get_ofp_port(bundle->ofproto, s->slaves[i]);
+                    if (!port) {
+                        VLOG_ERR("slave is not in the ports\n");
+                    }
+                    VLOG_INFO("Sourav : Working on port %s for add", netdev_get_name(port->up.netdev));
+                    netdev_bcmsdk_get_hw_info(port->up.netdev, &hw_unit, &hw_port, mac);
+                    OPENNSL_PBMP_PORT_ADD(lag_pbmp, hw_port);
+                    /* add bitmap */
+                    bcmsdk_add_native_untagged_ports(bundle->l3_intf->l3a_vid,
+                            &lag_pbmp,
+                            true);
+                    /* Add knet */
+                    handle_bcmsdk_knet_l3_port_filters(port->up.netdev,
+                            bundle->l3_intf->l3a_vid,
+                            true);
+                    found2: ;
+                }
+            } else if (list_size(&bundle->ports) > s->n_slaves) {
+                LIST_FOR_EACH_SAFE (port, next_port, bundle_node, &bundle->ports) {
+                    for (i = 0; i < s->n_slaves; i++) {
+                        if (s->slaves[i] == port->up.ofp_port) {
+                            goto found1;
+                        }
+                    }
+
+                    OPENNSL_PBMP_CLEAR(lag_pbmp);
+                    netdev_bcmsdk_get_hw_info(port->up.netdev, &hw_unit, &hw_port, mac);
+                    if (s->n_slaves == 0) {
+                        VLOG_INFO("Sourav : disable l3 interface %s\n", bundle->name);
+                        ops_routing_disable_l3_interface(hw_unit, hw_port,
+                                bundle->l3_intf,
+                                port->up.netdev);
+                        bundle->l3_lag_enabled = false;
+                    } else {
+                        VLOG_INFO("Sourav : Working on port %s for delete", netdev_get_name(port->up.netdev));
+                        OPENNSL_PBMP_PORT_ADD(lag_pbmp, hw_port);
+                        /* Delete bitmap */
+                        bcmsdk_del_native_untagged_ports(bundle->l3_intf->l3a_vid,
+                                &lag_pbmp,
+                                true);
+                        /* Delete knet */
+                        handle_bcmsdk_knet_l3_port_filters(port->up.netdev,
+                                bundle->l3_intf->l3a_vid,
+                                false);
+                    }
+                    found1: ;
+                }
+            }
+        }
     }
 
     /* Check for ip changes */
@@ -1185,6 +1246,47 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     if (opt_arg != NULL) {
        VLOG_DBG("BOND config options option_arg= %s", opt_arg);
     }
+
+    VLOG_INFO("Sourav :1.  list_size(&bundle->ports) = %zu, s->n_slaves %zu\n",
+               list_size(&bundle->ports), s->n_slaves);
+
+    /* Update set of ports. */
+    ok = true;
+    for (i = 0; i < s->n_slaves; i++) {
+        if (!bundle_add_port(bundle, s->slaves[i], NULL)) {
+            ok = false;
+            VLOG_INFO("Sourav : ok is false\n");
+        }
+    }
+
+    VLOG_INFO("Sourav :2.  list_size(&bundle->ports) = %zu, s->n_slaves %zu\n",
+               list_size(&bundle->ports), s->n_slaves);
+
+    if (!ok || list_size(&bundle->ports) != s->n_slaves) {
+        struct bcmsdk_provider_ofport_node *next_port;
+
+        LIST_FOR_EACH_SAFE (port, next_port, bundle_node, &bundle->ports) {
+            for (i = 0; i < s->n_slaves; i++) {
+                if (s->slaves[i] == port->up.ofp_port) {
+                    goto found;
+                }
+            }
+
+            bundle_del_port(port);
+        found: ;
+        }
+    }
+    VLOG_INFO("Sourav :3.  list_size(&bundle->ports) = %zu, s->n_slaves %zu\n",
+               list_size(&bundle->ports), s->n_slaves);
+
+    ovs_assert(list_size(&bundle->ports) <= s->n_slaves);
+
+    if (list_is_empty(&bundle->ports)) {
+        bundle_destroy(bundle);
+        return 0;
+    }
+    VLOG_INFO("Sourav :4.  list_size(&bundle->ports) = %zu, s->n_slaves %zu\n",
+               list_size(&bundle->ports), s->n_slaves);
 
 
     /* Go through the list of physical interfaces (slaves) that
@@ -1231,6 +1333,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                                        tx_en_pbm);
         bcmsdk_destroy_pbmp(tx_en_pbm);
     }
+
 
     /* NOTE: "bundle" holds previous VLAN configuration (if any).
      * "s" holds current desired VLAN configuration. */
@@ -1430,6 +1533,8 @@ done:
     /* Done with VLAN configuration.  Save the new information. */
     bundle->vlan_mode = s->vlan_mode;
     bundle->vlan = s->vlan;
+    VLOG_INFO("Sourav : bundle->vlan = %d\n", bundle->vlan);
+
     if (bundle->pbm != NULL) {
         bcmsdk_destroy_pbmp(bundle->pbm);
     }
@@ -1451,9 +1556,12 @@ bundle_remove(struct ofport *port_ OVS_UNUSED)
     struct ofbundle *bundle = port->bundle;
 
     if (bundle) {
-        bundle_del_port(port);
-        if (list_is_empty(&bundle->ports)) {
-            bundle_destroy(bundle);
+        VLOG_INFO("Sourav : bundle remove, removing bundle %s\n", bundle->name);
+        if (bundle->l3_lag_enabled == false) {
+            bundle_del_port(port);
+            if (list_is_empty(&bundle->ports)) {
+                bundle_destroy(bundle);
+            }
         }
     }
 }
@@ -1861,7 +1969,8 @@ add_l3_host_entry(const struct ofproto *ofproto_, void *aux,
                                    ip_addr, next_hop_mac_addr,
                                    port_bundle->l3_intf->l3a_intf_id,
                                    l3_egress_id,
-                                   port_bundle->l3_intf->l3a_vid);
+                                   port_bundle->l3_intf->l3a_vid,
+                                   port_bundle->bond_hw_handle);
     if (rc) {
         VLOG_ERR("Failed to add L3 host entry for ip %s", ip_addr);
     }
