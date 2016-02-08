@@ -279,6 +279,7 @@ ops_routing_enable_l3_interface(int hw_unit, opennsl_port_t hw_port,
     opennsl_l3_intf_t *l3_intf;
 
     /* VLAN config */
+    VLOG_INFO("Sourav : Create vlan %d\n", vlan_id);
     rc = bcmsdk_create_vlan(vlan_id, true);
     if (rc < 0) {
         VLOG_ERR("Failed at bcmsdk_create_vlan: unit=%d port=%d vlan=%d rc=%d",
@@ -317,6 +318,8 @@ ops_routing_enable_l3_interface(int hw_unit, opennsl_port_t hw_port,
 
     SW_L3_DBG("Enabled L3 on unit=%d port=%d vlan=%d vrf=%d",
             hw_unit, hw_port, vlan_id, vrf_id);
+    VLOG_INFO("Sourav : Enabled L3 on unit=%d port=%d vlan=%d vrf=%d",
+            hw_unit, hw_port, vlan_id, vrf_id);
 
     handle_bcmsdk_knet_l3_port_filters(netdev, vlan_id, true);
     return l3_intf;
@@ -329,6 +332,7 @@ failed_allocating_l3_intf:
     OPENNSL_PBMP_PORT_ADD(pbmp, hw_port);
     bcmsdk_del_native_untagged_ports(vlan_id, &pbmp, true);
 
+    VLOG_INFO("Sourav : destroy vlan\n");
     rc = bcmsdk_destroy_vlan(vlan_id, true);
     if (rc < 0) {
         VLOG_ERR("Failed at bcmsdk_destroy_vlan: unit=%d port=%d vlan=%d rc=%d",
@@ -703,7 +707,8 @@ ops_routing_add_host_entry(int hw_unit, opennsl_port_t hw_port,
                            char *ip_addr, char *next_hop_mac_addr,
                            opennsl_if_t l3_intf_id,
                            opennsl_if_t *l3_egress_id,
-                           opennsl_vlan_t vlan_id)
+                           opennsl_vlan_t vlan_id,
+                           int trunk_id)
 {
     opennsl_error_t rc = OPENNSL_E_NONE;
     opennsl_l3_egress_t egress_object;
@@ -734,7 +739,12 @@ ops_routing_add_host_entry(int hw_unit, opennsl_port_t hw_port,
     /* Copy the nexthop destmac, set dest port and index of L3_INTF table
      * which is created above */
     egress_object.intf = l3_intf_id;
-    egress_object.port = port;
+    /* LAG l3 */
+    if (trunk_id != -1) {
+        egress_object.trunk = trunk_id;
+    } else {
+        egress_object.port = port;
+    }
 
     if (ether_mac != NULL) {
         memcpy(egress_object.mac_addr, ether_mac, ETH_ALEN);
