@@ -42,7 +42,12 @@
 #include "netdev-bcmsdk.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_routing);
+/* ecmp resiliency flag */
+bool ecmp_resilient_flag = false;
 
+static int
+l3ecmp_egress_resilient_set_reset(int unit, opennsl_l3_egress_ecmp_t *ecmp,
+                          int intf_count, opennsl_if_t *info, void *user_data);
 opennsl_if_t local_nhid;
 /* fake MAC to create a local_nhid */
 opennsl_mac_t LOCAL_MAC =  {0x0,0x0,0x01,0x02,0x03,0x04};
@@ -57,7 +62,15 @@ struct ops_route_table{
 };
 
 struct ops_route_table ops_rtable;
-
+static void
+ecmp_resilient_set_reset(opennsl_l3_egress_ecmp_t *ecmp){
+    if( ecmp == NULL){
+        VLOG_ERR("ECMP group is NULL");
+        return;
+    }
+    ecmp->dynamic_mode = ecmp_resilient_flag ? OPENNSL_L3_ECMP_DYNAMIC_MODE_RESILIENT : 0;
+    ecmp->dynamic_size = ecmp_resilient_flag ? ECMP_DYN_SIZE_512 : ECMP_DYN_SIZE_ZERO;
+}
 int
 ops_l3_init(int unit)
 {
@@ -208,6 +221,8 @@ ops_l3_init(int unit)
                  unit, opennsl_errmsg(rc));
         return 1;
     }
+    /* Enabling the ecmp resiliency initially*/
+    ecmp_resilient_flag = true;
 
     /* FIXME : Generate the seed from the system MAC? */
     rc = opennsl_switch_control_set(unit, opennslSwitchHashSeed0, 0x12345678);
@@ -994,6 +1009,7 @@ ops_create_or_update_ecmp_object(int hw_unit, struct ops_route *routep,
         opennsl_l3_egress_ecmp_t_init(&ecmp_grp);
         ecmp_grp.flags = (OPENNSL_L3_REPLACE | OPENNSL_L3_WITH_ID);
         ecmp_grp.ecmp_intf = *ecmp_intfp;
+        ecmp_resilient_set_reset(&ecmp_grp);
         rc = opennsl_l3_egress_ecmp_create(hw_unit, &ecmp_grp, nh_count,
                                            egress_obj);
         if (OPENNSL_FAILURE(rc)) {
@@ -1003,6 +1019,7 @@ ops_create_or_update_ecmp_object(int hw_unit, struct ops_route *routep,
         }
     } else {
         opennsl_l3_egress_ecmp_t_init(&ecmp_grp);
+        ecmp_resilient_set_reset(&ecmp_grp);
         rc = opennsl_l3_egress_ecmp_create(hw_unit, &ecmp_grp, nh_count,
                                            egress_obj);
         if (OPENNSL_FAILURE(rc)) {
@@ -1252,7 +1269,7 @@ ops_delete_nh_entry(int hw_unit, opennsl_vrf_t vrf_id,
             /* update the ecmp table */
             l3_intf = routep->l3a_intf;
             rc = ops_create_or_update_ecmp_object(hw_unit, ops_routep,
-                                                 &l3_intf, false);
+                                                 &l3_intf, true);
             if (OPS_FAILURE(rc)) {
                 VLOG_ERR("Failed to update ecmp object for route %s: %s",
                               ops_routep->prefix, opennsl_errmsg(rc));
@@ -1467,6 +1484,14 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool enable)
         hash_v4 |= OPENNSL_HASH_FIELD_IP4DST_LO | OPENNSL_HASH_FIELD_IP4DST_HI;
         hash_v6 |= OPENNSL_HASH_FIELD_IP6DST_LO | OPENNSL_HASH_FIELD_IP6DST_HI;
     }
+    if ((hash & OFPROTO_ECMP_HASH_RESILIENT)) {
+        ecmp_resilient_flag = enable ? true : false;
+        rc = opennsl_l3_egress_ecmp_traverse(hw_unit, l3ecmp_egress_resilient_set_reset, NULL);
+        if (OPENNSL_FAILURE(rc)) {
+            VLOG_ERR("Failed to traverse ECMP groups");
+        }
+    }
+
 
     if (enable) {
         cur_hash_ip4 |= hash_v4;
@@ -2117,6 +2142,8 @@ l3ecmp_egress_print(int unit, opennsl_l3_egress_ecmp_t *ecmp,
     int idx;
     struct ds *pds = (struct ds *)user_data;
     ds_put_format(pds, "Multipath Egress Object %d\n", ecmp->ecmp_intf);
+    ds_put_format(pds, "ECMP Resilient %s\n", ecmp->dynamic_mode ? "TRUE": "FALSE");
+    ds_put_format(pds, "dynamic size %d\n", ecmp->dynamic_size);
     ds_put_format(pds, "Interfaces:");
 
     for (idx = 0; idx < intf_count; idx++) {
@@ -2125,10 +2152,27 @@ l3ecmp_egress_print(int unit, opennsl_l3_egress_ecmp_t *ecmp,
             ds_put_format(pds, "\n           ");
         }
     }
-
     ds_put_format(pds, "\n");
+
     return 0;
 } /*l3ecmp_egress_print */
+
+static int
+l3ecmp_egress_resilient_set_reset(int unit, opennsl_l3_egress_ecmp_t *ecmp,
+                    int intf_count, opennsl_if_t *info, void *user_data)
+{
+    int idx;
+    opennsl_if_t egress_obj[MAX_NEXTHOPS_PER_ROUTE];
+    ecmp_resilient_set_reset(ecmp);
+    ecmp->flags = (OPENNSL_L3_REPLACE | OPENNSL_L3_WITH_ID);
+    for (idx = 0; idx < intf_count; idx++) {
+        egress_obj[idx] = info[idx];
+    }
+    /*updating the egress object based on whether the ecmp resilient flag is set or reset*/
+    opennsl_l3_egress_ecmp_create(unit , ecmp, intf_count, egress_obj);
+
+    return 0;
+} /*l3ecmp_egress_resilient_set_reset */
 
 void
 ops_l3ecmp_egress_dump(struct ds *ds, int ecmpid)
