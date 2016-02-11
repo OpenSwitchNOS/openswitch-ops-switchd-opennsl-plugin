@@ -269,6 +269,56 @@ ops_l3_init(int unit)
     return 0;
 }
 
+/* Add a given MAC and VID to the L2 forwarding database. */
+int
+ops_l2_addr_add(int hw_unit, opennsl_port_t port, opennsl_mac_t mac,
+                opennsl_vlan_t vid)
+{
+   opennsl_error_t rc;
+   opennsl_l2_addr_t l2addr;
+
+      /* Check whether the station exists */
+   rc = opennsl_l2_addr_get(hw_unit, mac, vlan, &l2addr);
+
+   if (rc == OPENNSL_E_NONE) {
+      opennsl_l2_addr_t_init(&l2addr, mac, vid);
+
+      if (port != -1) {
+         l2addr.port = port;
+      }
+
+      /* Flags = L3 Interface MAC | Static entry */
+      l2addr.flags = (OPENNSL_L2_L3LOOKUP | OPENNSL_L2_STATIC);
+
+      rc = opennsl_l2_addr_add(hw_unit, &l2addr);
+      if (rc != OPENNSL_E_NONE) {
+         return rc;
+      }
+   } else {
+   }
+
+
+   return OPENNSL_E_NONE;
+}
+
+/* Delete a given MAC and VID from the L2 forwarding database. */
+int
+ops_l2_addr_delete(int hw_unit, opennsl_mac_t mac, opennsl_vlan_t vlan)
+{
+   opennsl_error_t rc;
+   opennsl_l2_addr_t l2addr;
+
+   /* Check whether the station exists */
+   rc = opennsl_l2_addr_get(hw_unit, mac, vlan, &l2addr);
+
+   if (rc == OPENNSL_E_NONE) {
+      rc = opennsl_l2_addr_delete(hw_unit, mac, vlan);
+   }
+
+   return rc;
+}
+
+
 opennsl_l3_intf_t *
 ops_routing_enable_l3_interface(int hw_unit, opennsl_port_t hw_port,
                                 opennsl_vrf_t vrf_id, opennsl_vlan_t vlan_id,
@@ -304,7 +354,11 @@ ops_routing_enable_l3_interface(int hw_unit, opennsl_port_t hw_port,
     opennsl_l3_intf_t_init(l3_intf);
     l3_intf->l3a_vrf = vrf_id;
     l3_intf->l3a_intf_id = vlan_id;
+#if 0
     l3_intf->l3a_flags = OPENNSL_L3_ADD_TO_ARL | OPENNSL_L3_WITH_ID;
+#else
+    l3_intf->l3a_flags = OPENNSL_L3_WITH_ID;
+#endif
     memcpy(l3_intf->l3a_mac_addr, mac, ETH_ALEN);
     l3_intf->l3a_vid = vlan_id;
 
@@ -317,6 +371,18 @@ ops_routing_enable_l3_interface(int hw_unit, opennsl_port_t hw_port,
 
     SW_L3_DBG("Enabled L3 on unit=%d port=%d vlan=%d vrf=%d",
             hw_unit, hw_port, vlan_id, vrf_id);
+
+    /* Add the mac/vlan in l2 table */
+    rc = ops_l2_addr_add(hw_unit, hw_port, l3_intf->l3a_mac_addr, vlan_id);
+    if (rc != OPENNSL_E_NONE) {
+        VLOG_ERR("l2_addr_add failed: unit=%d port=%d vlan=%d vrf=%d rc=%s",
+                 hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
+        goto failed_l3_intf_create;
+    }
+    else {
+        VLOG_DBG("l2_addr_add passed: unit=%d port=%d vlan=%d vrf=%d rc=%s",
+                 hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
+    }
 
     handle_bcmsdk_knet_l3_port_filters(netdev, vlan_id, true);
     return l3_intf;
@@ -377,7 +443,11 @@ ops_routing_enable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
     opennsl_l3_intf_t_init(l3_intf);
     l3_intf->l3a_vrf = vrf_id;
     l3_intf->l3a_intf_id = vlan_id;
+#if 0
     l3_intf->l3a_flags = OPENNSL_L3_ADD_TO_ARL | OPENNSL_L3_WITH_ID;
+#else
+    l3_intf->l3a_flags = OPENNSL_L3_WITH_ID;
+#endif
     memcpy(l3_intf->l3a_mac_addr, mac, ETH_ALEN);
     l3_intf->l3a_vid = vlan_id;
 
@@ -391,6 +461,18 @@ ops_routing_enable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
 
     SW_L3_DBG("Enabled L3 on unit=%d port=%d vlan=%d vrf=%d",
             hw_unit, hw_port, vlan_id, vrf_id);
+
+    /* Add the mac/vlan in l2 table */
+    rc = ops_l2_addr_add(hw_unit, hw_port, l3_intf->l3a_mac_addr, vlan_id);
+    if (rc != OPENNSL_E_NONE) {
+        VLOG_ERR("l2_addr_add failed: unit=%d port=%d vlan=%d vrf=%d rc=%s",
+                 hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
+        goto failed_l3_intf_create;
+    }
+    else {
+        VLOG_DBG("l2_addr_add passed: unit=%d port=%d vlan=%d vrf=%d rc=%s",
+                 hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
+    }
 
     VLOG_DBG("Create knet filter\n");
     handle_bcmsdk_knet_subinterface_filters(netdev, true);
@@ -425,6 +507,17 @@ ops_routing_disable_l3_interface(int hw_unit, opennsl_port_t hw_port,
     opennsl_vrf_t vrf_id = l3_intf->l3a_vrf;
     opennsl_pbmp_t pbmp;
 
+    /* Remove the mac/vlan from l2 table */
+    rc = ops_l2_addr_delete(hw_unit, l3_intf->l3a_mac_addr, vlan_id);
+    if (rc != OPENNSL_E_NONE) {
+        VLOG_ERR("l2_addr_del failed: unit=%d port=%d vlan=%d vrf=%d rc=%s",
+                 hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
+    }
+    else {
+        VLOG_DBG("l2_addr_del passed: unit=%d port=%d vlan=%d vrf=%d rc=%s",
+                 hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
+    }
+
     rc = opennsl_l3_intf_delete(hw_unit, l3_intf);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed at opennsl_l3_intf_delete: unit=%d port=%d vlan=%d vrf=%d rc=%s",
@@ -458,6 +551,18 @@ ops_routing_disable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
     opennsl_pbmp_t pbmp;
 
     VLOG_DBG("In function ops_routing_disable_l3_subinterface\n");
+
+    /* Remove the mac/vlan from l2 table */
+    rc = ops_l2_addr_delete(hw_unit, l3_intf->l3a_mac_addr, vlan_id);
+    if (rc != OPENNSL_E_NONE) {
+        VLOG_ERR("l2_addr_del failed: unit=%d port=%d vlan=%d vrf=%d rc=%s",
+                 hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
+    }
+    else {
+        VLOG_DBG("l2_addr_del passed: unit=%d port=%d vlan=%d vrf=%d rc=%s",
+                 hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
+    }
+
     rc = opennsl_l3_intf_delete(hw_unit, l3_intf);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed at opennsl_l3_intf_delete: unit=%d port=%d vlan=%d vrf=%d rc=%s",
@@ -515,6 +620,18 @@ ops_routing_enable_l3_vlan_interface(int hw_unit, opennsl_vrf_t vrf_id,
                  hw_unit, vlan_id, vrf_id, opennsl_errmsg(rc));
         free(l3_intf);
         return NULL;
+    }
+
+    /* Add the mac/vlan in l2 table, no hw_port for vlan intf */
+    rc = ops_l2_addr_add(hw_unit, -1, l3_intf->l3a_mac_addr, vlan_id);
+    if (rc != OPENNSL_E_NONE) {
+        VLOG_ERR("l2_addr_add failed: unit=%d port=%d vlan=%d vrf=%d rc=%s",
+                 hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
+        goto failed_l3_intf_create;
+    }
+    else {
+        VLOG_DBG("l2_addr_add passed: unit=%d port=%d vlan=%d vrf=%d rc=%s",
+                 hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
     }
 
     SW_L3_DBG("Enabled L3 on unit=%d vlan=%d vrf=%d",
