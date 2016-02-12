@@ -36,6 +36,7 @@
 #include "ops-vlan.h"
 #include "ops-debug.h"
 #include "ops-sflow.h"
+#include "netdev-bcmsdk.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
 
@@ -65,6 +66,20 @@ opennsl_rx_t opennsl_rx_callback(int unit, opennsl_pkt_t *pkt, void *cookie)
 
         /* Uncomment to print the sampled pkt info */
         /* print_pkt(pkt); */
+
+        char port[IFNAMSIZ];
+
+        if (OPENNSL_RX_REASON_GET(pkt->reserved25,
+                                  opennslRxReasonSampleSource)) {
+            snprintf(port, IFNAMSIZ, "%d", pkt->src_port);
+            netdev_bcmsdk_populate_sflow_stats(true, port, pkt->pkt_len);
+        }
+
+        if (OPENNSL_RX_REASON_GET(pkt->reserved25,
+                                  opennslRxReasonSampleDest)) {
+            snprintf(port, IFNAMSIZ, "%d", pkt->dest_port);
+            netdev_bcmsdk_populate_sflow_stats(false, port, pkt->pkt_len);
+        }
 
         /* Write incoming data to Receivers buffer. When buffer is full,
          * data is sent to Collectors. */
