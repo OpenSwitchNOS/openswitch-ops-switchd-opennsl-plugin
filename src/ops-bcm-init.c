@@ -36,11 +36,15 @@
 #include "ops-vlan.h"
 #include "ops-debug.h"
 #include "ops-sflow.h"
+#include "netdev-bcmsdk.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
 
 #define OPENNSL_RX_REASON_GET(_reasons, _reason) \
      (((_reasons).pbits[(_reason)/32]) & (1U << ((_reason)%32)))
+
+/* Copied from ops-cli/vtysh/vtysh.h */
+#define MAX_IFNAME_LENGTH 50
 
 extern int
 opennsl_rx_register(int, const char *, opennsl_rx_cb_f, uint8, void *, uint32);
@@ -65,6 +69,20 @@ opennsl_rx_t opennsl_rx_callback(int unit, opennsl_pkt_t *pkt, void *cookie)
 
         /* Uncomment to print the sampled pkt info */
         /* print_pkt(pkt); */
+
+        char port[MAX_IFNAME_LENGTH];
+
+        if (OPENNSL_RX_REASON_GET(pkt->reserved25,
+                                  opennslRxReasonSampleSource)) {
+            snprintf(port, MAX_IFNAME_LENGTH, "%d", pkt->src_port);
+            netdev_bcmsdk_populate_sflow_stats(true, port, pkt->pkt_len);
+        }
+
+        if (OPENNSL_RX_REASON_GET(pkt->reserved25,
+                                  opennslRxReasonSampleDest)) {
+            snprintf(port, MAX_IFNAME_LENGTH, "%d", pkt->dest_port);
+            netdev_bcmsdk_populate_sflow_stats(false, port, pkt->pkt_len);
+        }
 
         /* Write incoming data to Receivers buffer. When buffer is full,
          * data is sent to Collectors. */
