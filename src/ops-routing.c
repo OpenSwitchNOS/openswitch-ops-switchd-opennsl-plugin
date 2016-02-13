@@ -50,9 +50,16 @@ opennsl_mac_t LOCAL_MAC =  {0x0,0x0,0x01,0x02,0x03,0x04};
 /* KEY in ops_mac_move_egress_id_map */
 char    egress_id_key[24];
 struct hmap ops_mac_move_egress_id_map;
+struct hmap ops_hmap_l2_stations;
+/* FIXME: Move this to .h and cleanup DBG's */
+struct ops_l2_station {
+    struct hmap_node node;
+    char *mac;
+    int station_id;
+};
 
 /* all routes in asic*/
-struct ops_route_table{
+struct ops_route_table {
    struct hmap routes;
 };
 
@@ -266,7 +273,90 @@ ops_l3_init(int unit)
         return 1;
     }
 
+    /* Initialize l2 station hash map of mac's */
+    hmap_init(&ops_hmap_l2_stations);
+
     return 0;
+}
+
+/* L2 Station for ARL */
+/* Function to find l2_station local hash */
+struct ops_l2_station*
+l2_station_hash_lookup(const char *mac)
+{
+    struct ops_l2_station *l2_station;
+
+    HMAP_FOR_EACH_WITH_HASH (l2_station, node, hash_string(mac, 0),
+                             &ops_hmap_l2_stations) {
+        if (!strcmp(l2_station->mac, mac)) {
+            VLOG_DBG("In lookup found mac %s and station-id=%d",
+             ether_ntoa((struct ether_addr*)l2_station->mac),
+             l2_station->station_id);
+
+            return l2_station;
+        }
+    }
+    return NULL;
+}
+
+/* Function to add new mac to hash */
+static void
+l2_station_hash_add(const char *mac, int station_id)
+{
+    struct ops_l2_station *l2_station;
+
+    VLOG_DBG("In Adding to hash for mac %s, station_id=%d",
+             ether_ntoa((struct ether_addr*)mac), station_id);
+    l2_station = xzalloc(sizeof *l2_station);
+    l2_station->mac = xstrdup(mac);
+    l2_station->station_id = station_id;
+
+    hmap_insert(&ops_hmap_l2_stations, &l2_station->node,
+                hash_string(l2_station->mac, 0));
+
+}
+
+/* Function to add mac in asic l2 station tcam */
+int
+ops_l2_station_add(int hw_unit, const char *mac)
+{
+    opennsl_error_t rc = OPENNSL_E_NONE;
+    opennsl_l2_station_t l2_station;
+    struct ops_l2_station *ops_l2_station;
+    int station_id = 0;
+
+    VLOG_DBG("In ops_l2_station_add for mac %s",
+             ether_ntoa((struct ether_addr*)mac));
+    /* Check in local hash first */
+    ops_l2_station = l2_station_hash_lookup(mac);
+
+    /* Check if already programmed */
+    if (ops_l2_station) {
+        VLOG_DBG("Mac exists in hash, check in asic");
+        rc = opennsl_l2_station_get(hw_unit, ops_l2_station->station_id,
+                                    &l2_station);
+
+        VLOG_DBG("station_get rc=%s", opennsl_errmsg(rc));
+        if (rc == OPENNSL_E_NONE) {
+            VLOG_DBG("mac exists in asic");
+            return rc;
+        }
+    }
+    VLOG_DBG("Mac not in asic, adding to asic");
+
+    /* Else add to TCAM */
+    opennsl_l2_station_t_init(&l2_station);
+    memcpy(&l2_station.dst_mac, mac, ETH_ALEN);
+    memset(&l2_station.dst_mac_mask, 0xFF, ETH_ALEN);
+    l2_station.flags |= (OPENNSL_L2_STATION_IPV4 | OPENNSL_L2_STATION_IPV6 |
+                       OPENNSL_L2_STATION_ARP_RARP);
+    rc = opennsl_l2_station_add(hw_unit, &station_id, &l2_station);
+    if (rc == OPENNSL_E_NONE) {
+        /* Add to hash */
+        l2_station_hash_add(mac, station_id);
+    }
+
+    return rc;
 }
 
 opennsl_l3_intf_t *
@@ -304,7 +394,11 @@ ops_routing_enable_l3_interface(int hw_unit, opennsl_port_t hw_port,
     opennsl_l3_intf_t_init(l3_intf);
     l3_intf->l3a_vrf = vrf_id;
     l3_intf->l3a_intf_id = vlan_id;
+#if 0
     l3_intf->l3a_flags = OPENNSL_L3_ADD_TO_ARL | OPENNSL_L3_WITH_ID;
+#else
+    l3_intf->l3a_flags = OPENNSL_L3_WITH_ID;
+#endif
     memcpy(l3_intf->l3a_mac_addr, mac, ETH_ALEN);
     l3_intf->l3a_vid = vlan_id;
 
@@ -317,6 +411,19 @@ ops_routing_enable_l3_interface(int hw_unit, opennsl_port_t hw_port,
 
     SW_L3_DBG("Enabled L3 on unit=%d port=%d vlan=%d vrf=%d",
             hw_unit, hw_port, vlan_id, vrf_id);
+
+    /* Add the mac in l2 station table */
+    /* FIXME: On failure shall we delete l3_intf or continue? */
+    rc = ops_l2_station_add(hw_unit, (const char *)mac);
+    if (rc != OPENNSL_E_NONE) {
+        VLOG_ERR("l2_station_add failed: unit=%d port=%d vlan=%d vrf=%d rc=%s",
+                 hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
+        goto failed_l3_intf_create;
+    }
+    else {
+        VLOG_DBG("l2_station_add passed: unit=%d port=%d vlan=%d vrf=%d rc=%s",
+                 hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
+    }
 
     handle_bcmsdk_knet_l3_port_filters(netdev, vlan_id, true);
     return l3_intf;
@@ -348,7 +455,6 @@ ops_routing_enable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
     opennsl_pbmp_t pbmp;
     opennsl_l3_intf_t *l3_intf;
 
-    VLOG_DBG("in function ops_routing_enable_l3_subinterface\n");
     /* VLAN config */
     rc = bcmsdk_create_vlan(vlan_id, false);
     if (rc < 0) {
@@ -377,7 +483,11 @@ ops_routing_enable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
     opennsl_l3_intf_t_init(l3_intf);
     l3_intf->l3a_vrf = vrf_id;
     l3_intf->l3a_intf_id = vlan_id;
+#if 0
     l3_intf->l3a_flags = OPENNSL_L3_ADD_TO_ARL | OPENNSL_L3_WITH_ID;
+#else
+    l3_intf->l3a_flags = OPENNSL_L3_WITH_ID;
+#endif
     memcpy(l3_intf->l3a_mac_addr, mac, ETH_ALEN);
     l3_intf->l3a_vid = vlan_id;
 
@@ -391,6 +501,18 @@ ops_routing_enable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
 
     SW_L3_DBG("Enabled L3 on unit=%d port=%d vlan=%d vrf=%d",
             hw_unit, hw_port, vlan_id, vrf_id);
+
+    /* Add the mac in l2 station table */
+    rc = ops_l2_station_add(hw_unit, (const char *)mac);
+    if (rc != OPENNSL_E_NONE) {
+        VLOG_ERR("l2_station_add failed: unit=%d port=%d vlan=%d vrf=%d rc=%s",
+                 hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
+        goto failed_l3_intf_create;
+    }
+    else {
+        VLOG_DBG("l2_station_add passed: unit=%d port=%d vlan=%d vrf=%d rc=%s",
+                 hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
+    }
 
     VLOG_DBG("Create knet filter\n");
     handle_bcmsdk_knet_subinterface_filters(netdev, true);
@@ -457,7 +579,6 @@ ops_routing_disable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
     opennsl_vrf_t vrf_id = l3_intf->l3a_vrf;
     opennsl_pbmp_t pbmp;
 
-    VLOG_DBG("In function ops_routing_disable_l3_subinterface\n");
     rc = opennsl_l3_intf_delete(hw_unit, l3_intf);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed at opennsl_l3_intf_delete: unit=%d port=%d vlan=%d vrf=%d rc=%s",
@@ -505,7 +626,11 @@ ops_routing_enable_l3_vlan_interface(int hw_unit, opennsl_vrf_t vrf_id,
     opennsl_l3_intf_t_init(l3_intf);
     l3_intf->l3a_vrf = vrf_id;
     l3_intf->l3a_intf_id = vlan_id;
+#if 0
     l3_intf->l3a_flags = OPENNSL_L3_ADD_TO_ARL | OPENNSL_L3_WITH_ID;
+#else
+    l3_intf->l3a_flags = OPENNSL_L3_WITH_ID;
+#endif
     memcpy(l3_intf->l3a_mac_addr, mac, ETH_ALEN);
     l3_intf->l3a_vid = vlan_id;
 
@@ -515,6 +640,25 @@ ops_routing_enable_l3_vlan_interface(int hw_unit, opennsl_vrf_t vrf_id,
                  hw_unit, vlan_id, vrf_id, opennsl_errmsg(rc));
         free(l3_intf);
         return NULL;
+    }
+
+    /* Add the mac in l2 station table, no hw_port for vlan intf */
+    rc = ops_l2_station_add(hw_unit, (const char *)mac);
+    if (rc != OPENNSL_E_NONE) {
+        VLOG_ERR("l2_station_add failed: unit=%d port=-1 vlan=%d vrf=%d rc=%s",
+                 hw_unit, vlan_id, vrf_id, opennsl_errmsg(rc));
+
+        /* FIXME: Do we delete intf? */
+        rc = opennsl_l3_intf_delete(hw_unit, l3_intf);
+        if (OPENNSL_FAILURE(rc)) {
+            VLOG_ERR("l3_intf_delete failed: unit=%d vlan=%d vrf=%d rc=%s",
+                 hw_unit, vlan_id, vrf_id, opennsl_errmsg(rc));
+        }
+        free(l3_intf);
+    }
+    else {
+        VLOG_DBG("l2_station_add passed: unit=%d port=-1 vlan=%d vrf=%d rc=%s",
+                 hw_unit, vlan_id, vrf_id, opennsl_errmsg(rc));
     }
 
     SW_L3_DBG("Enabled L3 on unit=%d vlan=%d vrf=%d",
