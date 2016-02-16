@@ -221,11 +221,69 @@ void ops_sflow_write_sampled_pkt(opennsl_pkt_t *pkt)
      * conditions (Jumbo Frames?). */
     header->header_bytes = (uint8_t *)pkt->pkt_data[0].data;
 
+    fs.input = pkt->src_port;
+    fs.output = pkt->dest_port;
+
     /* Submit the flow sample to be encoded into the next datagram. */
     SFLADD_ELEMENT(&fs, &hdrElem);
     sfl_sampler_writeFlowSample(sampler, &fs);
 
     ovs_mutex_unlock(&mutex);
+}
+
+/* Set sampling rate on a port. This only sets the rate if sFlow is
+ * configured globally. Otherwise, this is a no-op. */
+void
+ops_sflow_set_per_interface (const int unit, const int port, bool set)
+{
+    int rc;
+    SFLSampler  *sampler;
+    uint32_t    dsIndex;
+    SFLDataSource_instance  dsi;
+    int ingress_rate, egress_rate;
+
+    if (port <= 0) {
+        VLOG_ERR("Invalid port number (%d). Cannot enable/disable "
+                "sFlow on it.", port);
+        return;
+    }
+
+    if (ops_sflow_agent == NULL) {
+        VLOG_DBG("sFlow is not configured globally. Can't [en/dis]able sFlow "
+                "on port: %d.", port);
+        return;
+    }
+
+    /* sFlow agent exists (sFlow is configured on switch globally). */
+
+    /* enable sFlow on port. This is default config. When sFlow is enabled
+     * globally, it's enabled on all ports by default. */
+    if (set) {
+        dsIndex = 1000 + sflow_options->sub_id;
+        SFL_DS_SET(dsi, SFL_DSCLASS_PHYSICAL_ENTITY, dsIndex, 0);
+        sampler = sfl_agent_getSampler(ops_sflow_agent, &dsi);
+
+        if (sampler == NULL) {
+            VLOG_ERR("There is no Sampler for sFlow Agent.");
+            return;
+        }
+
+        ingress_rate = egress_rate = sampler->sFlowFsPacketSamplingRate;
+        rc = opennsl_port_sample_rate_set(unit, port, ingress_rate, egress_rate);
+        if (OPENNSL_FAILURE(rc)) {
+            VLOG_ERR("Failed to set sampling rate on port: %d, (error-%s).",
+                    port, opennsl_errmsg(rc));
+            return;
+        }
+    } else {
+        /* zero rate clears sampling on ASIC */
+        rc = opennsl_port_sample_rate_set(unit, port, 0, 0);
+        if (OPENNSL_FAILURE(rc)) {
+            VLOG_ERR("Failed to set sampling rate on port: %d, (error-%s).",
+                    port, opennsl_errmsg(rc));
+            return;
+        }
+    }
 }
 
 /* Set sampling rate in sFlow Agent and also in ASIC. */
@@ -312,10 +370,12 @@ static void
 ops_sflow_show (struct unixctl_conn *conn, int argc, const char *argv[],
               void *aux OVS_UNUSED)
 {
-    int rc, idx;
+    int rc;
     struct ds ds = DS_EMPTY_INITIALIZER;
     int ingress_rate, egress_rate;
-    int port=OPS_TOTAL_PORTS_AS5712;
+    int port=0;
+    opennsl_port_t tempPort = 0;
+    opennsl_port_config_t port_config;
 
     if (argc > 1) {
         port = atoi(argv[1]);
@@ -327,7 +387,15 @@ ops_sflow_show (struct unixctl_conn *conn, int argc, const char *argv[],
     ds_put_format(&ds, "\tPORT\tINGRESS RATE\tEGRESS RATE\n");
     ds_put_format(&ds, "\t====\t============\t===========\n");
 
-    if (argc > 1) { /* sflow for specific port */
+    /* Retrieve the port configuration of the unit */
+    rc = opennsl_port_config_get (0, &port_config);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to retrieve port config. Can't get sampling rate. "
+                "(rc=%s)", opennsl_errmsg(rc));
+        return;
+    }
+
+    if (port) { /* sflow for specific port */
         rc = opennsl_port_sample_rate_get(0, port, &ingress_rate, &egress_rate);
         if (OPENNSL_FAILURE(rc)) {
             VLOG_ERR("Failed to get sample rate for port: %d (error-%s)",
@@ -336,14 +404,14 @@ ops_sflow_show (struct unixctl_conn *conn, int argc, const char *argv[],
         }
         ds_put_format(&ds, "\t%2d\t%6d\t\t%6d\n", port, ingress_rate, egress_rate);
     } else { /* sflow on all ports of switch */
-        for(idx = 1; idx <= port; idx++) {
-            rc = opennsl_port_sample_rate_get(0, idx, &ingress_rate, &egress_rate);
+        OPENNSL_PBMP_ITER (port_config.e, tempPort) {
+            rc = opennsl_port_sample_rate_get(0, tempPort, &ingress_rate, &egress_rate);
             if (OPENNSL_FAILURE(rc)) {
                 VLOG_ERR("Failed on port (%d) while getting global sample rate "
-                        "(error-%s)", idx, opennsl_errmsg(rc));
+                        "(error-%s)", tempPort, opennsl_errmsg(rc));
                 goto done;
             }
-            ds_put_format(&ds, "\t%2d\t%6d\t\t%6d\n", idx, ingress_rate, egress_rate);
+            ds_put_format(&ds, "\t%2d\t%6d\t\t%6d\n", tempPort, ingress_rate, egress_rate);
         }
     }
 
@@ -435,9 +503,9 @@ ops_sflow_agent_enable(struct ofproto_sflow_options *oso)
 
         if (inet_pton(af, oso->agent_ip, addr) != 1) {
             /* This error condition should not happen. */
-            VLOG_ERR("sFlow Agent device IP is invalid. MUST NOT HAPPEN.");
+            VLOG_DBG("sFlow Agent device IP is invalid. MUST NOT HAPPEN.");
         } else {
-            VLOG_ERR("sFlow Agent device IP is valid: %s", oso->agent_ip);
+            VLOG_DBG("sFlow Agent device IP is valid: %s", oso->agent_ip);
         }
 
         if (agentIP.type == SFLADDRESSTYPE_IP_V4) {

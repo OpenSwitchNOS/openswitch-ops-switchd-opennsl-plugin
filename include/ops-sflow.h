@@ -60,9 +60,6 @@
 
 #include <net/if.h>
 
-/* TODO: Get total ports on current platform */
-#define OPS_TOTAL_PORTS_AS5712   10
-
 #define SFLOW_COLLECTOR_DFLT_PORT   "6343"
 
 /* sFlow parameters */
@@ -95,5 +92,8 @@ extern void ops_sflow_set_collector_ip(const char *ip, const char *port);
 
 extern void
 ops_sflow_agent_ip(const char *ip, const int af);
+
+extern void
+ops_sflow_set_per_interface (const int unit, const int port, bool set);
 
 #endif /* __OPS_SFLOW_H__ */
