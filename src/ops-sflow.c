@@ -228,6 +228,61 @@ void ops_sflow_write_sampled_pkt(opennsl_pkt_t *pkt)
     ovs_mutex_unlock(&mutex);
 }
 
+/* Set sampling rate on a port. This only sets the rate if sFlow is
+ * configured globally. Otherwise, this is a no-op. */
+void
+ops_sflow_set_per_interface (const int unit, const int port, bool set)
+{
+    int rc;
+    SFLSampler  *sampler;
+    uint32_t    dsIndex;
+    SFLDataSource_instance  dsi;
+    int ingress_rate, egress_rate;
+
+    if (port <= 0) {
+        VLOG_ERR("Invalid port number (%d). Cannot enable/disable "
+                "sFlow on it.", port);
+        return;
+    }
+
+    if (ops_sflow_agent == NULL) {
+        VLOG_DBG("sFlow is not configured globally. Can't [en/dis]able sFlow "
+                "on port: %d.", port);
+        return;
+    }
+
+    /* sFlow agent exists (sFlow is configured on switch globally). */
+
+    /* enable sFlow on port. This is default config. When sFlow is enabled
+     * globally, it's enabled on all ports by default. */
+    if (set) {
+        dsIndex = 1000 + sflow_options->sub_id;
+        SFL_DS_SET(dsi, SFL_DSCLASS_PHYSICAL_ENTITY, dsIndex, 0);
+        sampler = sfl_agent_getSampler(ops_sflow_agent, &dsi);
+
+        if (sampler == NULL) {
+            VLOG_ERR("There is no Sampler for sFlow Agent.");
+            return;
+        }
+
+        ingress_rate = egress_rate = sampler->sFlowFsPacketSamplingRate;
+        rc = opennsl_port_sample_rate_set(unit, port, ingress_rate, egress_rate);
+        if (OPENNSL_FAILURE(rc)) {
+            VLOG_ERR("Failed to set sampling rate on port: %d, (error-%s).",
+                    port, opennsl_errmsg(rc));
+            return;
+        }
+    } else {
+        /* zero rate clears sampling on ASIC */
+        rc = opennsl_port_sample_rate_set(unit, port, 0, 0);
+        if (OPENNSL_FAILURE(rc)) {
+            VLOG_ERR("Failed to set sampling rate on port: %d, (error-%s).",
+                    port, opennsl_errmsg(rc));
+            return;
+        }
+    }
+}
+
 /* Set sampling rate in sFlow Agent and also in ASIC. */
 void
 ops_sflow_set_sampling_rate(const int unit, const int port,
@@ -435,9 +490,9 @@ ops_sflow_agent_enable(struct ofproto_sflow_options *oso)
 
         if (inet_pton(af, oso->agent_ip, addr) != 1) {
             /* This error condition should not happen. */
-            VLOG_ERR("sFlow Agent device IP is invalid. MUST NOT HAPPEN.");
+            VLOG_DBG("sFlow Agent device IP is invalid. MUST NOT HAPPEN.");
         } else {
-            VLOG_ERR("sFlow Agent device IP is valid: %s", oso->agent_ip);
+            VLOG_DBG("sFlow Agent device IP is valid: %s", oso->agent_ip);
         }
 
         if (agentIP.type == SFLADDRESSTYPE_IP_V4) {
