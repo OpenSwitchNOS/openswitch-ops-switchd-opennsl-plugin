@@ -1000,14 +1000,16 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         bundle->name = xstrdup(s->name);
     }
 
-    VLOG_INFO("%s: bundle->name=%s, bundle->bond_hw_handle=%d, "
+    VLOG_DBG("%s: bundle->name=%s, bundle->bond_hw_handle=%d, "
              "n_slaves=%d, s->bond=%p, "
              "s->hw_bond_should_exist=%d, "
-             "s->bond_handle_alloc_only=%d",
+             "s->bond_handle_alloc_only=%d, "
+             "bundle->hw_port=%d",
              __FUNCTION__, bundle->name, bundle->bond_hw_handle,
              (int) s->n_slaves, s->bond,
              s->hw_bond_should_exist,
-             s->bond_handle_alloc_only);
+             s->bond_handle_alloc_only,
+             bundle->hw_port);
 
     /* Allocate Broadcom hw port bitmap. */
     all_pbm = bcmsdk_alloc_pbmp();
@@ -1178,6 +1180,20 @@ bundle_set(struct ofproto *ofproto_, void *aux,
        VLOG_DBG("BOND config options option_arg= %s", opt_arg);
     }
 
+    /* sFlow config on port */
+    opt_arg = smap_get(s->port_options[PORT_OTHER_CONFIG], "sflow-enable");
+    if (opt_arg == NULL) {
+       VLOG_DBG("sflow not configured on port: %s", bundle->name);
+    }
+
+    /* if sFlow settings present on port, download it to ASIC */
+    if (opt_arg) {
+        if (strcmp(opt_arg, "false") == 0) {
+            ops_sflow_set_per_interface(0, atoi(bundle->name), false);
+        } else {
+            ops_sflow_set_per_interface(0, atoi(bundle->name), true);
+        }
+    }
 
     /* Go through the list of physical interfaces (slaves) that
      * belong to this logical port, and construct a corresponding
