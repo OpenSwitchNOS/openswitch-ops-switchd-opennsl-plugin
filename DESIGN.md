@@ -23,6 +23,7 @@
      * [L3 subinterface](#l3-subinterface)
      * [L3 interface statistics](#l3-interface-statistics)
      * [L3 LAG interface](#l3-lag-interface)
+     * [Spanning Tree Group](#spanning-tree-group)
    * [References](#references)
 
 ## Overview
@@ -216,7 +217,32 @@ Destroy L3 LAG:
 - Delete knet filter that had been created for that member.
 - If there are no ports in the LAG then destroy the l3 bundle.
 - If the CLI destroys the LAG alltogether we need to delete each knet, remove members from internal vlan and destroy the l3 interface.
- 
+
+### Spanning Tree Group(STG)
+The switchd-opennsl plugin supports spanning tree group creation/deletion/update. The ops-switchd daemon learns spanning tree instance updates(instance creation, vlan to instance mapping, instance-port states) from the OVSDB and pushes it down to the switchd opennsl plugin. Plugin intern calls the opennsl API to populate the STG table in the ASIC.
+
+
+Following are the actions done on spanning tree instance creation:
+- Create a STG entry in ASIC if it does not already exist.
+- update the internal cache.
+
+Following are the actions done on spanning tree instance deletion:
+- Delete the STG entry in ASIC if it already exists.
+- update the internal cache.
+
+Following are the actions done on spanning tree instance to vlan add:
+- update the VLAN table entry with STG_ID associated to vlan.
+- update the internal cache
+
+Following are the actions done on spanning tree instance to vlan delete:
+- update the VLAN table entry with default STG_ID.
+- update the internal cache
+
+Following are the actions done on spanning tree instance port state update:
+- update the port state in STG entry with the given port state.
+- valid port states are Disabled(2'b00), Blocking(2'b01), Learning(2'b10), Forwarding(2'b11)
+- update the internal cache
+
 ## References
 [OpenvSwitch Porting Guide](http://git.openvswitch.org/cgi-bin/gitweb.cgi?p=openvswitch;a=blob;f=PORTING)
 [Broadcom OpenNSL](https://github.com/Broadcom-Switch/OpenNSL)
