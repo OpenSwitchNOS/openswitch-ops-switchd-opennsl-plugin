@@ -38,6 +38,7 @@
 #include "netdev-bcmsdk.h"
 #include "platform-defines.h"
 #include "ofproto-bcm-provider.h"
+#include "ops-stg.h"
 
 VLOG_DEFINE_THIS_MODULE(ofproto_bcm_provider);
 
@@ -1945,6 +1946,89 @@ l3_ecmp_hash_set(const struct ofproto *ofprotop, unsigned int hash, bool enable)
     return ops_routing_ecmp_hash_set(0, hash, enable);
 }
 
+int
+create_stg(const struct ofproto *ofproto, int *p_stg)
+{
+    opennsl_stg_t stgid = 0;
+
+    VLOG_DBG("%s: create stg entry called", __FUNCTION__);
+    /* Create  stg and associate valn to stg. */
+     ops_stg_create(&stgid);
+    if (0 != stgid) {
+        *p_stg = stgid;
+    }
+    VLOG_DBG("%s: create stg entry, val=%d", __FUNCTION__, stgid);
+    return 0;
+}
+
+int
+delete_stg(const struct ofproto *ofproto, int stg)
+{
+
+    VLOG_DBG("%s: entry, stg=%d", __FUNCTION__, stg);
+    /* Delete  stg. */
+     ops_stg_delete(stg);
+    return 0;
+}
+
+int
+add_stg_vlan(const struct ofproto *ofproto, int stg, int vid)
+{
+    ops_stg_vlan_add(stg, vid);
+    return 0;
+}
+
+int
+remove_stg_vlan(const struct ofproto *ofproto, int stg, int vid)
+{
+    ops_stg_vlan_remove(stg, vid);
+    return 0;
+}
+
+
+int
+set_stg_port_state(const struct ofproto *ofproto_, char *port_name, int stg,
+                     int port_state, bool port_stp_set)
+{
+    int hw_id = 0, hw_unit =0;
+
+    VLOG_DBG("%s: called", __FUNCTION__);
+    if (false == netdev_hw_id_from_name(port_name, &hw_unit, &hw_id)) {
+        VLOG_ERR("%s: unable to find netdev for port %s", __FUNCTION__, port_name);
+        return -1;
+    }
+
+    VLOG_DBG("%s: stg=%d, port=%d, port_state=%d", __FUNCTION__, stg, hw_id, port_state);
+    /* set stg port state. */
+    ops_stg_stp_set(stg, hw_id, port_state, port_stp_set);
+    return 0;
+}
+
+int
+get_stg_port_state(const struct ofproto *ofproto_, char *port_name, int stg, int *p_port_state)
+{
+    int hw_id = 0, hw_unit =0;
+
+    VLOG_DBG("%s: called", __FUNCTION__);
+    if (false == netdev_hw_id_from_name(port_name, &hw_unit, &hw_id)) {
+        VLOG_ERR("%s: unable to find netdev for port %s", __FUNCTION__, port_name);
+        return -1;
+    }
+
+    VLOG_DBG("%s: stg=%d, port=%d", __FUNCTION__, stg, hw_id);
+    /* Get stg port state. */
+    ops_stg_stp_get(stg, hw_id, p_port_state);
+    return 0;
+}
+
+int
+get_stg_default(const struct ofproto *ofproto, int *p_stg)
+{
+   /* Get default stg */
+   ops_stg_default_get(p_stg);
+   return 0;
+}
+
 const struct ofproto_class ofproto_bcm_provider_class = {
     init,
     enumerate_types,
@@ -2049,4 +2133,12 @@ const struct ofproto_class ofproto_bcm_provider_class = {
     l3_route_action,            /* l3 route action - install, update, delete */
     l3_ecmp_set,                /* enable/disable ECMP globally */
     l3_ecmp_hash_set,           /* enable/disable ECMP hash configs */
+    create_stg,
+    delete_stg,
+    add_stg_vlan,
+    remove_stg_vlan,
+    set_stg_port_state,
+    get_stg_port_state,
+    get_stg_default,
+
 };
