@@ -1907,7 +1907,7 @@ set_sflow(struct ofproto *ofproto_ OVS_UNUSED,
 {
     int target_count=0;
     const char *collector_ip;
-    char *port, *vrf, *af;
+    char *port, *vrf;
     uint32_t    rate;
 
     if (oso == NULL) { /* disable sflow */
@@ -1938,7 +1938,7 @@ set_sflow(struct ofproto *ofproto_ OVS_UNUSED,
 
     /* Sampling rate not configured in CLI. Can't create sFlow Agent. This
      * scenario is only possible at initiation. Once sFlow Agent is created,
-     * it will always have a sampling rate. */
+     * it will always have a sampling rate (a default rate, at least). */
     if (oso->sampling_rate == 0) {
         VLOG_DBG("sflow sampling_rate not set. Cannot create sFlow Agent.");
         return 0;
@@ -1959,28 +1959,23 @@ set_sflow(struct ofproto *ofproto_ OVS_UNUSED,
     VLOG_DBG("sflow config: sampling: %d, num_targets: %zd, hdr len: %d,"
              "agent dev: %s, agent ip: %s",
             oso->sampling_rate, sset_count(&oso->targets), oso->header_len,
-            (oso->agent_device)? oso->agent_device: "NULL",
-            (oso->agent_ip)? oso->agent_ip: "NULL");
+            oso->agent_device ? oso->agent_device : "NULL",
+            oso->agent_ip ? oso->agent_ip : "NULL");
 
     /* Sampling rate has changed. */
     rate = oso->sampling_rate;
     if (sflow_options->sampling_rate != rate) {
         sflow_options->sampling_rate = rate;
         ops_sflow_set_sampling_rate(0, 0, rate, rate);
-        VLOG_DBG("sflow: sampling rate applied on sFlow Agent:%d", rate);
+        VLOG_DBG("sflow: sampling rate %d applied on sFlow Agent", rate);
     }
 
-    /* Source IP for sFlow Agent has changed. */
-    if (strcmp(sflow_options->agent_ip, oso->agent_ip) != 0) {
-        sflow_options->agent_ip = oso->agent_ip;
-
-        af = strchr(oso->agent_ip, ':');
-        if (af == NULL) { /* IPv4 */
-            ops_sflow_agent_ip(oso->agent_ip, AF_INET);
-        } else {
-            ops_sflow_agent_ip(oso->agent_ip, AF_INET6);
-        }
+    /* source IP for sFlow agent */
+    sflow_options->agent_ip[0] = '\0';
+    if (oso->agent_ip) {
+        strncpy(sflow_options->agent_ip, oso->agent_ip, INET6_ADDRSTRLEN);
     }
+    ops_sflow_agent_ip(oso->agent_ip);
 
     /* Collector ip -- could be of form ip/port/vrf */
     SSET_FOR_EACH(collector_ip, &oso->targets) {

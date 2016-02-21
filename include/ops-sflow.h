@@ -91,7 +91,7 @@ ops_sflow_set_sampling_rate(const int unit, const int port,
 extern void ops_sflow_set_collector_ip(const char *ip, const char *port);
 
 extern void
-ops_sflow_agent_ip(const char *ip, const int af);
+ops_sflow_agent_ip(const char *ip);
 
 extern void
 ops_sflow_set_per_interface (const int unit, const int port, bool set);

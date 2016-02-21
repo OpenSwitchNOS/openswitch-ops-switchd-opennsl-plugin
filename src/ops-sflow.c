@@ -487,6 +487,8 @@ ops_sflow_agent_enable(struct ofproto_sflow_options *oso)
         return;
     }
 
+    memset(&agentIP, 0, sizeof agentIP);
+
     /* set IP on sFlow agent. */
     if (oso->agent_ip) {
         if (strchr(oso->agent_ip, ':'))  {
@@ -503,9 +505,7 @@ ops_sflow_agent_enable(struct ofproto_sflow_options *oso)
 
         if (inet_pton(af, oso->agent_ip, addr) != 1) {
             /* This error condition should not happen. */
-            VLOG_DBG("sFlow Agent device IP is invalid. MUST NOT HAPPEN.");
-        } else {
-            VLOG_DBG("sFlow Agent device IP is valid: %s", oso->agent_ip);
+            VLOG_ERR("sFlow Agent device IP is malformed:%s", oso->agent_ip);
         }
 
         if (agentIP.type == SFLADDRESSTYPE_IP_V4) {
@@ -535,7 +535,7 @@ ops_sflow_agent_enable(struct ofproto_sflow_options *oso)
     sfl_receiver_set_sFlowRcvrTimeout(receiver, 0xffffffff);
 
     /* Receiver IP settings.
-     * TODO: Enhance to support multiple receivers and any port. */
+     * TODO: Enhance to support multiple receivers. */
     SSET_FOR_EACH(collector_ip, &oso->targets) {
         VLOG_DBG("sflow: collector_ip: [%s]", collector_ip);
 
@@ -631,43 +631,66 @@ ops_sflow_agent_fn(struct unixctl_conn *conn, int argc, const char *argv[],
 }
 
 void
-ops_sflow_agent_ip(const char *ip, const int af)
+ops_sflow_agent_ip(const char *ip)
 {
-    struct in_addr addr;
-    struct in6_addr addr6;
-    void *ptr;
+    struct  in_addr addr;
+    struct  in6_addr addr6;
+    void    *ptr;
+    int     af;
 
     SFLAddress  myIP;
+    SFLReceiver *receiver;
 
     if (ops_sflow_agent == NULL) {
         VLOG_DBG("sFlow Agent is not running. Can't set Agent Address.");
         return;
     }
 
-    if (af == AF_INET) {
-        ptr = &addr;
-    }
-    else  {
-        ptr = &addr6;
+    memset(&myIP, 0, sizeof myIP);
+
+    /* This is possible. User provided interface that doesn't have IP
+     * configured. */
+    if (ip == NULL) {
+        myIP.type = SFLADDRESSTYPE_IP_V4;
+        myIP.address.ip_v4.addr = 0;
+
+        goto assign;
     }
 
-    /* validate input IP addr */
+    /* IP is non-NULL. */
+    if (strchr(ip, ':')) {  /* v6 */
+        af = AF_INET6;
+        ptr = &addr6;
+    } else {    /* v4 */
+        af = AF_INET;
+        ptr = &addr;
+    }
+
+    /* validate input IP addr. Will not happen. Placed for safety. */
     if (inet_pton(af, ip, ptr) <= 0) {
-        VLOG_ERR("Invalid interface address. Failed to assign IP.");
+        VLOG_ERR("Invalid IP address(%s). Failed to assign IP.", ip);
         return;
     }
 
-    if (af == AF_INET) {
-        myIP.type = SFLADDRESSTYPE_IP_V4;
-        myIP.address.ip_v4.addr = addr.s_addr;
-    } else {
+    if (af == AF_INET6) {
         myIP.type = SFLADDRESSTYPE_IP_V6;
         memcpy(myIP.address.ip_v6.addr, addr6.s6_addr, 16);
+    } else {
+        myIP.type = SFLADDRESSTYPE_IP_V4;
+        myIP.address.ip_v4.addr = addr.s_addr;
     }
 
+assign:
     sfl_agent_set_agentAddress(ops_sflow_agent, &myIP);
 
-    VLOG_DBG("Successfully set sFlow Agent Address to=%s", ip);
+    receiver = sfl_agent_getReceiver(ops_sflow_agent, 1); /* 1 = receiver index */
+    if (receiver == NULL) {
+        VLOG_ERR("Got NULL Receiver from sflow agent. Something is "
+                "incorrectly configured.");
+        return;
+    }
+
+    sfl_receiver_replaceAgentAddress(receiver, &myIP);
 }
 
 /* Set an IP address on receiver/collector. */
