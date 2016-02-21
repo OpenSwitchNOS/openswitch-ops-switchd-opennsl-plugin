@@ -1967,11 +1967,15 @@ set_sflow(struct ofproto *ofproto_ OVS_UNUSED,
     if (sflow_options->sampling_rate != rate) {
         sflow_options->sampling_rate = rate;
         ops_sflow_set_sampling_rate(0, 0, rate, rate);
-        VLOG_DBG("sflow: sampling rate applied on sFlow Agent:%d", rate);
+        VLOG_DBG("sflow: sampling rate %d applied on sFlow Agent", rate);
     }
 
+    if (oso->agent_ip == NULL) {
+        ops_sflow_agent_ip(NULL, AF_INET);
+    }
     /* Source IP for sFlow Agent has changed. */
-    if (strcmp(sflow_options->agent_ip, oso->agent_ip) != 0) {
+    else if (sflow_options->agent_ip == NULL ||
+            strcmp(sflow_options->agent_ip, oso->agent_ip)) {
         sflow_options->agent_ip = oso->agent_ip;
 
         af = strchr(oso->agent_ip, ':');
