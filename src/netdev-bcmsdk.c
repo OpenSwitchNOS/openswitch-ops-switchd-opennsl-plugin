@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Hewlett-Packard Development Company, L.P.
+ * Copyright (C) 2015. 2016 Hewlett-Packard Development Company, L.P.
  * All Rights Reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -66,7 +66,10 @@ struct netdev_bcmsdk {
     int hw_id;
     int l3_intf_id;
     int knet_if_id;             /* BCM KNET interface ID. */
-    int knet_filter_id;         /* BCM KNET filter ID. */
+    int knet_bpdu_filter_id;                 /* BCM KNET BPDU filter ID. */
+    int knet_l3_port_filter_id;              /* BCM KNET L3 interface filter ID. */
+    int knet_subinterface_filter_id;         /* BCM KNET subinterface filter ID. */
+    int knet_bridge_normal_filter_id;        /* BCM KNET bridge mormal filter ID. */
 
     bool intf_initialized;
 
@@ -93,6 +96,7 @@ struct netdev_bcmsdk {
      * Valid for split children ports only. */
     struct ops_port_info *split_parent_portp;
 
+    opennsl_vlan_t subintf_vlan_id;
 };
 
 static int netdev_bcmsdk_construct(struct netdev *);
@@ -122,6 +126,16 @@ netdev_bcmsdk_get_hw_info(struct netdev *netdev, int *hw_unit, int *hw_id,
     if (hwaddr) {
         memcpy(hwaddr, nb->hwaddr, ETH_ADDR_LEN);
     }
+}
+
+void
+netdev_bcmsdk_get_subintf_vlan(struct netdev *netdev, opennsl_vlan_t *vlan)
+{
+    struct netdev_bcmsdk *nb = netdev_bcmsdk_cast(netdev);
+    ovs_assert(is_bcmsdk_class(netdev_get_class(netdev)));
+
+    VLOG_DBG("get subinterface vlan as %d\n", nb->subintf_vlan_id);
+    *vlan = nb->subintf_vlan_id;
 }
 
 static struct netdev_bcmsdk *
@@ -184,13 +198,13 @@ netdev_bcmsdk_construct(struct netdev *netdev_)
     netdev->hw_unit = -1;
     netdev->hw_id = -1;
     netdev->knet_if_id = 0;
-    netdev->knet_filter_id = 0;
     netdev->port_info = NULL;
     netdev->intf_initialized = false;
 
     netdev->is_split_parent = false;
     netdev->is_split_subport = false;
     netdev->split_parent_portp = NULL;
+    netdev->subintf_vlan_id = 0;
 
     ovs_mutex_unlock(&netdev->mutex);
 
@@ -229,6 +243,39 @@ netdev_bcmsdk_dealloc(struct netdev *netdev_)
     struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
 
     free(netdev);
+}
+
+static int
+netdev_bcmsdk_set_config(struct netdev *netdev_, const struct smap *args)
+{
+    struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
+    struct netdev *parent = NULL;
+    struct netdev_bcmsdk *parent_netdev = NULL;
+    const char *parent_intf_name = NULL;
+    int vlanid = 0;
+
+    ovs_mutex_lock(&netdev->mutex);
+    parent_intf_name = smap_get(args, "parent_intf_name");
+    vlanid = smap_get_int(args, "vlan", 0);
+
+    if (parent_intf_name != NULL) {
+        VLOG_DBG("netdev set_config gets info for parent interface %s, and vlan = %d",
+                parent_intf_name, vlanid);
+        parent = netdev_from_name(parent_intf_name);
+        if (parent != NULL) {
+            parent_netdev = netdev_bcmsdk_cast(parent);
+            if (parent_netdev != NULL) {
+                netdev->hw_id = parent_netdev->hw_id;
+                netdev->hw_unit = parent_netdev->hw_unit;
+                memcpy(netdev->hwaddr, parent_netdev->hwaddr, ETH_ALEN);
+                netdev->subintf_vlan_id = vlanid;
+                netdev->knet_if_id = parent_netdev->knet_if_id;
+            }
+        }
+    }
+
+    ovs_mutex_unlock(&netdev->mutex);
+    return 0;
 }
 
 static int
@@ -435,17 +482,68 @@ get_interface_connector_type(const char *interface_type, opennsl_port_if_t *ifac
 }
 
 static void
-handle_bcmsdk_knet_filters(struct netdev_bcmsdk *netdev, int enable)
+handle_bcmsdk_knet_bpdu_filters(struct netdev_bcmsdk *netdev, int enable)
 {
-    if ((enable == true) && (netdev->knet_filter_id == 0)) {
+    if (enable == true && netdev->knet_bpdu_filter_id == 0) {
+        /*
+         * Add any other packets that we need when port is enabled
+         * Currently sending BPDUs on interfaec enable
+         * All other packets will go to bridge interface
+         * */
+        bcmsdk_knet_port_bpdu_filter_create(netdev->up.name, netdev->hw_unit, netdev->hw_id,
+                netdev->knet_if_id, &(netdev->knet_bpdu_filter_id));
+    } else if ((enable == false) && (netdev->knet_bpdu_filter_id != 0)) {
+        bcmsdk_knet_filter_delete(netdev->up.name, netdev->hw_unit, netdev->knet_bpdu_filter_id);
+        netdev->knet_bpdu_filter_id = 0;
+    }
 
-        bcmsdk_knet_port_filter_create(netdev->up.name, netdev->hw_unit, netdev->hw_id,
-                                       netdev->knet_if_id, &(netdev->knet_filter_id));
+}
 
-    } else if ((enable == false) && (netdev->knet_filter_id != 0)) {
+void
+handle_bcmsdk_knet_l3_port_filters(struct netdev *netdev_, opennsl_vlan_t vlan_id, bool enable)
+{
+    struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
+    if (enable == true && netdev->knet_l3_port_filter_id == 0) {
+        VLOG_DBG("Create l3 port knet filter\n");
+        bcmsdk_knet_l3_port_filter_create(netdev->hw_unit, vlan_id, netdev->hw_id,
+                netdev->knet_if_id, &(netdev->knet_l3_port_filter_id));
+    } else if ((enable == false) && (netdev->knet_l3_port_filter_id != 0)) {
+        VLOG_DBG("Destroy l3 port knet filter\n");
+        bcmsdk_knet_filter_delete(netdev->up.name,
+                                  netdev->hw_unit,
+                                  netdev->knet_l3_port_filter_id);
+        netdev->knet_l3_port_filter_id = 0;
+    }
 
-        bcmsdk_knet_filter_delete(netdev->up.name, netdev->hw_unit, netdev->knet_filter_id);
-        netdev->knet_filter_id = 0;
+}
+
+void
+handle_bcmsdk_knet_subinterface_filters(struct netdev *netdev_, bool enable)
+{
+    struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
+    if (enable == true && netdev->knet_subinterface_filter_id == 0) {
+        VLOG_DBG("Create subinterface knet filter\n");
+        netdev->hw_unit = 0;
+        bcmsdk_knet_subinterface_filter_create(netdev->hw_unit, netdev->hw_id,
+                netdev->knet_if_id, &(netdev->knet_subinterface_filter_id));
+    } else if ((enable == false) && (netdev->knet_subinterface_filter_id != 0)) {
+        VLOG_DBG("Destroy subinterface knet filter\n");
+        bcmsdk_knet_filter_delete(netdev->up.name, netdev->hw_unit, netdev->knet_subinterface_filter_id);
+        netdev->knet_subinterface_filter_id = 0;
+    }
+}
+
+static void
+handle_bcmsdk_knet_bridge_normal_filters(struct netdev *netdev_, bool enable)
+{
+    struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
+    if (enable == true && netdev->knet_bridge_normal_filter_id == 0) {
+        VLOG_DBG("Create bridge normal knet filter\n");
+        bcmsdk_knet_bridge_normal_filter_create(netdev->up.name, &(netdev->knet_bridge_normal_filter_id));
+    } else if ((enable == false) && (netdev->knet_bridge_normal_filter_id != 0)) {
+        VLOG_DBG("Destroy bridge normal knet filter\n");
+        bcmsdk_knet_filter_delete(netdev->up.name, netdev->hw_unit, netdev->knet_bridge_normal_filter_id);
+        netdev->knet_bpdu_filter_id = 0;
     }
 }
 
@@ -547,7 +645,7 @@ netdev_bcmsdk_set_hw_intf_config(struct netdev *netdev_, const struct smap *args
     /* If interface is being enabled, add a KNET filter rule
      * to send the incoming frames on the corresponding
      * KNET virtual interface, otherwise delete the rule. */
-    handle_bcmsdk_knet_filters(netdev, pcfg->enable);
+    handle_bcmsdk_knet_bpdu_filters(netdev, pcfg->enable);
 
     rc = bcmsdk_set_port_config(netdev->hw_unit, netdev->hw_id, pcfg);
     if (rc) {
@@ -565,13 +663,13 @@ netdev_bcmsdk_set_hw_intf_config(struct netdev *netdev_, const struct smap *args
 
 static int
 netdev_bcmsdk_set_etheraddr(struct netdev *netdev,
-                           const uint8_t mac[ETH_ADDR_LEN])
+                            const struct eth_addr mac)
 {
     struct netdev_bcmsdk *dev = netdev_bcmsdk_cast(netdev);
 
     ovs_mutex_lock(&dev->mutex);
-    if (!eth_addr_equals(dev->hwaddr, mac)) {
-        memcpy(dev->hwaddr, mac, ETH_ADDR_LEN);
+    if (memcmp(dev->hwaddr, mac.ea, ETH_ADDR_LEN)) {
+        memcpy(dev->hwaddr, mac.ea, ETH_ADDR_LEN);
         netdev_change_seq_changed(netdev);
     }
     ovs_mutex_unlock(&dev->mutex);
@@ -581,12 +679,12 @@ netdev_bcmsdk_set_etheraddr(struct netdev *netdev,
 
 static int
 netdev_bcmsdk_get_etheraddr(const struct netdev *netdev,
-                           uint8_t mac[ETH_ADDR_LEN])
+                            struct eth_addr *mac)
 {
     struct netdev_bcmsdk *dev = netdev_bcmsdk_cast(netdev);
 
     ovs_mutex_lock(&dev->mutex);
-    memcpy(mac, dev->hwaddr, ETH_ADDR_LEN);
+    memcpy(mac->ea, dev->hwaddr, ETH_ADDR_LEN);
     ovs_mutex_unlock(&dev->mutex);
 
     return 0;
@@ -852,6 +950,7 @@ netdev_internal_bcmsdk_set_hw_intf_info(struct netdev *netdev_, const struct sma
                 VLOG_ERR("Failed to initialize interface %s", netdev->up.name);
                 goto error;
             } else {
+                handle_bcmsdk_knet_bridge_normal_filters(netdev_, true);
                 netdev->intf_initialized = true;
             }
         } else {
@@ -949,9 +1048,143 @@ static const struct netdev_class bcmsdk_internal_class = {
     NULL,                       /* rxq_drain */
 };
 
+static const struct netdev_class bcmsdk_l3_loopback_class = {
+    "loopback",
+    NULL,                       /* init */
+    NULL,                       /* run */
+    NULL,                       /* wait */
+    netdev_bcmsdk_alloc,
+    netdev_bcmsdk_construct,
+    netdev_bcmsdk_destruct,
+    netdev_bcmsdk_dealloc,
+    NULL,                       /* get_config */
+    NULL,                       /* set_config */
+    NULL,                       /* set_hw_intf_info */
+    NULL,                       /* set_hw_intf_config */
+    NULL,                       /* get_tunnel_config */
+    NULL,                       /* build header */
+    NULL,                       /* push header */
+    NULL,                       /* pop header */
+    NULL,                       /* get_numa_id */
+    NULL,                       /* set_multiq */
+    NULL,                       /* send */
+    NULL,                       /* send_wait */
+    netdev_bcmsdk_set_etheraddr,
+    netdev_bcmsdk_get_etheraddr,
+    NULL,                       /* get_mtu */
+    NULL,                       /* set_mtu */
+    NULL,                       /* get_ifindex */
+    NULL,                       /* get_carrier */
+    NULL,                       /* get_carrier_resets */
+    NULL,                       /* get_miimon */
+    NULL,                       /* get_stats */
+    NULL,                       /* get_features */
+    NULL,                       /* set_advertisements */
+    NULL,                       /* set_policing */
+    NULL,                       /* get_qos_types */
+    NULL,                       /* get_qos_capabilities */
+    NULL,                       /* get_qos */
+    NULL,                       /* set_qos */
+    NULL,                       /* get_queue */
+    NULL,                       /* set_queue */
+    NULL,                       /* delete_queue */
+    NULL,                       /* get_queue_stats */
+    NULL,                       /* queue_dump_start */
+    NULL,                       /* queue_dump_next */
+    NULL,                       /* queue_dump_done */
+    NULL,                       /* dump_queue_stats */
+    NULL,                       /* get_in4 */
+    NULL,                       /* set_in4 */
+    NULL,                       /* get_in6 */
+    NULL,                       /* add_router */
+    NULL,                       /* get_next_hop */
+    NULL,                       /* get_status */
+    NULL,                       /* arp_lookup */
+    netdev_internal_bcmsdk_update_flags,
+    NULL,                       /* rxq_alloc */
+    NULL,                       /* rxq_construct */
+    NULL,                       /* rxq_destruct */
+    NULL,                       /* rxq_dealloc */
+    NULL,                       /* rxq_recv */
+    NULL,                       /* rxq_wait */
+    NULL,                       /* rxq_drain */
+};
+
+static const struct netdev_class bcmsdk_subintf_class = {
+    "vlansubint",
+    NULL,                       /* init */
+    NULL,                       /* run */
+    NULL,                       /* wait */
+
+    netdev_bcmsdk_alloc,
+    netdev_bcmsdk_construct,
+    netdev_bcmsdk_destruct,
+    netdev_bcmsdk_dealloc,
+    NULL,                       /* get_config */
+    netdev_bcmsdk_set_config,   /* set_config */
+    NULL,
+    NULL,
+    NULL,                       /* get_tunnel_config */
+    NULL,                       /* build header */
+    NULL,                       /* push header */
+    NULL,                       /* pop header */
+    NULL,                       /* get_numa_id */
+    NULL,                       /* set_multiq */
+
+    NULL,                       /* send */
+    NULL,                       /* send_wait */
+
+    netdev_bcmsdk_set_etheraddr,
+    netdev_bcmsdk_get_etheraddr,
+    NULL,                       /* get_mtu */
+    NULL,                       /* set_mtu */
+    NULL,                       /* get_ifindex */
+    NULL,                       /* get_carrier */
+    NULL,                       /* get_carrier_resets */
+    NULL,                       /* get_miimon */
+    NULL,                       /* get_stats */
+
+    NULL,                       /* get_features */
+    NULL,                       /* set_advertisements */
+
+    NULL,                       /* set_policing */
+    NULL,                       /* get_qos_types */
+    NULL,                       /* get_qos_capabilities */
+    NULL,                       /* get_qos */
+    NULL,                       /* set_qos */
+    NULL,                       /* get_queue */
+    NULL,                       /* set_queue */
+    NULL,                       /* delete_queue */
+    NULL,                       /* get_queue_stats */
+    NULL,                       /* queue_dump_start */
+    NULL,                       /* queue_dump_next */
+    NULL,                       /* queue_dump_done */
+    NULL,                       /* dump_queue_stats */
+
+    NULL,                       /* get_in4 */
+    NULL,                       /* set_in4 */
+    NULL,                       /* get_in6 */
+    NULL,                       /* add_router */
+    NULL,                       /* get_next_hop */
+    NULL,                       /* get_status */
+    NULL,                       /* arp_lookup */
+
+    netdev_bcmsdk_update_flags,
+
+    NULL,                       /* rxq_alloc */
+    NULL,                       /* rxq_construct */
+    NULL,                       /* rxq_destruct */
+    NULL,                       /* rxq_dealloc */
+    NULL,                       /* rxq_recv */
+    NULL,                       /* rxq_wait */
+    NULL,                       /* rxq_drain */
+};
+
 void
 netdev_bcmsdk_register(void)
 {
     netdev_register_provider(&bcmsdk_class);
     netdev_register_provider(&bcmsdk_internal_class);
+    netdev_register_provider(&bcmsdk_l3_loopback_class);
+    netdev_register_provider(&bcmsdk_subintf_class);
 }

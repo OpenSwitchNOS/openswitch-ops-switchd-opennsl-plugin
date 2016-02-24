@@ -1,4 +1,4 @@
-/* Copyright (C) 2015 Hewlett Packard Enterprise Development LP
+/* Copyright (C) 2015. 2016 Hewlett Packard Enterprise Development LP
  * All Rights Reserved.
 
  * Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -39,9 +39,15 @@
 #include "ops-knet.h"
 #include "platform-defines.h"
 #include "openswitch-dflt.h"
+#include "netdev-bcmsdk.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_routing);
+/* ecmp resiliency flag */
+bool ecmp_resilient_flag = false;
 
+static int
+ops_update_l3ecmp_egress_resilient(int unit, opennsl_l3_egress_ecmp_t *ecmp,
+                 int intf_count, opennsl_if_t *egress_obj, void *user_data);
 opennsl_if_t local_nhid;
 /* fake MAC to create a local_nhid */
 opennsl_mac_t LOCAL_MAC =  {0x0,0x0,0x01,0x02,0x03,0x04};
@@ -56,6 +62,24 @@ struct ops_route_table{
 };
 
 struct ops_route_table ops_rtable;
+
+static void
+ops_update_ecmp_resilient(opennsl_l3_egress_ecmp_t *ecmp){
+
+    if (ecmp == NULL){
+        VLOG_ERR("ECMP group is NULL");
+        return;
+    }
+
+    if (ecmp_resilient_flag) {
+        ecmp->dynamic_mode |= OPENNSL_L3_ECMP_DYNAMIC_MODE_RESILIENT;
+    } else {
+        ecmp->dynamic_mode &=  ~OPENNSL_L3_ECMP_DYNAMIC_MODE_RESILIENT;
+    }
+
+    ecmp->dynamic_size = ecmp_resilient_flag ? ECMP_DYN_SIZE_512 :
+                                               ECMP_DYN_SIZE_ZERO;
+}
 
 int
 ops_l3_init(int unit)
@@ -207,6 +231,8 @@ ops_l3_init(int unit)
                  unit, opennsl_errmsg(rc));
         return 1;
     }
+    /* Enabling the ecmp resiliency initially*/
+    ecmp_resilient_flag = true;
 
     /* FIXME : Generate the seed from the system MAC? */
     rc = opennsl_switch_control_set(unit, opennslSwitchHashSeed0, 0x12345678);
@@ -271,7 +297,7 @@ ops_l3_init(int unit)
 opennsl_l3_intf_t *
 ops_routing_enable_l3_interface(int hw_unit, opennsl_port_t hw_port,
                                 opennsl_vrf_t vrf_id, opennsl_vlan_t vlan_id,
-                                unsigned char *mac)
+                                unsigned char *mac, struct netdev *netdev)
 {
     opennsl_error_t rc = OPENNSL_E_NONE;
     opennsl_pbmp_t pbmp;
@@ -288,12 +314,9 @@ ops_routing_enable_l3_interface(int hw_unit, opennsl_port_t hw_port,
 
     OPENNSL_PBMP_CLEAR(pbmp);
     OPENNSL_PBMP_PORT_ADD(pbmp, hw_port);
-    rc = bcmsdk_add_access_ports(vlan_id, &pbmp, true);
-    if (rc < 0) {
-        VLOG_ERR("Failed at bcmsdk_add_access_ports: unit=%d port=%d vlan=%d rc=%d",
-                 hw_unit, hw_port, vlan_id, rc);
-        goto failed_adding_vlan;
-    }
+    /* Add as native untagged as we would not want to restrict all
+       tagged packets if a port is configured to the specific vlan */
+    bcmsdk_add_native_untagged_ports(vlan_id, &pbmp, true);
 
     /* Create L3 interface */
     l3_intf = (opennsl_l3_intf_t *)xmalloc(sizeof(opennsl_l3_intf_t));
@@ -320,6 +343,7 @@ ops_routing_enable_l3_interface(int hw_unit, opennsl_port_t hw_port,
     SW_L3_DBG("Enabled L3 on unit=%d port=%d vlan=%d vrf=%d",
             hw_unit, hw_port, vlan_id, vrf_id);
 
+    handle_bcmsdk_knet_l3_port_filters(netdev, vlan_id, true);
     return l3_intf;
 
 failed_l3_intf_create:
@@ -328,14 +352,86 @@ failed_l3_intf_create:
 failed_allocating_l3_intf:
     OPENNSL_PBMP_CLEAR(pbmp);
     OPENNSL_PBMP_PORT_ADD(pbmp, hw_port);
-    rc = bcmsdk_del_access_ports(vlan_id, &pbmp, true);
+    bcmsdk_del_native_untagged_ports(vlan_id, &pbmp, true);
+
+    rc = bcmsdk_destroy_vlan(vlan_id, true);
     if (rc < 0) {
-        VLOG_ERR("Failed at bcmsdk_del_access_ports: unit=%d port=%d rc=%d",
-                 hw_unit, hw_port, rc);
+        VLOG_ERR("Failed at bcmsdk_destroy_vlan: unit=%d port=%d vlan=%d rc=%d",
+                 hw_unit, hw_port, vlan_id, rc);
     }
 
-failed_adding_vlan:
-    rc = bcmsdk_destroy_vlan(vlan_id, true);
+failed_vlan_creation:
+    return NULL;
+}
+
+opennsl_l3_intf_t *
+ops_routing_enable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
+                                opennsl_vrf_t vrf_id, opennsl_vlan_t vlan_id,
+                                unsigned char *mac, struct netdev *netdev)
+{
+    opennsl_error_t rc = OPENNSL_E_NONE;
+    opennsl_pbmp_t pbmp;
+    opennsl_l3_intf_t *l3_intf;
+
+    VLOG_DBG("in function ops_routing_enable_l3_subinterface\n");
+    /* VLAN config */
+    rc = bcmsdk_create_vlan(vlan_id, false);
+    if (rc < 0) {
+        VLOG_ERR("Failed at bcmsdk_create_vlan: unit=%d port=%d vlan=%d rc=%d",
+                 hw_unit, hw_port, vlan_id, rc);
+        goto failed_vlan_creation;
+    }
+
+
+    OPENNSL_PBMP_CLEAR(pbmp);
+    OPENNSL_PBMP_PORT_ADD(pbmp, hw_port);
+    VLOG_DBG("Adding hw_port = %d to trunk\n", hw_port);
+    bcmsdk_add_trunk_ports(vlan_id, &pbmp);
+
+    VLOG_DBG("Adding hw_port = %d to subinterface\n", hw_port);
+    bcmsdk_add_subinterface_ports(vlan_id, &pbmp);
+
+    /* Create L3 interface */
+    l3_intf = (opennsl_l3_intf_t *)xmalloc(sizeof(opennsl_l3_intf_t));
+    if (!l3_intf) {
+        VLOG_ERR("Failed allocating opennsl_l3_intf_t: unit=%d port=%d vlan=%d rc=%d",
+                 hw_unit, hw_port, vlan_id, rc);
+        goto failed_allocating_l3_intf;
+    }
+
+    opennsl_l3_intf_t_init(l3_intf);
+    l3_intf->l3a_vrf = vrf_id;
+    l3_intf->l3a_intf_id = vlan_id;
+    l3_intf->l3a_flags = OPENNSL_L3_ADD_TO_ARL | OPENNSL_L3_WITH_ID;
+    memcpy(l3_intf->l3a_mac_addr, mac, ETH_ALEN);
+    l3_intf->l3a_vid = vlan_id;
+
+    VLOG_DBG("opennsl l3 create() for subinterface\n");
+    rc = opennsl_l3_intf_create(hw_unit, l3_intf);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed at opennsl_l3_intf_create: unit=%d port=%d vlan=%d vrf=%d rc=%s",
+                 hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
+        goto failed_l3_intf_create;
+    }
+
+    SW_L3_DBG("Enabled L3 on unit=%d port=%d vlan=%d vrf=%d",
+            hw_unit, hw_port, vlan_id, vrf_id);
+
+    VLOG_DBG("Create knet filter\n");
+    handle_bcmsdk_knet_subinterface_filters(netdev, true);
+
+    return l3_intf;
+
+failed_l3_intf_create:
+    free(l3_intf);
+
+failed_allocating_l3_intf:
+    OPENNSL_PBMP_CLEAR(pbmp);
+    OPENNSL_PBMP_PORT_ADD(pbmp, hw_port);
+    bcmsdk_del_trunk_ports(vlan_id, &pbmp);
+    bcmsdk_del_subinterface_ports(vlan_id, &pbmp);
+
+    rc = bcmsdk_destroy_vlan(vlan_id, false);
     if (rc < 0) {
         VLOG_ERR("Failed at bcmsdk_destroy_vlan: unit=%d port=%d vlan=%d rc=%d",
                  hw_unit, hw_port, vlan_id, rc);
@@ -347,13 +443,12 @@ failed_vlan_creation:
 
 void
 ops_routing_disable_l3_interface(int hw_unit, opennsl_port_t hw_port,
-                                 opennsl_l3_intf_t *l3_intf)
+                                 opennsl_l3_intf_t *l3_intf, struct netdev *netdev)
 {
     opennsl_error_t rc = OPENNSL_E_NONE;
     opennsl_vlan_t vlan_id = l3_intf->l3a_vid;
     opennsl_vrf_t vrf_id = l3_intf->l3a_vrf;
     opennsl_pbmp_t pbmp;
-
 
     rc = opennsl_l3_intf_delete(hw_unit, l3_intf);
     if (OPENNSL_FAILURE(rc)) {
@@ -364,11 +459,7 @@ ops_routing_disable_l3_interface(int hw_unit, opennsl_port_t hw_port,
     /* Reset VLAN on port back to default and destroy the VLAN */
     OPENNSL_PBMP_CLEAR(pbmp);
     OPENNSL_PBMP_PORT_ADD(pbmp, hw_port);
-    rc = bcmsdk_del_access_ports(vlan_id, &pbmp, true);
-    if (rc < 0) {
-        VLOG_ERR("Failed at bcmsdk_del_access_ports: unit=%d port=%d rc=%d",
-                 hw_unit, hw_port, rc);
-    }
+    bcmsdk_del_native_untagged_ports(vlan_id, &pbmp, true);
 
     rc = bcmsdk_destroy_vlan(vlan_id, true);
     if (rc < 0) {
@@ -377,6 +468,47 @@ ops_routing_disable_l3_interface(int hw_unit, opennsl_port_t hw_port,
     }
 
     SW_L3_DBG("Disabled L3 on unit=%d port=%d vrf=%d", hw_unit, hw_port, vrf_id);
+
+    VLOG_DBG("Delete l3 port knet filter\n");
+    handle_bcmsdk_knet_l3_port_filters(netdev, vlan_id, false);
+}
+
+void
+ops_routing_disable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
+                                 opennsl_l3_intf_t *l3_intf, struct netdev *netdev)
+{
+    opennsl_error_t rc = OPENNSL_E_NONE;
+    opennsl_vlan_t vlan_id = l3_intf->l3a_vid;
+    opennsl_vrf_t vrf_id = l3_intf->l3a_vrf;
+    opennsl_pbmp_t pbmp;
+
+    VLOG_DBG("In function ops_routing_disable_l3_subinterface\n");
+    rc = opennsl_l3_intf_delete(hw_unit, l3_intf);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed at opennsl_l3_intf_delete: unit=%d port=%d vlan=%d vrf=%d rc=%s",
+                 hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
+    }
+
+    /* Reset VLAN on port back to default and destroy the VLAN */
+    OPENNSL_PBMP_CLEAR(pbmp);
+    OPENNSL_PBMP_PORT_ADD(pbmp, hw_port);
+    bcmsdk_del_trunk_ports(vlan_id, &pbmp);
+
+    bcmsdk_del_subinterface_ports(vlan_id, &pbmp);
+
+    if (is_vlan_membership_empty(vlan_id) && !is_user_created_vlan(vlan_id)) {
+        VLOG_DBG("Vlan %d is empty\n", vlan_id);
+        rc = bcmsdk_destroy_vlan(vlan_id, false);
+        if (rc < 0) {
+            VLOG_ERR("Failed at bcmsdk_destroy_vlan: unit=%d port=%d vlan=%d rc=%d",
+                    hw_unit, hw_port, vlan_id, rc);
+        }
+    }
+
+    SW_L3_DBG("Disabled L3 on unit=%d port=%d vrf=%d", hw_unit, hw_port, vrf_id);
+
+    VLOG_DBG("Delete subinterface knet filter\n");
+    handle_bcmsdk_knet_subinterface_filters(netdev, false);
 }
 
 opennsl_l3_intf_t *
@@ -887,6 +1019,7 @@ ops_create_or_update_ecmp_object(int hw_unit, struct ops_route *routep,
         opennsl_l3_egress_ecmp_t_init(&ecmp_grp);
         ecmp_grp.flags = (OPENNSL_L3_REPLACE | OPENNSL_L3_WITH_ID);
         ecmp_grp.ecmp_intf = *ecmp_intfp;
+        ops_update_ecmp_resilient(&ecmp_grp);
         rc = opennsl_l3_egress_ecmp_create(hw_unit, &ecmp_grp, nh_count,
                                            egress_obj);
         if (OPENNSL_FAILURE(rc)) {
@@ -896,6 +1029,7 @@ ops_create_or_update_ecmp_object(int hw_unit, struct ops_route *routep,
         }
     } else {
         opennsl_l3_egress_ecmp_t_init(&ecmp_grp);
+        ops_update_ecmp_resilient(&ecmp_grp);
         rc = opennsl_l3_egress_ecmp_create(hw_unit, &ecmp_grp, nh_count,
                                            egress_obj);
         if (OPENNSL_FAILURE(rc)) {
@@ -1145,7 +1279,7 @@ ops_delete_nh_entry(int hw_unit, opennsl_vrf_t vrf_id,
             /* update the ecmp table */
             l3_intf = routep->l3a_intf;
             rc = ops_create_or_update_ecmp_object(hw_unit, ops_routep,
-                                                 &l3_intf, false);
+                                                 &l3_intf, true);
             if (OPS_FAILURE(rc)) {
                 VLOG_ERR("Failed to update ecmp object for route %s: %s",
                               ops_routep->prefix, opennsl_errmsg(rc));
@@ -1323,7 +1457,7 @@ ops_routing_ecmp_set(int hw_unit, bool enable)
 }
 
 int
-ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool enable)
+ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
 {
     int hash_v4 = 0, hash_v6 = 0;
     int cur_hash_ip4 = 0, cur_hash_ip6 = 0;
@@ -1361,7 +1495,20 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool enable)
         hash_v6 |= OPENNSL_HASH_FIELD_IP6DST_LO | OPENNSL_HASH_FIELD_IP6DST_HI;
     }
 
-    if (enable) {
+    if ((hash & OFPROTO_ECMP_HASH_RESILIENT)) {
+        if (ecmp_resilient_flag != status) {
+            ecmp_resilient_flag = status;
+            rc = opennsl_l3_egress_ecmp_traverse(hw_unit,
+                                      ops_update_l3ecmp_egress_resilient, NULL);
+            if (OPENNSL_FAILURE(rc)) {
+                VLOG_ERR("Failed to traverse ECMP groups rc=%s",
+                                                  opennsl_errmsg(rc));
+            }
+        }
+    }
+
+
+    if (status) {
         cur_hash_ip4 |= hash_v4;
         cur_hash_ip6 |= hash_v6;
     } else {
@@ -1564,13 +1711,13 @@ ops_l3_mac_move_add(int   unit,
 
    memset(egress_id_key, 0, sizeof(egress_id_key));
    snprintf(egress_id_key, 24, "%d:" ETH_ADDR_FMT, l2addr->vid,
-                               ETH_ADDR_ARGS(l2addr->mac));
+                               ETH_ADDR_BYTES_ARGS(l2addr->mac));
 
    egress_id_node = ops_egress_id_lookup(egress_id_key);
    if (egress_id_node == NULL) {
        VLOG_INFO("Egress object id NOT found in process cache, possibly "
                  "deleted: unit=%d, key=%s, vlan=%d, mac=" ETH_ADDR_FMT,
-                 unit, egress_id_key, l2addr->vid, ETH_ADDR_ARGS(l2addr->mac));
+                 unit, egress_id_key, l2addr->vid, ETH_ADDR_BYTES_ARGS(l2addr->mac));
 
        /* Unexpected condition. This shouldn't happen. */
        return;
@@ -1585,7 +1732,7 @@ ops_l3_mac_move_add(int   unit,
        VLOG_ERR("Egress object not found in ASIC for given vlan/mac. rc=%s "
                  "unit=%d, key=%s, vlan=%d, mac=" ETH_ADDR_FMT ", egr-id: %d",
                  opennsl_errmsg(rc), unit, egress_id_key, l2addr->vid,
-                 ETH_ADDR_ARGS(l2addr->mac), egress_id_node->egress_object_id);
+                 ETH_ADDR_BYTES_ARGS(l2addr->mac), egress_id_node->egress_object_id);
 
        goto done;
    }
@@ -1596,7 +1743,7 @@ ops_l3_mac_move_add(int   unit,
 
    VLOG_DBG("Input: unit=%d, flags=0x%x, port=%d, vlan=%d, mac=" ETH_ADDR_FMT
              " egr-id=%d, intf=%d", unit, egress_object.flags, egress_object.port,
-             egress_object.vlan, ETH_ADDR_ARGS(egress_object.mac_addr),
+             egress_object.vlan, ETH_ADDR_BYTES_ARGS(egress_object.mac_addr),
              egress_id_node->egress_object_id, egress_object.intf);
 
    rc = opennsl_l3_egress_create(unit, egress_object.flags, &egress_object,
@@ -1630,7 +1777,7 @@ ops_l3_mac_move_delete(int   unit,
 
    memset(egress_id_key, 0, sizeof(egress_id_key));
    snprintf(egress_id_key, 24, "%d:" ETH_ADDR_FMT, l2addr->vid,
-                               ETH_ADDR_ARGS(l2addr->mac));
+                               ETH_ADDR_BYTES_ARGS(l2addr->mac));
 
    /* Create an egress object with old/deleted port and save in hashmap */
 
@@ -1645,7 +1792,7 @@ ops_l3_mac_move_delete(int   unit,
    if (OPENNSL_FAILURE(rc)) {
        VLOG_ERR("Failed retrieving egress object id: rc=%s, unit=%d, vlan=%d, "
                 "mac=" ETH_ADDR_FMT, opennsl_errmsg(rc), unit, l2addr->vid,
-                ETH_ADDR_ARGS(l2addr->mac));
+                ETH_ADDR_BYTES_ARGS(l2addr->mac));
 
        return;
    }
@@ -2010,6 +2157,8 @@ l3ecmp_egress_print(int unit, opennsl_l3_egress_ecmp_t *ecmp,
     int idx;
     struct ds *pds = (struct ds *)user_data;
     ds_put_format(pds, "Multipath Egress Object %d\n", ecmp->ecmp_intf);
+    ds_put_format(pds, "ECMP Resilient %s\n", ecmp->dynamic_mode ? "TRUE": "FALSE");
+    ds_put_format(pds, "dynamic size %d\n", ecmp->dynamic_size);
     ds_put_format(pds, "Interfaces:");
 
     for (idx = 0; idx < intf_count; idx++) {
@@ -2018,10 +2167,32 @@ l3ecmp_egress_print(int unit, opennsl_l3_egress_ecmp_t *ecmp,
             ds_put_format(pds, "\n           ");
         }
     }
-
     ds_put_format(pds, "\n");
+
     return 0;
 } /*l3ecmp_egress_print */
+
+static int
+ops_update_l3ecmp_egress_resilient(int unit, opennsl_l3_egress_ecmp_t *ecmp,
+                    int intf_count, opennsl_if_t *egress_obj, void *user_data)
+{
+    opennsl_error_t rc;
+
+    ops_update_ecmp_resilient(ecmp);
+    ecmp->flags = (OPENNSL_L3_REPLACE | OPENNSL_L3_WITH_ID);
+
+    /*updating the egress object based on whether
+     * the ecmp resilient flag is set or reset */
+
+    rc = opennsl_l3_egress_ecmp_create(unit , ecmp, intf_count, egress_obj);
+
+    if (OPENNSL_FAILURE(rc)){
+        VLOG_ERR("Error creating/udpating the ecmp egress object" \
+                  "%s\n", opennsl_errmsg(rc));
+    }
+
+    return 0;
+} /*ops_update_l3ecmp_egress_resilient */
 
 void
 ops_l3ecmp_egress_dump(struct ds *ds, int ecmpid)
