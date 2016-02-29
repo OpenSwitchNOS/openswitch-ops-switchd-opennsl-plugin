@@ -266,7 +266,6 @@ netdev_bcmsdk_set_config(struct netdev *netdev_, const struct smap *args)
             parent_netdev = netdev_bcmsdk_cast(parent);
             if (parent_netdev != NULL) {
                 netdev->hw_id = parent_netdev->hw_id;
-                netdev->hw_unit = parent_netdev->hw_unit;
                 memcpy(netdev->hwaddr, parent_netdev->hwaddr, ETH_ALEN);
                 netdev->subintf_vlan_id = vlanid;
                 netdev->knet_if_id = parent_netdev->knet_if_id;
@@ -1122,7 +1121,7 @@ static const struct netdev_class bcmsdk_subintf_class = {
     netdev_bcmsdk_dealloc,
     NULL,                       /* get_config */
     netdev_bcmsdk_set_config,   /* set_config */
-    NULL,
+    netdev_internal_bcmsdk_set_hw_intf_info,
     NULL,
     NULL,                       /* get_tunnel_config */
     NULL,                       /* build header */
@@ -1169,7 +1168,7 @@ static const struct netdev_class bcmsdk_subintf_class = {
     NULL,                       /* get_status */
     NULL,                       /* arp_lookup */
 
-    netdev_bcmsdk_update_flags,
+    netdev_internal_bcmsdk_update_flags,
 
     NULL,                       /* rxq_alloc */
     NULL,                       /* rxq_construct */
