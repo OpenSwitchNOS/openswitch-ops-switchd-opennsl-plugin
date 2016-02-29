@@ -21,6 +21,7 @@
      * [Buffer monitoring](#buffer-monitoring)
      * [L3 loopback interface](#l3-loopback-interface)
      * [L3 subinterface](#l3-subinterface)
+     * [L3 interface statistics](#l3-interface-statistics)
    * [References](#references)
 
 ## Overview
@@ -144,7 +145,7 @@ The vlan_mode field has four possible values:
 This functionality is handled in the ofproto layer.
 
 ### Layer3 routing
-The switchd plugin supports layer3 routing for IPv4 and IPv6 protocols. The ops-switchd daemon learns route/nexthop from the OVSDB and pushes it down to the switchd plugin. Plugin intern calls the opennsl API to populate the host, the longest prefix match (LPM), and the ECMP table in the ASIC. ECMP hashing currently supports 16-bit CRC-CCITT. By default hashing tuple is source ip, destination ip, source port, and destination port. Tuple element can be included/excuded in the hash calculation through CLI.
+The switchd plugin supports layer3 routing for IPv4 and IPv6 protocols. The ops-switchd daemon learns route/nexthop from the OVSDB and pushes it down to the switchd plugin. Plugin intern calls the opennsl API to populate the host, the longest prefix match (LPM), and the ECMP table in the ASIC. ECMP hashing currently supports 16-bit CRC-CCITT. By default hashing tuple is source ip, destination ip, source port, and destination port. Tuple element can be included/excuded in the hash calculation through CLI. ECMP resiliency is enabled by default where the dynamic mode and size are set to true and 512 respectively. Resiliency can be enabled or disabled through CLI.
 
 Layer3 functionality is handled in the ofproto layer.
 
@@ -190,6 +191,9 @@ Following are the actions done on subinterface vlan config change:
 - Create a new VLAN and update the trunk and the subinterface bitmap with a parent port bit, if the VLAN does not exist.
 
 If a VLAN is deleted without deleting the subinterface, the VLAN is not deleted from the ASIC, and the parent port bit is left set in the trunk bitmap and subinterface bitmap.
+
+### L3 interface statistics
+For L3 interface statistics, Field Processor(FP) packet qualification rules are programmed to count unicast and multicast IPv4 and IPv6 packet types. These FPs are programed when an L3 interface is created and removed when an L3 interface is removed. These FP's have statistics objects associated with them which are periodically polled to get the number of L3 packets and bytes.
 
 
 ## References

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Hewlett-Packard Development Company, L.P.
+ * Copyright (C) 2015. 2016 Hewlett-Packard Development Company, L.P.
  * All Rights Reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -252,53 +252,31 @@ netdev_bcmsdk_set_config(struct netdev *netdev_, const struct smap *args)
     struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
     struct netdev *parent = NULL;
     struct netdev_bcmsdk *parent_netdev = NULL;
-    int rc = 0;
-
-    VLOG_INFO("netdev set_config for interface %s\n", netdev->up.name);
+    const char *parent_intf_name = NULL;
+    int vlanid = 0;
 
     ovs_mutex_lock(&netdev->mutex);
-    const char *parent_intf_name = smap_get(args, "parent_intf_name");
-    const char *vlanid = smap_get(args, "vlan_id");
+    parent_intf_name = smap_get(args, "parent_intf_name");
+    vlanid = smap_get_int(args, "vlan", 0);
 
-    VLOG_DBG("netdev set_config get info from  parent interface %s", parent_intf_name);
-    if (parent_intf_name) {
+    if (parent_intf_name != NULL) {
+        VLOG_DBG("netdev set_config gets info for parent interface %s, and vlan = %d",
+                parent_intf_name, vlanid);
         parent = netdev_from_name(parent_intf_name);
         if (parent != NULL) {
             parent_netdev = netdev_bcmsdk_cast(parent);
-            if (parent_netdev) {
+            if (parent_netdev != NULL) {
                 netdev->hw_id = parent_netdev->hw_id;
+                netdev->hw_unit = parent_netdev->hw_unit;
                 memcpy(netdev->hwaddr, parent_netdev->hwaddr, ETH_ALEN);
-                if (vlanid) {
-                    netdev->subintf_vlan_id = atoi(vlanid);
-                } else {
-                    netdev->subintf_vlan_id = 0;
-                }
+                netdev->subintf_vlan_id = vlanid;
                 netdev->knet_if_id = parent_netdev->knet_if_id;
-            } else {
-                VLOG_ERR("Unable to cast parent port. "
-                        "intf_name=%s parent_name=%s",
-                        netdev->up.name, parent_intf_name);
-                goto error;
             }
-        } else {
-            VLOG_ERR("Unable to find the netdev for the parent port. "
-                    "intf_name=%s parent_name=%s",
-                    netdev->up.name, parent_intf_name);
-            goto error;
         }
-    } else {
-        VLOG_ERR("Unable to get valid parent port. "
-                "intf_name=%s", netdev->up.name);
-        goto error;
     }
 
     ovs_mutex_unlock(&netdev->mutex);
     return 0;
-error:
-    ovs_mutex_unlock(&netdev->mutex);
-
-    rc = -EINVAL;
-    return rc;
 }
 
 static int
@@ -686,13 +664,13 @@ netdev_bcmsdk_set_hw_intf_config(struct netdev *netdev_, const struct smap *args
 
 static int
 netdev_bcmsdk_set_etheraddr(struct netdev *netdev,
-                           const uint8_t mac[ETH_ADDR_LEN])
+                            const struct eth_addr mac)
 {
     struct netdev_bcmsdk *dev = netdev_bcmsdk_cast(netdev);
 
     ovs_mutex_lock(&dev->mutex);
-    if (!eth_addr_equals(dev->hwaddr, mac)) {
-        memcpy(dev->hwaddr, mac, ETH_ADDR_LEN);
+    if (memcmp(dev->hwaddr, mac.ea, ETH_ADDR_LEN)) {
+        memcpy(dev->hwaddr, mac.ea, ETH_ADDR_LEN);
         netdev_change_seq_changed(netdev);
     }
     ovs_mutex_unlock(&dev->mutex);
@@ -702,12 +680,12 @@ netdev_bcmsdk_set_etheraddr(struct netdev *netdev,
 
 static int
 netdev_bcmsdk_get_etheraddr(const struct netdev *netdev,
-                           uint8_t mac[ETH_ADDR_LEN])
+                            struct eth_addr *mac)
 {
     struct netdev_bcmsdk *dev = netdev_bcmsdk_cast(netdev);
 
     ovs_mutex_lock(&dev->mutex);
-    memcpy(mac, dev->hwaddr, ETH_ADDR_LEN);
+    memcpy(mac->ea, dev->hwaddr, ETH_ADDR_LEN);
     ovs_mutex_unlock(&dev->mutex);
 
     return 0;
@@ -1247,7 +1225,7 @@ static const struct netdev_class bcmsdk_subintf_class = {
     NULL,                       /* get_status */
     NULL,                       /* arp_lookup */
 
-    netdev_internal_bcmsdk_update_flags,
+    netdev_bcmsdk_update_flags,
 
     NULL,                       /* rxq_alloc */
     NULL,                       /* rxq_construct */
