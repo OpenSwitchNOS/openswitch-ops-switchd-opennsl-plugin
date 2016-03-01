@@ -289,8 +289,11 @@ ops_install_rule_in_asic(int                           unit,
     opennsl_error_t rc = OPENNSL_E_NONE;
     opennsl_field_entry_t entry;
     opennsl_pbmp_t pbmp_mask;
+    uint16_t port_mask = 0xFFFF;
+    uint8_t protocol_mask = 0XFF;
 
     struct ops_classifier *cl = cl_entry->pacl;
+    struct ops_cls_list_entry_match_fields *match = &cl_entry->entry_fields;
 
     rc = opennsl_field_entry_create(unit, ip_group, &entry);
     if (OPENNSL_FAILURE(rc)) {
@@ -325,6 +328,79 @@ ops_install_rule_in_asic(int                           unit,
             VLOG_ERR("Add entry dst ipv4 0x%x and mask 0x%x failed: rc=%s",
                      htonl(cl_entry->dst_ip), htonl(cl_entry->dst_mask),
                      opennsl_errmsg(rc));
+            goto cleanup;
+        }
+    }
+
+    if (cl_entry->match_flags & OPS_CLS_L4_SRC_PORT_VALID) {
+        VLOG_DBG("L4 src port min: 0x%x max: 0x%x ops %d", match->L4_src_port_min,
+                 match->L4_src_port_max, match->L4_src_port_op);
+
+        switch (match->L4_src_port_op) {
+        case OPS_CLS_L4_PORT_OP_EQ:
+            rc = opennsl_field_qualify_L4SrcPort(unit, entry,
+                                                 match->L4_src_port_min,
+                                                 port_mask);
+            if (OPENNSL_FAILURE(rc)) {
+                VLOG_ERR("Failed add entry L4 src port 0x%x and mask 0x%x: "
+                         "rc=%s", match->L4_src_port_min, port_mask,
+                         opennsl_errmsg(rc));
+                goto cleanup;
+            }
+            break;
+
+        case OPS_CLS_L4_PORT_OP_RANGE:
+        case OPS_CLS_L4_PORT_OP_NONE:
+        case OPS_CLS_L4_PORT_OP_NEQ:
+        case OPS_CLS_L4_PORT_OP_LT:
+        case OPS_CLS_L4_PORT_OP_GT:
+        default:
+            VLOG_DBG("L4 port operation %d not supported",
+                      match->L4_src_port_op);
+            break;
+        }
+    }
+
+    if (cl_entry->match_flags & OPS_CLS_L4_DEST_PORT_VALID) {
+        VLOG_DBG("L4 dst port min: 0x%x max: 0x%x ops %d", match->L4_dst_port_min,
+                 match->L4_dst_port_max, match->L4_dst_port_op);
+
+        switch (match->L4_dst_port_op) {
+        case OPS_CLS_L4_PORT_OP_EQ:
+            rc = opennsl_field_qualify_L4DstPort(unit, entry,
+                                                 match->L4_dst_port_min,
+                                                 port_mask);
+            if (OPENNSL_FAILURE(rc)) {
+                VLOG_ERR("Failed add entry L4 dst port 0x%x and mask 0x%x: "
+                         "rc=%s", match->L4_dst_port_min, port_mask,
+                         opennsl_errmsg(rc));
+                goto cleanup;
+            }
+            break;
+
+        case OPS_CLS_L4_PORT_OP_RANGE:
+        case OPS_CLS_L4_PORT_OP_NONE:
+        case OPS_CLS_L4_PORT_OP_NEQ:
+        case OPS_CLS_L4_PORT_OP_LT:
+        case OPS_CLS_L4_PORT_OP_GT:
+        default:
+            VLOG_DBG("L4 port operation %d not supported",
+                      match->L4_dst_port_op);
+            break;
+        }
+    }
+
+    if (cl_entry->match_flags & OPS_CLS_PROTOCOL_VALID) {
+        VLOG_DBG("IP protocol: 0x%x", match->protocol);
+
+        rc = opennsl_field_qualify_IpProtocol(unit,
+                                              entry,
+                                              match->protocol,
+                                              protocol_mask);
+        if (OPENNSL_FAILURE(rc)) {
+            VLOG_ERR("Failed to add entry ip protocol 0x%x and mask 0x%x: "
+                         "rc=%s", match->protocol, protocol_mask,
+                         opennsl_errmsg(rc));
             goto cleanup;
         }
     }
