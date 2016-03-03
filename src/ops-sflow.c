@@ -16,10 +16,11 @@
  *
  * File: ops-sflow.c
  *
- * Purpose: sflow configuration implementation in BCM shell and show output.
+ * Purpose: sflow implementation on BCM chip.
  */
 
 #include "ops-sflow.h"
+#include "collectors.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,9 +35,10 @@
 
 VLOG_DEFINE_THIS_MODULE(ops_sflow);
 
-/* sFlow parameters */
+/* TODO: Move from global defs to ofproto or bridge */
 SFLAgent *ops_sflow_agent = NULL;
 struct ofproto_sflow_options *sflow_options = NULL;
+struct collectors *sflow_collectors = NULL;
 
 /* sFlow knet filter id's */
 int knet_sflow_source_filter_id;
@@ -69,6 +71,15 @@ ops_sflow_agent_error_cb(void *magic OVS_UNUSED, SFLAgent *ops_agent OVS_UNUSED,
                         char *err)
 {
     VLOG_ERR("%s", err);
+}
+
+/* sFlow library callback to send datagram. */
+static void
+ops_sflow_agent_send_packet_cb(void *ds_, SFLAgent *agent OVS_UNUSED,
+                           SFLReceiver *receiver OVS_UNUSED, u_char *pkt,
+                           uint32_t pktLen)
+{
+    collectors_send(sflow_collectors, pkt, pktLen);
 }
 
 static bool
@@ -527,7 +538,7 @@ ops_sflow_agent_enable(struct ofproto_sflow_options *oso)
             ops_sflow_agent_alloc_cb,
             ops_sflow_agent_free_cb,
             ops_sflow_agent_error_cb,
-            NULL);  /* Each receiver will send pkts to collector. */
+            ops_sflow_agent_send_packet_cb);
 
     /* RECEIVER: aka Collector */
     receiver = sfl_agent_addReceiver(ops_sflow_agent);
@@ -535,14 +546,15 @@ ops_sflow_agent_enable(struct ofproto_sflow_options *oso)
     sfl_receiver_set_sFlowRcvrTimeout(receiver, 0xffffffff);
 
     /* Receiver IP settings.
-     * TODO: Enhance to support multiple receivers. */
+     * TODO: Targets are of form host[/port[/vrf]]. This must be converted
+     * to host:port and passed to collectors_create API. */
     SSET_FOR_EACH(collector_ip, &oso->targets) {
         VLOG_DBG("sflow: collector_ip: [%s]", collector_ip);
 
         /* retrieve port info */
         if ((port = strchr(collector_ip, '/')) != NULL) {
-            *port = '\0';
-            port++;
+            *port = ':';
+            //port++;
             /* get vrf info */
             if ((vrf=strchr(port, '/')) != NULL) {
                 *vrf = '\0';
@@ -550,10 +562,12 @@ ops_sflow_agent_enable(struct ofproto_sflow_options *oso)
             }
         } else {
             port = SFLOW_COLLECTOR_DFLT_PORT;
+            /* TODO: construct a target string of form host:DFLT_PORT */
         }
 
-        ops_sflow_set_collector_ip(collector_ip, port);
+        //ops_sflow_set_collector_ip(collector_ip, port);
     }
+    collectors_create(&oso->targets, 0, &sflow_collectors);
 
     /* SAMPLER: OvS lib for sFlow seems to encourage one Sampler per
      * interface. Currently, OPS will have only one Sampler for all
@@ -611,6 +625,9 @@ ops_sflow_agent_disable()
         /* Delete sFlow Agent */
         sfl_agent_release(ops_sflow_agent);
         ops_sflow_agent = NULL;
+
+        /* Destroy collectors */
+        collectors_destroy(sflow_collectors);
     }
 }
 
