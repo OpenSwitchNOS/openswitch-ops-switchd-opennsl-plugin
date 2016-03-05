@@ -25,6 +25,7 @@
 #include <string.h>
 #include <time.h>
 
+#include <ofproto-bcm-provider.h>
 #include <ofproto/ofproto.h>
 
 #include <openvswitch/vlog.h>
@@ -61,6 +62,23 @@
 #include <net/if.h>
 
 #define SFLOW_COLLECTOR_DFLT_PORT   "6343"
+#define SFLOW_RECEIVER_INDEX 1
+
+struct ops_sflow_port_stats {
+    uint64_t in_octets;
+    uint32_t in_ucastpkts;
+    uint32_t in_multicastpkts;
+    uint32_t in_broadcastpkts;
+    uint32_t in_discards;
+    uint32_t in_errors;
+    uint32_t in_unknownprotos;
+    uint64_t out_octets;
+    uint32_t out_ucastpkts;
+    uint32_t out_multicastpkts;
+    uint32_t out_broadcastpkts;
+    uint32_t out_discards;
+    uint32_t out_errors;
+};
 
 /* sFlow parameters */
 extern SFLAgent *ops_sflow_agent;
@@ -87,6 +105,11 @@ ops_sflow_options_equal(const struct ofproto_sflow_options *oso1,
 extern void
 ops_sflow_set_sampling_rate(const int unit, const int port,
                             const int ingress_rate, const int egress_rate);
+void
+ops_sflow_set_polling_interval(int polling_interval);
+
+void
+ops_sflow_run(struct bcmsdk_provider_node *ofproto);
 
 extern void ops_sflow_set_collector_ip(const char *ip, const char *port);
 

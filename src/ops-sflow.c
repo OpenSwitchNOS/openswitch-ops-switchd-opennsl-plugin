@@ -19,18 +19,22 @@
  * Purpose: sflow configuration implementation in BCM shell and show output.
  */
 
-#include "ops-sflow.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <platform-defines.h>
+
+#include "ops-stats.h"
+#include "ops-sflow.h"
+#include "netdev-bcmsdk.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_sflow);
 
@@ -87,6 +91,8 @@ ops_sflow_options_equal(const struct ofproto_sflow_options *oso1,
 {
     return (sset_equals(&oso1->targets, &oso2->targets) &&
             (oso1->sampling_rate == oso2->sampling_rate) &&
+            (oso1->polling_interval == oso2->polling_interval) &&
+            (oso1->header_len == oso2->header_len) &&
             string_is_equal(oso1->agent_device, oso2->agent_device));
 }
 
@@ -282,6 +288,113 @@ ops_sflow_set_per_interface (const int unit, const int port, bool set)
             VLOG_ERR("Failed to set sampling rate on port: %d, (error-%s).",
                     port, opennsl_errmsg(rc));
             return;
+        }
+    }
+}
+
+/* callback function to get the per-port interface counters */
+static void
+ops_sflow_get_port_counters(void *arg, SFLPoller *poller,
+                            SFL_COUNTERS_SAMPLE_TYPE *cs)
+{
+    uint64_t speed;
+    uint32_t hw_unit = 0, hw_port = 0;
+    uint32_t index, direction, status;
+    struct ops_sflow_port_stats stats;
+    SFLCounters_sample_element elem;
+    SFLIf_counters *counters;
+
+    ovs_mutex_lock(&mutex);
+    hw_unit = (poller->bridgePort & 0xFFFF0000) >> 16;
+    hw_port = poller->bridgePort & 0x0000FFFF;
+
+
+    netdev_bcmsdk_get_sflow_intf_info(hw_unit, hw_port, &index, &speed,
+                                      &direction, &status);
+    bcmsdk_get_sflow_port_stats(hw_unit, hw_port, &stats);
+
+    elem.tag = SFLCOUNTERS_GENERIC;
+    counters = &elem.counterBlock.generic;
+    counters->ifIndex = index;
+    counters->ifType = 6;
+    counters->ifSpeed = speed;
+    counters->ifDirection = direction;
+    counters->ifStatus = status;
+    counters->ifInOctets = stats.in_octets;
+    counters->ifInUcastPkts = stats.in_ucastpkts;
+    counters->ifInMulticastPkts = stats.in_multicastpkts;
+    counters->ifInBroadcastPkts = stats.in_broadcastpkts;
+    counters->ifInDiscards = stats.in_discards;
+    counters->ifInErrors = stats.in_errors;
+    counters->ifInUnknownProtos = stats.in_unknownprotos;
+    counters->ifOutOctets = stats.out_octets;
+    counters->ifOutUcastPkts = stats.out_ucastpkts;
+    counters->ifOutMulticastPkts = stats.out_multicastpkts;
+    counters->ifOutBroadcastPkts = stats.out_broadcastpkts;
+    counters->ifOutDiscards = stats.out_discards;
+    counters->ifOutErrors = stats.out_errors;
+    counters->ifPromiscuousMode = 0;
+
+    VLOG_DBG("sflow stats %d,%d [%d, %d, %d, %d, %d/%d, %d, %d, %d/%d, %d, %d]\n",
+             hw_unit, hw_port, index, (int)speed, direction, status,
+             stats.in_ucastpkts, (int)stats.in_octets, stats.in_discards,
+             stats.in_errors, stats.out_ucastpkts, (int)stats.out_octets,
+             stats.out_discards, stats.out_errors);
+
+    SFLADD_ELEMENT(cs, &elem);
+
+    sfl_poller_writeCountersSample(poller, cs);
+
+    ovs_mutex_unlock(&mutex);
+}
+
+
+/* Configure polling per interface */
+static void
+ops_sflow_set_polling_per_interface(int interval, int hw_unit, int hw_port)
+{
+    uint32_t dsIndex;
+    SFLPoller *poller;
+    uint32_t unit_port = 0;
+    SFLDataSource_instance dsi;
+
+    dsIndex = 1000 + sflow_options->sub_id +
+                      (hw_unit * MAX_PORTS(hw_unit)) + hw_port;
+    SFL_DS_SET(dsi, SFL_DSCLASS_PHYSICAL_ENTITY, dsIndex, 0);
+
+    poller = sfl_agent_addPoller(ops_sflow_agent, &dsi, NULL,
+                                 ops_sflow_get_port_counters);
+    sfl_poller_set_sFlowCpInterval(poller, interval);
+    sfl_poller_set_sFlowCpReceiver(poller, SFLOW_RECEIVER_INDEX);
+    poller->lastPolled = time(NULL);
+    /* store hw_unit and hw_port into a single uint32 to use in the callback.
+     * take the 16 LSB from both and fit into the uint32
+     */
+    unit_port = ((hw_unit & 0x0000FFFF) << 16) | (hw_port & 0x0000FFFF);
+    sfl_poller_set_bridgePort(poller, unit_port);
+}
+
+/* Update polling interval for all the interfaces in the system. */
+void
+ops_sflow_set_polling_interval(int interval)
+{
+    int rc;
+    int unit;
+    opennsl_port_t port = 0;
+    opennsl_port_config_t port_config;
+
+    if (ops_sflow_agent) {
+        for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
+            /* Retrieve the port configuration of the unit */
+            rc = opennsl_port_config_get(unit, &port_config);
+            if (OPENNSL_FAILURE(rc)) {
+                VLOG_ERR("Failed to retrieve port config. Can't config polling. "
+                        "(rc=%s)", opennsl_errmsg(rc));
+                return;
+            }
+            OPENNSL_PBMP_ITER(port_config.e, port) {
+                ops_sflow_set_polling_per_interface(interval, unit, port);
+            }
         }
     }
 }
@@ -573,7 +686,9 @@ ops_sflow_agent_enable(struct ofproto_sflow_options *oso)
     ops_sflow_set_sampling_rate(0, 0, rate, rate);  // download the rate to ASIC
 
     sfl_sampler_set_sFlowFsMaximumHeaderSize(sampler, SFL_DEFAULT_HEADER_SIZE);
-    sfl_sampler_set_sFlowFsReceiver(sampler, 1);    // only 1 receiver. Will enhance...
+    sfl_sampler_set_sFlowFsReceiver(sampler, SFLOW_RECEIVER_INDEX);
+
+    ops_sflow_set_polling_interval(sflow_options->polling_interval);
 
     /* Install KNET filters for source and destination sampling */
     bcmsdk_knet_sflow_filter_create(&knet_sflow_source_filter_id,
@@ -821,6 +936,38 @@ static void sflow_main()
     unixctl_command_register("sflow/set-collector-ip", "collector-ip [port]", 1 , 2, ops_sflow_collector, NULL);
     unixctl_command_register("sflow/send-test-pkt", "collector-ip [port]", 1 , 2, ops_sflow_send_test_pkt, NULL);
 }
+
+void
+ops_sflow_run(struct bcmsdk_provider_node *ofproto)
+{
+    time_t now;
+    SFLPoller *pl;
+    SFL_COUNTERS_SAMPLE_TYPE cs;
+
+    if (ops_sflow_agent) {
+        now = time(NULL);
+        pl = ops_sflow_agent->pollers;
+        for(; pl != NULL; pl = pl->nxt) {
+            if ((pl->countersCountdown == 0) ||
+                (pl->sFlowCpReceiver == 0) ||
+                (!pl->getCountersFn)) {
+                continue;
+            }
+            if ((now - pl->lastPolled) >= pl->countersCountdown) {
+                memset(&cs, 0, sizeof(cs));
+                pl->getCountersFn(pl->magic, pl, &cs);
+                pl->lastPolled = now;
+                /* after the first random distribution, reset everyone to
+                 * configured polling interval.
+                 */
+                if (pl->countersCountdown != pl->sFlowCpInterval) {
+                    pl->countersCountdown = pl->sFlowCpInterval;
+                }
+            }
+        }
+    }
+}
+
 
 ///////////////////////////////// INIT /////////////////////////////////
 

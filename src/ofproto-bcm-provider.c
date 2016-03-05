@@ -257,6 +257,10 @@ destruct(struct ofproto *ofproto_ OVS_UNUSED)
 static int
 run(struct ofproto *ofproto_ OVS_UNUSED)
 {
+    struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
+
+    ops_sflow_run(ofproto);
+
     return 0;
 }
 
@@ -2004,6 +2008,15 @@ set_sflow(struct ofproto *ofproto_ OVS_UNUSED,
 
         ops_sflow_set_collector_ip(collector_ip, port);
     }
+
+    /* polling interval */
+    if (sflow_options->polling_interval != oso->polling_interval) {
+        sflow_options->polling_interval = oso->polling_interval;
+        ops_sflow_set_polling_interval(sflow_options->polling_interval);
+        VLOG_DBG("sflow: polling interval %d applied on sFlow Agent",
+                sflow_options->polling_interval);
+    }
+
     return 0;
 }
 

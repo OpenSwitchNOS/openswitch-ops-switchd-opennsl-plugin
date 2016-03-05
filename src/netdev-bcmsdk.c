@@ -911,6 +911,42 @@ netdev_bcmsdk_link_state_callback(int hw_unit, int hw_id, int link_status)
     seq_change(connectivity_seq_get());
 }
 
+/* populate some sflow related netdev info */
+void
+netdev_bcmsdk_get_sflow_intf_info(int hw_unit, int hw_id, uint32_t *index,
+                                  uint64_t *speed, uint32_t *direction,
+                                  uint32_t *status)
+{
+    int state = 0;
+    bool link_state = false;
+    enum netdev_features current, adv, supp, peer;
+    struct netdev_bcmsdk *netdev = netdev_from_hw_id(hw_unit, hw_id);
+
+    *index = hw_id; /* physical port number (?) */
+
+    if (netdev &&
+        !netdev_bcmsdk_get_features(&netdev->up, &current, &adv, &supp, &peer)) {
+        *speed = netdev_features_to_bps(current, 0);
+        *direction = (netdev_features_is_full_duplex(current) ? 1 : 2);
+    } else {
+        *speed = 100000000;
+        *direction = 0;
+    }
+
+    if (!bcmsdk_get_enable_state(hw_unit, hw_id, &state)) {
+        if (state) {
+            *status = 1; /* ifAdminStatus up. */
+        }
+        if (netdev && !netdev_bcmsdk_get_carrier(&netdev->up, &link_state)) {
+            if (link_state) {
+                *status |= 2; /* ifOperStatus up. */
+            }
+        }
+    } else {
+        *status = 0;
+    }
+}
+
 /* Helper functions. */
 
 static const struct netdev_class bcmsdk_class = {
