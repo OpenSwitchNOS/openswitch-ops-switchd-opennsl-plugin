@@ -106,10 +106,10 @@ struct ops_classifier {
     struct uuid id;
     char *name;                         /* name of classifier list */
     bool in_asic;                       /* classifer already in asic */
-    enum ops_cls_type type;          /* type of classifier list - aclv4, aclv6 */
+    enum ops_cls_type type;             /* type of classifier list - aclv4, aclv6 */
     opennsl_pbmp_t pbmp;                /* port classifier is applied */
-    struct ovs_list cl_entry_list;     /* list of ops_acl_entry */
-    struct ovs_list cl_stats_list;     /* list of stats entry */
+    struct ovs_list entry_list;         /* list of ops_acl_entry */
+    struct ovs_list update_entry_list;  /* updated ops_acl_entry list */
 };
 
 struct ops_classifier_entry {
