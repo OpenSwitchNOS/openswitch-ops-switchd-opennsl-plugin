@@ -348,20 +348,31 @@ ops_sflow_get_port_counters(void *arg, SFLPoller *poller,
     ovs_mutex_unlock(&mutex);
 }
 
+static void
+ops_sflow_set_dsi(SFLDataSource_instance *dsi, int hw_unit, int hw_port)
+{
+    uint32_t dsIndex;
+    dsIndex = 1000 + sflow_options->sub_id +
+                     (hw_unit * MAX_PORTS(hw_unit)) + hw_port;
+    SFL_DS_SET(*dsi, SFL_DSCLASS_PHYSICAL_ENTITY, dsIndex, 0);
+}
 
 /* Configure polling per interface */
 static void
-ops_sflow_set_polling_per_interface(int interval, int hw_unit, int hw_port)
+ops_sflow_set_polling_per_interface(int hw_unit, int hw_port, int interval)
 {
-    uint32_t dsIndex;
     SFLPoller *poller;
     uint32_t unit_port = 0;
     SFLDataSource_instance dsi;
 
-    dsIndex = 1000 + sflow_options->sub_id +
-                      (hw_unit * MAX_PORTS(hw_unit)) + hw_port;
-    SFL_DS_SET(dsi, SFL_DSCLASS_PHYSICAL_ENTITY, dsIndex, 0);
+    VLOG_DBG("Config polling for hw_unit %d, hw_port %d, interval %d\n",
+              hw_unit, hw_port, interval);
 
+    if (!ops_sflow_agent || hw_port == -1) { /* -1 set for some virtual intf */
+        return;
+    }
+
+    ops_sflow_set_dsi(&dsi, hw_unit, hw_port);
     poller = sfl_agent_addPoller(ops_sflow_agent, &dsi, NULL,
                                  ops_sflow_get_port_counters);
     sfl_poller_set_sFlowCpInterval(poller, interval);
@@ -374,26 +385,34 @@ ops_sflow_set_polling_per_interface(int interval, int hw_unit, int hw_port)
     sfl_poller_set_bridgePort(poller, unit_port);
 }
 
-/* Update polling interval for all the interfaces in the system. */
+
 void
-ops_sflow_set_polling_interval(int interval)
+ops_sflow_add_port(struct netdev *netdev)
 {
-    int rc;
-    int unit;
-    opennsl_port_t port = 0;
-    opennsl_port_config_t port_config;
+    int hw_unit = 0, hw_port = 0;
+    if (netdev && sflow_options) {
+        netdev_bcmsdk_get_hw_info(netdev, &hw_unit, &hw_port, NULL);
+        ops_sflow_set_polling_per_interface(hw_unit, hw_port,
+                                            sflow_options->polling_interval);
+    }
+}
+
+/* Update polling interval for all the configured interfaces in the system. */
+void
+ops_sflow_set_polling_interval(struct bcmsdk_provider_node *ofproto, int interval)
+{
+    struct ofbundle *bundle;
+    int hw_unit = 0, hw_port = 0;
+    struct bcmsdk_provider_ofport_node *port = NULL, *next_port = NULL;
 
     if (ops_sflow_agent) {
-        for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
-            /* Retrieve the port configuration of the unit */
-            rc = opennsl_port_config_get(unit, &port_config);
-            if (OPENNSL_FAILURE(rc)) {
-                VLOG_ERR("Failed to retrieve port config. Can't config polling. "
-                        "(rc=%s)", opennsl_errmsg(rc));
-                return;
-            }
-            OPENNSL_PBMP_ITER(port_config.e, port) {
-                ops_sflow_set_polling_per_interface(interval, unit, port);
+        HMAP_FOR_EACH(bundle, hmap_node, &ofproto->bundles) {
+            LIST_FOR_EACH_SAFE(port, next_port, bundle_node, &bundle->ports) {
+                if (port->sflow_polling_interval != interval) {
+                    netdev_bcmsdk_get_hw_info(port->up.netdev, &hw_unit, &hw_port, NULL);
+                    ops_sflow_set_polling_per_interface(hw_unit, hw_port, interval);
+                    port->sflow_polling_interval = interval;
+                }
             }
         }
     }
@@ -460,7 +479,7 @@ ops_sflow_set_sampling_rate(const int unit, const int port,
 
 static void
 ops_sflow_set_rate(struct unixctl_conn *conn, int argc, const char *argv[],
-              void *aux OVS_UNUSED)
+                   void *aux OVS_UNUSED)
 {
     int ingress_rate, egress_rate;
     int port;
@@ -564,7 +583,8 @@ ops_sflow_alloc(void)
  * is NULL. sFlow Agent must be created only once.
  */
 void
-ops_sflow_agent_enable(struct ofproto_sflow_options *oso)
+ops_sflow_agent_enable(struct bcmsdk_provider_node *ofproto,
+                       struct ofproto_sflow_options *oso)
 {
     SFLReceiver *receiver;
     SFLSampler  *sampler;
@@ -579,6 +599,10 @@ ops_sflow_agent_enable(struct ofproto_sflow_options *oso)
     uint32_t    rate;
     int         af;
     void        *addr;
+
+    if (!ofproto) {
+        return;
+    }
 
     if (sflow_options == NULL) {
         VLOG_DBG("ofproto_sflow_options is NULL. Create new options.");
@@ -688,7 +712,7 @@ ops_sflow_agent_enable(struct ofproto_sflow_options *oso)
     sfl_sampler_set_sFlowFsMaximumHeaderSize(sampler, SFL_DEFAULT_HEADER_SIZE);
     sfl_sampler_set_sFlowFsReceiver(sampler, SFLOW_RECEIVER_INDEX);
 
-    ops_sflow_set_polling_interval(sflow_options->polling_interval);
+    ops_sflow_set_polling_interval(ofproto, sflow_options->polling_interval);
 
     /* Install KNET filters for source and destination sampling */
     bcmsdk_knet_sflow_filter_create(&knet_sflow_source_filter_id,
@@ -734,7 +758,7 @@ ops_sflow_agent_fn(struct unixctl_conn *conn, int argc, const char *argv[],
                 void *aux OVS_UNUSED)
 {
     if (strncmp(argv[1], "yes", 3) == 0) {
-        ops_sflow_agent_enable(NULL);
+        ops_sflow_agent_enable(NULL, NULL);
     } else if (strncmp(argv[1], "no", 2) == 0) {
         ops_sflow_agent_disable();
 
@@ -942,6 +966,7 @@ ops_sflow_run(struct bcmsdk_provider_node *ofproto)
 {
     time_t now;
     SFLPoller *pl;
+    SFLReceiver *rcv;
     SFL_COUNTERS_SAMPLE_TYPE cs;
 
     if (ops_sflow_agent) {
@@ -964,6 +989,11 @@ ops_sflow_run(struct bcmsdk_provider_node *ofproto)
                     pl->countersCountdown = pl->sFlowCpInterval;
                 }
             }
+        }
+        /* receivers use ticks to flush send data */
+        rcv = ops_sflow_agent->receivers;
+        for(; rcv != NULL; rcv = rcv->nxt) {
+            sfl_receiver_tick(rcv, now);
         }
     }
 }

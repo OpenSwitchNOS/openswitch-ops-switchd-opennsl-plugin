@@ -1598,6 +1598,7 @@ port_add(struct ofproto *ofproto_, struct netdev *netdev)
     const char *devname = netdev_get_name(netdev);
 
     sset_add(&ofproto->ports, devname);
+    ops_sflow_add_port(netdev);
     return 0;
 }
 
@@ -1914,13 +1915,14 @@ delete_l3_host_entry(const struct ofproto *ofproto_, void *aux,
 } /* delete_l3_host_entry */
 
 static int
-set_sflow(struct ofproto *ofproto_ OVS_UNUSED,
-         const struct ofproto_sflow_options *oso)
+set_sflow(struct ofproto *ofproto_,
+          const struct ofproto_sflow_options *oso)
 {
     int target_count=0;
     const char *collector_ip;
     char *port, *vrf;
-    uint32_t    rate;
+    uint32_t rate;
+    struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
 
     if (oso == NULL) { /* disable sflow */
         VLOG_DBG("Input sflow options are NULL (maybe sflow (or collectors) is "
@@ -1959,9 +1961,11 @@ set_sflow(struct ofproto *ofproto_ OVS_UNUSED,
     /* sFlow Agent create, for first time. */
     if (sflow_options == NULL) {
         VLOG_DBG("sflow: Initialize sFlow agent with input options.");
-        ops_sflow_agent_enable(oso);
+        ops_sflow_agent_enable(ofproto, oso);
         return 0;
     } else if (ops_sflow_options_equal(oso, sflow_options)) {
+        /* polling interval unchanged checked for each port later */
+        ops_sflow_set_polling_interval(ofproto, sflow_options->polling_interval);
         VLOG_DBG("sflow: options are unchanged.");
         return 0;
     }
@@ -1969,10 +1973,10 @@ set_sflow(struct ofproto *ofproto_ OVS_UNUSED,
     /* sFlow Agent exists. It's options has changed, update Agent. */
 
     VLOG_DBG("sflow config: sampling: %d, num_targets: %zd, hdr len: %d,"
-             "agent dev: %s, agent ip: %s",
+             "agent dev: %s, agent ip: %s, polling : %d",
             oso->sampling_rate, sset_count(&oso->targets), oso->header_len,
             oso->agent_device ? oso->agent_device : "NULL",
-            oso->agent_ip ? oso->agent_ip : "NULL");
+            oso->agent_ip ? oso->agent_ip : "NULL", oso->polling_interval);
 
     /* Sampling rate has changed. */
     rate = oso->sampling_rate;
@@ -2009,13 +2013,9 @@ set_sflow(struct ofproto *ofproto_ OVS_UNUSED,
         ops_sflow_set_collector_ip(collector_ip, port);
     }
 
-    /* polling interval */
-    if (sflow_options->polling_interval != oso->polling_interval) {
-        sflow_options->polling_interval = oso->polling_interval;
-        ops_sflow_set_polling_interval(sflow_options->polling_interval);
-        VLOG_DBG("sflow: polling interval %d applied on sFlow Agent",
-                sflow_options->polling_interval);
-    }
+    /* polling interval unchanged checked for each port later */
+    sflow_options->polling_interval = oso->polling_interval;
+    ops_sflow_set_polling_interval(ofproto, sflow_options->polling_interval);
 
     return 0;
 }

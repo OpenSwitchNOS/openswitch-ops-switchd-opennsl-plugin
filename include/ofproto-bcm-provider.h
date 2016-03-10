@@ -109,6 +109,9 @@ struct bcmsdk_provider_ofport_node {
     struct ofproto_port_queue *qdscp;
     size_t n_qdscp;
 
+    /* sflow polling interval for this port */
+    int sflow_polling_interval;
+
     /* Linux VLAN device support (e.g. "eth0.10" for VLAN 10.)
      *
      * This is deprecated.  It is only for compatibility with broken device */

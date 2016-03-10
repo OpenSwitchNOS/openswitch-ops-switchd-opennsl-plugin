@@ -106,10 +106,14 @@ extern void
 ops_sflow_set_sampling_rate(const int unit, const int port,
                             const int ingress_rate, const int egress_rate);
 void
-ops_sflow_set_polling_interval(int polling_interval);
+ops_sflow_set_polling_interval(struct bcmsdk_provider_node *ofproto,
+                               int polling_interval);
 
 void
 ops_sflow_run(struct bcmsdk_provider_node *ofproto);
+
+void
+ops_sflow_add_port(struct netdev *netdev);
 
 extern void ops_sflow_set_collector_ip(const char *ip, const char *port);
 
