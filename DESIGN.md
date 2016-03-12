@@ -195,6 +195,24 @@ If a VLAN is deleted without deleting the subinterface, the VLAN is not deleted 
 ### L3 interface statistics
 For L3 interface statistics, Field Processor(FP) packet qualification rules are programmed to count unicast and multicast IPv4 and IPv6 packet types. These FPs are programed when an L3 interface is created and removed when an L3 interface is removed. These FP's have statistics objects associated with them which are periodically polled to get the number of L3 packets and bytes.
 
+### LAG L3 interface
+
+L3 LAG continues to use the registered class for "system" for its netdev functionality.
+
+Creating layer3 lag.
+- create layer 3 LAG bundle with internal vlan.
+- Add members in the internal VLAN bitmap created for LAG.
+- Add members to L3 LAG bundle.
+- Create knet filters for send packets to their corresponding linux interface for each member added.
+- Update Ip address for LAG
+- If the interface added to LAG is already an L3 interface, destroy the bundle for that interface before adding to LAG.
+- Update LAG ID in the nexthop table.
+
+Destroy L3 LAG:
+- Remove members from internal VLAN.
+- Remove member interfaces from l3 LAG bundle
+- Delete knet filter that had been created for that member.
+- If there are no ports in the LAG then destroy the l3 bundle.
 
 ## References
 [OpenvSwitch Porting Guide](http://git.openvswitch.org/cgi-bin/gitweb.cgi?p=openvswitch;a=blob;f=PORTING)
