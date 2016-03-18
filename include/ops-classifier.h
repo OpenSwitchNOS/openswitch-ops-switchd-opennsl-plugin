@@ -17,8 +17,7 @@
 #ifndef __OPS_CLASSIFIER_H__
 #define __OPS_CLASSIFIER_H__ 1
 
-
-#include "vswitchd/plugins/ops-classifier/include/ofproto-ops-classifier.h"
+#include "ofproto-ops-classifier.h"
 
 /************************************************************************//**
  * @defgroup ops-switchd-classifier-api classifier plug-in interface
