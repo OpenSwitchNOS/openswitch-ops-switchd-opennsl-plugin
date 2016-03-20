@@ -17,18 +17,7 @@
  * Hewlett-Packard Company Confidential (C) Copyright 2015 Hewlett-Packard Development Company, L.P.
  */
 
-#include <errno.h>
-
-#include <seq.h>
-#include <coverage.h>
-#include <vlan-bitmap.h>
-#include <ofproto/ofproto-provider.h>
-#include <ofproto/bond.h>
-#include <ofproto/tunnel.h>
-#include <openvswitch/vlog.h>
-
-#include <vswitch-idl.h>
-#include <openswitch-idl.h>
+#include <config.h>
 
 #include "ops-pbmp.h"
 #include "ops-vlan.h"
@@ -37,7 +26,21 @@
 #include "ops-knet.h"
 #include "netdev-bcmsdk.h"
 #include "platform-defines.h"
+
+#include <errno.h>
+
+#include "coverage.h"
 #include "ofproto-bcm-provider.h"
+#include "ofproto/ofproto-provider.h"
+#include "ofproto/bond.h"
+#include "ofproto/tunnel.h"
+#include "openswitch-idl.h"
+#include "openvswitch/vlog.h"
+#include "qos-asic-provider.h"
+#include "seq.h"
+#include "vlan-bitmap.h"
+#include "vswitch-idl.h"
+
 
 VLOG_DEFINE_THIS_MODULE(ofproto_bcm_provider);
 
@@ -2052,6 +2055,88 @@ int
 l3_ecmp_hash_set(const struct ofproto *ofprotop, unsigned int hash, bool enable)
 {
     return ops_routing_ecmp_hash_set(0, hash, enable);
+}
+
+int
+set_port_qos_cfg(struct ofproto *ofproto_,
+                 void *aux,  // struct port *port
+                 const struct  qos_port_settings *cfg) {
+    const struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
+
+    struct ofbundle *bundle = bundle_lookup(ofproto, aux);
+    if (bundle)
+    {
+        VLOG_DBG("%s: port %s, settings->qos_trust %d, cfg@ %p",
+                 __FUNCTION__, bundle->name, cfg->qos_trust, cfg->other_config);
+    }
+    else
+    {
+        VLOG_DBG("%s: NO BUNDLE aux@%p, settings->qos_trust %d, cfg@ %p",
+                 __FUNCTION__, aux, cfg->qos_trust, cfg->other_config);
+    }
+
+    return 0;
+}
+
+int
+set_cos_map(struct ofproto *ofproto,
+            void *aux,
+            const struct cos_map_settings *settings) {
+    int   index;
+    struct cos_map_entry *entry;
+
+    for (index = 0; index < settings->n_entries; index++) {
+        entry = &settings->entries[index];
+        VLOG_DBG("%s: ofproto@ %p index=%d color=%d cp=%d lp=%d",
+                 __FUNCTION__, ofproto, index,
+                 entry->color, entry->codepoint, entry->local_priority);
+    }
+
+    return 0;
+}
+
+int
+set_dscp_map(struct ofproto *ofproto,
+             void *aux,
+             const struct dscp_map_settings *settings) {
+    int   index;
+    struct dscp_map_entry *entry;
+
+    for (index = 0; index < settings->n_entries; index++) {
+        entry = &settings->entries[index];
+        VLOG_DBG("%s: ofproto@ %p index=%d color=%d cp=%d lp=%d cos=%d",
+                 __FUNCTION__, ofproto, index,
+                 entry->color, entry->codepoint, entry->local_priority, entry->cos);
+    }
+
+    return 0;
+}
+
+int
+apply_qos_profile(struct ofproto *ofproto,
+                  void *aux,
+                  const struct schedule_profile_settings *s_settings,
+                  const struct queue_profile_settings *q_settings) {
+    int index;
+    struct queue_profile_entry *qp_entry;
+    struct schedule_profile_entry *sp_entry;
+
+    VLOG_DBG("%s ofproto@ %p aux=%p q_settings=%p s_settings=%p", __FUNCTION__,
+             aux, ofproto, s_settings, q_settings);
+
+    for (index = 0; index < q_settings->n_entries; index++) {
+        qp_entry = q_settings->entries[index];
+        VLOG_INFO("... %d q=%d #lp=%d", index,
+                  qp_entry->queue, qp_entry->n_local_priorities);
+    }
+
+    for (index = 0; index < s_settings->n_entries; index++) {
+        sp_entry = s_settings->entries[index];
+        VLOG_INFO("... %d q=%d alg=%d wt=%d", index,
+                  sp_entry->queue, sp_entry->algorithm, sp_entry->weight);
+    }
+
+    return 0;
 }
 
 const struct ofproto_class ofproto_bcm_provider_class = {
