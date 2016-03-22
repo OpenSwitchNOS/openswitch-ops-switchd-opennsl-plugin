@@ -63,6 +63,7 @@
 
 #define SFLOW_COLLECTOR_DFLT_PORT   "6343"
 #define SFLOW_RECEIVER_INDEX 1
+#define PORT_BUF_LEN 6 /* maximum char in a L4 port */
 
 struct ops_sflow_port_stats {
     uint64_t in_octets;
@@ -96,7 +97,7 @@ extern void ops_sflow_write_sampled_pkt(opennsl_pkt_t *pkt);
 extern void print_pkt(const opennsl_pkt_t *pkt);
 
 extern void ops_sflow_agent_enable();
-extern void ops_sflow_agent_disable();
+extern void ops_sflow_agent_disable(struct bcmsdk_provider_node *ofproto);
 
 extern bool
 ops_sflow_options_equal(const struct ofproto_sflow_options *oso1,
@@ -122,5 +123,8 @@ ops_sflow_agent_ip(const char *ip);
 
 extern void
 ops_sflow_set_per_interface (const int unit, const int port, bool set);
+
+void
+ops_sflow_set_collectors(struct sset *ops_targets);
 
 #endif /* __OPS_SFLOW_H__ */

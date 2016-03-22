@@ -1918,17 +1918,14 @@ static int
 set_sflow(struct ofproto *ofproto_,
           const struct ofproto_sflow_options *oso)
 {
-    int target_count=0;
-    const char *collector_ip;
-    char *port, *vrf;
     uint32_t rate;
     struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
 
     if (oso == NULL) { /* disable sflow */
-        VLOG_DBG("Input sflow options are NULL (maybe sflow (or collectors) is "
-                "not configured or disabled)");
+        VLOG_DBG("%s : Input sflow options are NULL (maybe sflow (or collectors) is "
+                "not configured or disabled)", ofproto->up.name);
 
-        ops_sflow_agent_disable();
+        ops_sflow_agent_disable(ofproto);
 
         if (sflow_options) {
             free(sflow_options);
@@ -1941,7 +1938,7 @@ set_sflow(struct ofproto *ofproto_,
     if (sset_is_empty(&oso->targets)) {
         VLOG_DBG("sflow targets not set. Disable sFlow Agent.");
 
-        ops_sflow_agent_disable();
+        ops_sflow_agent_disable(ofproto);
 
         /* if 'sflow_options' have any targets, clear them. */
         if (sflow_options) {
@@ -1964,7 +1961,7 @@ set_sflow(struct ofproto *ofproto_,
         ops_sflow_agent_enable(ofproto, oso);
         return 0;
     } else if (ops_sflow_options_equal(oso, sflow_options)) {
-        /* polling interval unchanged checked for each port later */
+        /* polling interval change checked later for each port. */
         ops_sflow_set_polling_interval(ofproto, sflow_options->polling_interval);
         VLOG_DBG("sflow: options are unchanged.");
         return 0;
@@ -1993,27 +1990,14 @@ set_sflow(struct ofproto *ofproto_,
     }
     ops_sflow_agent_ip(oso->agent_ip);
 
-    /* Collector ip -- could be of form ip/port/vrf */
-    SSET_FOR_EACH(collector_ip, &oso->targets) {
-        VLOG_DBG("sflow: target [%d] : [%s]", target_count++, collector_ip);
-
-        /* retreive port info, if configured */
-        if ((port = strchr(collector_ip, '/')) != NULL) {
-            *port = '\0';
-            port++;
-            /* save vrf name */
-            if ((vrf=strchr(port, '/')) != NULL) {
-                *vrf = '\0';
-                vrf++;
-            }
-        } else {
-            port = SFLOW_COLLECTOR_DFLT_PORT;
-        }
-
-        ops_sflow_set_collector_ip(collector_ip, port);
+    if (!sset_equals(&oso->targets, &sflow_options->targets)) {
+        /* collectors has changed. destroy and create again. */
+        sset_destroy(&sflow_options->targets);
+        sset_clone(&sflow_options->targets, &oso->targets);
+        ops_sflow_set_collectors(&sflow_options->targets);
     }
 
-    /* polling interval unchanged checked for each port later */
+    /* polling interval change checked later for each port. */
     sflow_options->polling_interval = oso->polling_interval;
     ops_sflow_set_polling_interval(ofproto, sflow_options->polling_interval);
 

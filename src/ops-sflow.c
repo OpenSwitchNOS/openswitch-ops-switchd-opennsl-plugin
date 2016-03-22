@@ -32,15 +32,18 @@
 #include <netdb.h>
 #include <platform-defines.h>
 
+#include "ofproto/collectors.h"
 #include "ops-stats.h"
 #include "ops-sflow.h"
+#include "ops-routing.h"
 #include "netdev-bcmsdk.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_sflow);
 
-/* sFlow parameters */
+/* sFlow parameters - TODO make these per ofproto */
 SFLAgent *ops_sflow_agent = NULL;
 struct ofproto_sflow_options *sflow_options = NULL;
+struct collectors *sflow_collectors = NULL;
 
 /* sFlow knet filter id's */
 int knet_sflow_source_filter_id;
@@ -74,6 +77,16 @@ ops_sflow_agent_error_cb(void *magic OVS_UNUSED, SFLAgent *ops_agent OVS_UNUSED,
 {
     VLOG_ERR("%s", err);
 }
+
+/* sFlow library callback to send datagram. */
+static void
+ops_sflow_agent_pkt_tx_cb(void *ds_, SFLAgent *agent OVS_UNUSED,
+                          SFLReceiver *receiver OVS_UNUSED, u_char *pkt,
+                          uint32_t pktLen)
+{
+    collectors_send(sflow_collectors, pkt, pktLen);
+}
+
 
 static bool
 string_is_equal(char *str1, char *str2)
@@ -555,7 +568,7 @@ done:
 static void
 ops_sflow_options_init(struct ofproto_sflow_options *oso)
 {
-    sset_init(&(oso->targets)); // 'targets' is not used in Dill sprint.
+    sset_init(&(oso->targets));
     oso->sampling_rate = SFL_DEFAULT_SAMPLING_RATE;
     oso->polling_interval = SFL_DEFAULT_POLLING_INTERVAL;
     oso->header_len = SFL_DEFAULT_HEADER_SIZE;
@@ -594,8 +607,6 @@ ops_sflow_agent_enable(struct bcmsdk_provider_node *ofproto,
     struct in6_addr myIP6;
     uint32_t    dsIndex;
     time_t      now;
-    const char  *collector_ip;
-    char        *port, *vrf;
     uint32_t    rate;
     int         af;
     void        *addr;
@@ -611,6 +622,8 @@ ops_sflow_agent_enable(struct bcmsdk_provider_node *ofproto,
 
         if (oso) {
             memcpy(sflow_options, oso, sizeof *oso);
+            sset_init(&sflow_options->targets);
+            sset_clone(&sflow_options->targets, &oso->targets);
         } else {
             ops_sflow_options_init(sflow_options);
         }
@@ -664,33 +677,14 @@ ops_sflow_agent_enable(struct bcmsdk_provider_node *ofproto,
             ops_sflow_agent_alloc_cb,
             ops_sflow_agent_free_cb,
             ops_sflow_agent_error_cb,
-            NULL);  /* Each receiver will send pkts to collector. */
+            ops_sflow_agent_pkt_tx_cb);
 
     /* RECEIVER: aka Collector */
     receiver = sfl_agent_addReceiver(ops_sflow_agent);
     sfl_receiver_set_sFlowRcvrOwner(receiver, "Openswitch sFlow Receiver");
     sfl_receiver_set_sFlowRcvrTimeout(receiver, 0xffffffff);
 
-    /* Receiver IP settings.
-     * TODO: Enhance to support multiple receivers. */
-    SSET_FOR_EACH(collector_ip, &oso->targets) {
-        VLOG_DBG("sflow: collector_ip: [%s]", collector_ip);
-
-        /* retrieve port info */
-        if ((port = strchr(collector_ip, '/')) != NULL) {
-            *port = '\0';
-            port++;
-            /* get vrf info */
-            if ((vrf=strchr(port, '/')) != NULL) {
-                *vrf = '\0';
-                vrf++;
-            }
-        } else {
-            port = SFLOW_COLLECTOR_DFLT_PORT;
-        }
-
-        ops_sflow_set_collector_ip(collector_ip, port);
-    }
+    ops_sflow_set_collectors(&sflow_options->targets);
 
     /* SAMPLER: OvS lib for sFlow seems to encourage one Sampler per
      * interface. Currently, OPS will have only one Sampler for all
@@ -724,8 +718,22 @@ ops_sflow_agent_enable(struct bcmsdk_provider_node *ofproto,
 }
 
 void
-ops_sflow_agent_disable()
+ops_sflow_agent_disable(struct bcmsdk_provider_node *ofproto)
 {
+    struct ofbundle *bundle;
+    struct bcmsdk_provider_ofport_node *port = NULL, *next_port = NULL;
+
+    if (!ofproto) {
+        return;
+    }
+
+    /* clear the polling interval config from each port */
+    HMAP_FOR_EACH(bundle, hmap_node, &ofproto->bundles) {
+        LIST_FOR_EACH_SAFE(port, next_port, bundle_node, &bundle->ports) {
+            port->sflow_polling_interval = 0;
+        }
+    }
+
     if (ops_sflow_agent) {
         VLOG_DBG("KNET filter IDs: source %d, dest %d",
                 knet_sflow_source_filter_id, knet_sflow_dest_filter_id);
@@ -760,7 +768,7 @@ ops_sflow_agent_fn(struct unixctl_conn *conn, int argc, const char *argv[],
     if (strncmp(argv[1], "yes", 3) == 0) {
         ops_sflow_agent_enable(NULL, NULL);
     } else if (strncmp(argv[1], "no", 2) == 0) {
-        ops_sflow_agent_disable();
+        ops_sflow_agent_disable(NULL);
 
     } else {
         /* Error condition */
@@ -879,6 +887,51 @@ ops_sflow_set_collector_ip(const char *ip, const char *port)
     sfl_receiver_set_sFlowRcvrPort(receiver, portN);
 
     VLOG_DBG("Set IP/port (%s/%d) on receiver", ip, portN);
+}
+
+/* Configure the collectors */
+void
+ops_sflow_set_collectors(struct sset *ops_targets)
+{
+    char *port, *vrf;
+    struct sset targets;
+    int target_count = 0;
+    const char *collector_ip;
+    char buf[IPV6_BUFFER_LEN + PORT_BUF_LEN + 5]; /* 5 for the separators */
+
+    if (!ops_targets) {
+        return;
+    }
+
+    sset_init(&targets);
+    collectors_destroy(sflow_collectors);
+    /* ops_targets is in the form <IP>/<port>.
+     * need to convert it to <IP>:<port> as expected by collectors util.
+     */
+    /* Collector ip -- could be of form ip/port/vrf */
+    SSET_FOR_EACH(collector_ip, ops_targets) {
+        char *tmp_ip = xstrdup(collector_ip); /* so we don't modify ops_targets */
+        /* retreive port info, if configured */
+        if ((port = strchr(tmp_ip, '/')) != NULL) {
+            *port = '\0';
+            port++;
+            /* save vrf name */
+            if ((vrf = strchr(port, '/')) != NULL) {
+                *vrf = '\0';
+                vrf++;
+            }
+        } else {
+            port = SFLOW_COLLECTOR_DFLT_PORT;
+        }
+
+        snprintf(buf, IPV6_BUFFER_LEN + PORT_BUF_LEN + 5 - 1,
+                 "[%s]:[%s]", tmp_ip, port);
+        sset_add(&targets, buf);
+        free(tmp_ip);
+        VLOG_DBG("sflow: adding collector [%d] : '%s'", target_count++, buf);
+    }
+    collectors_create(&targets, atoi(SFLOW_COLLECTOR_DFLT_PORT),
+                      &sflow_collectors);
 }
 
 /* This function creates a receiver and sets an IP for it. */
