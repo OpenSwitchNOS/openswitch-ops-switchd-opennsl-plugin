@@ -30,6 +30,7 @@
 #include "ops-bcm-init.h"
 #include "ops-knet.h"
 #include "ops-port.h"
+#include "ops-mirrors.h"
 #include "ops-routing.h"
 #include "ops-vlan.h"
 #include "ops-debug.h"
@@ -106,6 +107,12 @@ ops_bcm_appl_init(void)
             VLOG_ERR("L3 subsystem init failed");
             return 1;
         }
+
+        rc = bcmsdk_mirrors_init(unit);
+        if (rc) {
+            VLOG_ERR("MIRRORING/SPAN subsystem init failed");
+            return 1;
+        }
     }
 
     return 0;
@@ -120,7 +127,7 @@ ops_switch_main(int argc, char *argv[])
     VLOG_INFO("Initializing OpenNSL driver.");
 
     /* Initialize the system. */
-    rv = opennsl_driver_init();
+    rv = opennsl_driver_init(NULL);
 
     if (rv != OPENNSL_E_NONE) {
         VLOG_ERR("Failed to initialize the system.  rc=%s",
