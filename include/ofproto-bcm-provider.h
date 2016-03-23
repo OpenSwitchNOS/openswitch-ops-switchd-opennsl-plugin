@@ -23,6 +23,7 @@
 #include <ofproto/ofproto-provider.h>
 #include <opennsl/types.h>
 #include <opennsl/l3.h>
+#include <opennsl/mirror.h>
 
 /* No bfd/cfm status change. */
 #define NO_STATUS_CHANGE -1
@@ -70,6 +71,9 @@ struct ofbundle {
     int bond_hw_handle;         /* Allocated bond id in hardware. */
     int hw_unit, hw_port;       /* HW identification of L3 interfaces, might change
                                  * when L3 on top of LAGs would be introduced */
+
+    /* used for mirroring */
+    opennsl_mirror_destination_t *mirror_data;
 
     /* L3 Routing */
     opennsl_l3_intf_t *l3_intf;  /* L3 interface pointer. NULL if not L3 */

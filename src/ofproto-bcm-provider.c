@@ -30,14 +30,15 @@
 #include <vswitch-idl.h>
 #include <openswitch-idl.h>
 
+#include "ofproto-bcm-provider.h"
 #include "ops-pbmp.h"
 #include "ops-vlan.h"
 #include "ops-lag.h"
 #include "ops-routing.h"
 #include "ops-knet.h"
+#include "ops-mirrors.h"
 #include "netdev-bcmsdk.h"
 #include "platform-defines.h"
-#include "ofproto-bcm-provider.h"
 
 VLOG_DEFINE_THIS_MODULE(ofproto_bcm_provider);
 
@@ -57,6 +58,14 @@ static void available_vrf_ids_init(void);
 static size_t allocate_vrf_id(void);
 static void release_vrf_id(size_t);
 static void port_unconfigure_ips(struct ofbundle *bundle);
+
+/* mirroring/spanning */
+#define _STATIC_
+typedef struct mirror_object_s mirror_object_t;
+_STATIC_ void mirror_object_direct_destroy (mirror_object_t *mirror);
+static void mirror_object_destroy_with_name (const char *name);
+static void mirror_object_destroy_with_aux (void *aux);
+static void mirror_object_destroy_with_mtp (struct ofbundle *mtp);
 
 /* vrf id avalability bitmap */
 static unsigned long *available_vrf_ids = NULL;
@@ -623,6 +632,9 @@ bundle_destroy(struct ofbundle *bundle)
         bcmsdk_destroy_lag(bundle->bond_hw_handle);
     }
 
+    /* in case a mirror destination, unconfigure it */
+    mirror_object_destroy_with_mtp(bundle);
+
     ofproto = bundle->ofproto;
 
     hmap_remove(&ofproto->bundles, &bundle->hmap_node);
@@ -1025,6 +1037,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         bundle->trunk_all_vlans = false;
         bundle->pbm = NULL;
         bundle->bond_hw_handle = -1;
+        bundle->mirror_data = NULL;
         bundle->lacp = NULL;
         bundle->bond = NULL;
 
@@ -1204,6 +1217,10 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                 break;
             case BM_L3_SRC_DST_HASH:
                 lag_mode = OPENNSL_TRUNK_PSC_SRCDSTIP;
+                break;
+            case BM_L4_SRC_DST_HASH:
+                bcmsdk_trunk_hash_setup(OPS_L4_SRC_DST);
+                lag_mode = OPENNSL_TRUNK_PSC_PORTFLOW;
                 break;
             default:
                 break;
@@ -1627,20 +1644,668 @@ set_vlan(struct ofproto *ofproto, int vid, bool add)
     return 0;
 }
 
-/* Mirrors. */
+/************************ Mirror related functions ***********************/
+
+/* how many max mirrored ports in one mirror */
+#define MAX_MIRROR_SOURCES      128
+
+/* max no of 'mirror to' ports */
+#define MAX_MIRRORS             32
+
+/* every unique mirror has a name; its size in chars */
+#define MIRROR_NAME_SIZE        32
+
+/*
+ * This structure represents a 'compacted' form of a mirrored port.
+ * The 'flags' is constructed from a combination of whether the
+ * port is included in the 'srcs' (ingress) and/or 'dsts' (egress)
+ * lists.  We need the flags since we use them when we disassociate
+ * a port from the MTP.  Unless the EXACT same flags used in the
+ * association phase are not specied during disassociation, BCM
+ * rejects the call.
+ */
+typedef struct mirrored_port_s {
+
+    /* bundle for this port */
+    struct ofbundle *port_bundle;
+
+    /* flags this bundle was created with; will be needed at deletion */
+    uint32 flags;
+
+} mirrored_port_t;
+
+/*
+ * This structure is used as a lookup between aux <--> endpoint bundle
+ * which define the mirror.  Requests from higher layers usually have
+ * the opaque 'aux' pointer (key).  So we store this in a lookup table
+ * to obtain the the rest of the mirroring information when needed.
+ *
+ * Since BCM mtp deletion first requires all source ports to be deleted
+ * from the mtp, we also unfortunately MUST keep the list of ingress
+ * and egress source ports so we can refer to them during mtp deletion.
+ */
+struct mirror_object_s {
+
+    /* name of the mirror object, used for debugging */
+    char name [MIRROR_NAME_SIZE];
+
+    /* 'higher' level mirror object.  Treat it as a 'unique key' */
+    void *aux;
+
+    /* The endpoint bundle of this mirror object */
+    struct ofbundle *mtp;
+
+    /* set of ingress/egress ports to be mirrored */
+    int n_mirrored;
+    mirrored_port_t mirrored_ports [MAX_MIRROR_SOURCES];
+
+};
+
+/*
+ * all the mirrors in the system
+ */
+static mirror_object_t all_mirrors [MAX_MIRRORS] = {{{ 0 }}};
+
+/*
+ * find the mirror object, given its name
+ */
+static mirror_object_t *
+find_mirror_with_name (const char *name)
+{
+    int i;
+    mirror_object_t *m;
+
+    DEBUG_MIRROR("searching mirror object with name %s", name);
+    for (i = 0; i < MAX_MIRRORS; i++) {
+        m = &all_mirrors[i];
+        if (m->aux && m->mtp) {
+            if (0 == strcmp(name, m->name)) {
+                DEBUG_MIRROR("found mirror with name %s at index %d",
+                        name, i);
+                return m;
+            }
+        }
+    }
+    DEBUG_MIRROR("could NOT find mirror object with name %s", name);
+    return NULL;
+}
+
+/*
+ * given the 'aux' user opaque pointer (key), finds the
+ * corresponding mirror object
+ */
+static mirror_object_t *
+find_mirror_with_aux (void *aux)
+{
+    int i;
+
+    DEBUG_MIRROR("searching mirror object with aux 0x%p", aux);
+    for (i = 0; i < MAX_MIRRORS; i++) {
+        if (aux == all_mirrors[i].aux) {
+            DEBUG_MIRROR("found mirror with aux 0x%p at index %d", aux, i);
+            return &all_mirrors[i];
+        }
+    }
+    DEBUG_MIRROR("could NOT find mirror object with aux 0x%p", aux);
+    return NULL;
+}
+
+/*
+ * similar to above but finds the mirror based on its mtp bundle
+ */
+static mirror_object_t *
+find_mirror_with_mtp (struct ofbundle *mtp)
+{
+    int i;
+
+    DEBUG_MIRROR("searching mirror with mtp %s", mtp->name);
+    for (i = 0; i < MAX_MIRRORS; i++) {
+        if (mtp == all_mirrors[i].mtp) {
+            DEBUG_MIRROR("found mirror with mtp %s at index %d", mtp->name, i);
+            return &all_mirrors[i];
+        }
+    }
+    DEBUG_MIRROR("could NOT find mirror with mtp %s", mtp->name);
+    return NULL;
+}
+
+/*
+ * is the array entry considered empty ? a new slot
+ */
+static bool
+mirror_slot_is_free (mirror_object_t *m)
+{
+    return
+        (NULL == m->aux) && (NULL == m->mtp);
+}
+
+/*
+ * Returns the first un-used slot in the array.
+ * This is called in preparation to add a new
+ * entry to the array.
+ */
+static mirror_object_t *
+mirror_object_allocate (void)
+{
+    int i;
+    mirror_object_t *m;
+
+    for (i = 0; i < MAX_MIRRORS; i++) {
+        m = &all_mirrors[i];
+        if (mirror_slot_is_free(m)) {
+            DEBUG_MIRROR("created a new empty mirror object at index %d", i);
+            m->n_mirrored = 0;
+            return m;
+        }
+    }
+    DEBUG_MIRROR("could NOT create a new mirror object, out of memory");
+    return NULL;
+}
+
+static void
+mirror_object_free (mirror_object_t *m)
+{
+    m->aux = NULL;
+    if (m->mtp) {
+        if (m->mtp->mirror_data) {
+            free(m->mtp->mirror_data);
+            m->mtp->mirror_data = NULL;
+        }
+        m->mtp = NULL;
+    }
+    m->n_mirrored = 0;
+}
+
+/*
+ * find if the specified bundle pointer exists in
+ * an arbitrary array of bundle pointers
+ */
+static bool
+bundle_present (struct ofbundle *searched_bundle,
+        struct ofbundle **bundle_list, int count)
+{
+    int i;
+
+    for (i = 0; i < count; i++) {
+        if (searched_bundle == bundle_list[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * returns true if the specified bundle is a lag/bond/trunk/ether channel
+ */
+static bool
+bundle_is_a_lag (struct ofbundle *bundle)
+{
+    return
+        bundle->bond_hw_handle >= 0;
+}
+
+/*
+ * this is a weird one....
+ * altho a 'simple' port bundle is supposed to have one port to
+ * one interface mapping, that does not seem to be the case.
+ * it seems to also contain a 'made up' interface
+ * like 'bridge_normal'.  so, we have to actually search the name
+ * in the list.
+ */
+static struct bcmsdk_provider_ofport_node *
+get_named_ofp_port (const struct bcmsdk_provider_node *ofproto, char *name)
+{
+    struct ofport *ofport;
+    struct bcmsdk_provider_ofport_node *node;
+    const char *netdev_name;
+
+    HMAP_FOR_EACH(ofport, hmap_node, &ofproto->up.ports) {
+        node = bcmsdk_provider_ofport_node_cast(ofport);
+        netdev_name = netdev_get_name(node->up.netdev);
+        if (0 == strcasecmp(name, netdev_name)) return node;
+    }
+    return NULL;
+}
+
+/*
+ * obtains the hw_unit & hw_port numbers of a bundle.  If the bundle is
+ * a lag/trunk, then sets the hw_unit to 0 and hw_port to trunk_id.
+ */
+static void
+bundle_get_hw_info (struct ofbundle *bundle,
+        int *hw_unit, int *hw_port)
+{
+    const struct bcmsdk_provider_ofport_node *port;
+
+    DEBUG_MIRROR("bundle_get_hw_info called for bundle %s (0x%p)",
+            bundle->name, bundle);
+
+    /* port is a lag */
+    if (bundle_is_a_lag(bundle)) {
+        *hw_unit = 0;
+        *hw_port = bundle->bond_hw_handle;
+        DEBUG_MIRROR("bundle %s (0x%p) *IS* a lag (lagid %d)",
+                bundle->name, bundle, bundle->bond_hw_handle);
+        return;
+    }
+
+    /* port is ordinary, not a lag */
+    ovs_assert(NULL != bundle->ofproto);
+    port = get_named_ofp_port(bundle->ofproto, bundle->name);
+    ovs_assert(NULL != port);
+    ovs_assert(NULL != port->up.netdev);
+    DEBUG_MIRROR("netdev name is: %s", netdev_get_name(port->up.netdev));
+    netdev_bcmsdk_get_hw_info(port->up.netdev, hw_unit, hw_port, NULL);
+    DEBUG_MIRROR("netdev_bcmsdk_get_hw_info returned "
+            "unit %d portid %d for port %s (0x%p)",
+            *hw_unit, *hw_port, bundle->name, bundle);
+    DEBUG_MIRROR("bundle %s (0x%p): hw_unit %d hw_port %d",
+            bundle->name, bundle, *hw_unit, *hw_port);
+}
+
+/*
+ * Disassociate a mirrored port from the mirror (hence the mtp).
+ * We dont care if this fails, since it may be called repeatedly
+ * on the same port.  Hence we dont return an error code.
+ */
+static void
+mirror_object_disassociate_port (mirror_object_t *mirror, mirrored_port_t *port)
+{
+    int rc, unit, port_id;
+    struct ofbundle *mtp = mirror->mtp;
+
+    /* is the specified port actually an MTP */
+    if (NULL == mtp->mirror_data) {
+        DEBUG_MIRROR("mirror %s did NOT have a valid mirror endpoint",
+                mirror->name);
+        return;
+    }
+
+    DEBUG_MIRROR("deleting port %s from mirror (%s mtp %s mdestid %d)",
+            port->port_bundle->name,
+            mirror->name, mtp->name,
+            mtp->mirror_data->mirror_dest_id);
+
+    /* if we are here, we can indeed take the port out of this MTP */
+    bundle_get_hw_info(port->port_bundle, &unit, &port_id);
+    rc = bcmsdk_mirror_disassociate_port(unit, port_id, port->flags,
+            mtp->mirror_data->mirror_dest_id);
+    if (OPENNSL_SUCCESS(rc)) {
+        DEBUG_MIRROR("deleting port %s from mirror (%s mtp %s mdestid %d) SUCCEEDED",
+                port->port_bundle->name,
+                mirror->name, mtp->name, mtp->mirror_data->mirror_dest_id);
+    } else {
+        DEBUG_MIRROR("deleting port %s from mirror (%s mtp %s mdestid %d) "
+                "FAILED: rc %d rc %s",
+                port->port_bundle->name,
+                mirror->name, mtp->name, mtp->mirror_data->mirror_dest_id,
+                rc, opennsl_errmsg(rc));
+    }
+}
+
+/*
+ * A mirror object can be destroyed in one of following ways:
+ *
+ * - mirror object itself is directly specified OR
+ * - its name is specified OR
+ * - the 'aux' is supplied OR
+ * - the corresponding mirror endpoint 'mtp' is supplied
+ *
+ * The precedence is as listed above.  At least one parameter
+ * is needed and should not be NULL.
+ */
+static void
+mirror_object_destroy (mirror_object_t *mirror,
+        const char *name, void *aux, struct ofbundle *mtp_specified)
+{
+    int i, rc, unit, port;
+    struct ofbundle *mtp;
+
+    DEBUG_MIRROR("mirror with ptr %s name %s aux 0x%p mtp %s being destroyed",
+            mirror ? mirror->name : "NULL",
+            name ? name : "NULL",
+            aux,
+            mtp_specified ? mtp_specified->name : "NULL");
+
+    if (NULL == mirror) {
+        if (name) {
+            mirror = find_mirror_with_name(name);
+        } else if (aux) {
+            mirror = find_mirror_with_aux(aux);
+        } else if (mtp_specified) {
+            mirror = find_mirror_with_mtp(mtp_specified);
+        }
+
+        /* still could not be found */
+        if (NULL == mirror) {
+            DEBUG_MIRROR("mirror with name %s aux 0x%p mtp %s NOT found",
+                    name ? name : "NULL",
+                    aux,
+                    mtp_specified ? mtp_specified->name : "NULL");
+            return;
+        }
+    }
+
+    /* cached for convenience */
+    mtp = mirror->mtp;
+
+    DEBUG_MIRROR("mirror %s with mtp %s found; being destroyed",
+            mirror->name, mtp->name);
+
+    /* no-op, NOT an error */
+    if (NULL == mtp->mirror_data) {
+        DEBUG_MIRROR("mirror %s mtp %s was NOT an mtp anyway",
+                mirror->name, mtp->name);
+        return;
+    }
+
+    /* Disassociate all mirrored ports from mtp first.  BCM requires this */
+    for (i = 0; i < mirror->n_mirrored; i++) {
+        mirror_object_disassociate_port(mirror, &mirror->mirrored_ports[i]);
+    }
+
+    DEBUG_MIRROR("now destroying mtp HW %s for mirror %s",
+            mtp->name, mirror->name);
+    bundle_get_hw_info(mtp, &unit, &port);
+    rc = bcmsdk_mirror_endpoint_destroy(unit, mtp->mirror_data->mirror_dest_id);
+    if (OPENNSL_SUCCESS(rc)) {
+        DEBUG_MIRROR("mirror %s hw endpoint %s also destroyed successfully",
+                mirror->name, mtp->name);
+    } else {
+        DEBUG_MIRROR("mirror %s HW endpoint %s destroy FAILURE <%s (%d)>",
+                mirror->name, mtp->name, opennsl_errmsg(rc), rc);
+    }
+
+    DEBUG_MIRROR("mirror %s completely destroyed", mirror->name);
+
+    /* now free the storage it occupied */
+    mirror_object_free(mirror);
+}
+
+_STATIC_ void
+mirror_object_direct_destroy (mirror_object_t *mirror)
+{
+    mirror_object_destroy(mirror, NULL, NULL, NULL);
+}
+
+_STATIC_ void
+mirror_object_destroy_with_name (const char *name)
+{
+    mirror_object_destroy(NULL, name, NULL, NULL);
+}
+
+static void
+mirror_object_destroy_with_aux (void *aux)
+{
+    mirror_object_destroy(NULL, NULL, aux, NULL);
+}
+
+static void
+mirror_object_destroy_with_mtp (struct ofbundle *mtp)
+{
+    mirror_object_destroy(NULL, NULL, NULL, mtp);
+}
 
 static int
-mirror_get_stats__(struct ofproto *ofproto OVS_UNUSED, void *aux OVS_UNUSED,
-                   uint64_t *packets OVS_UNUSED, uint64_t *bytes OVS_UNUSED)
+mirror_object_create (const char *name,
+        void *aux, struct ofbundle *mtp,
+        mirror_object_t **mirror_created)
 {
+    int rc, hw_unit, hw_port;
+    mirror_object_t *mirror;
+
+    ovs_assert(mtp);
+
+    DEBUG_MIRROR("started creating mirror %s with aux 0x%p mtp %s",
+            name, aux, mtp->name);
+
+    *mirror_created = NULL;
+
+    /*
+     * If mirror already exists from any one of these searches,
+     * it means a 'modification' is being made to it.  Rather
+     * than trying to finesse and find out what the mods are, just
+     * blow the whole thing away and re-create it from scratch.
+     */
+    mirror_object_destroy_with_name(name);
+    mirror_object_destroy_with_aux(aux);
+    mirror_object_destroy_with_mtp(mtp);
+
+    ovs_assert(NULL == mtp->mirror_data);
+
+    /* get new space and check for 'too many mirrors' */
+    mirror = mirror_object_allocate();
+    if (NULL == mirror) {
+        DEBUG_MIRROR("no more space left to create mirror %s", name);
+        return ENOMEM;
+    }
+
+    /* we have to create these now */
+    mtp->mirror_data = xmalloc(sizeof(opennsl_mirror_destination_t));
+    strncpy(mirror->name, name, MIRROR_NAME_SIZE);
+    mirror->aux = aux;
+    mirror->mtp = mtp;
+
+    /* obtain the bcm unit and port id */
+    bundle_get_hw_info(mtp, &hw_unit, &hw_port);
+
+    /* create the mirror destination in hardware */
+    if (bundle_is_a_lag(mtp)) {
+        rc = bcmsdk_lag_mirror_endpoint_create(mtp->bond_hw_handle,
+                mtp->mirror_data);
+    } else {
+        rc = bcmsdk_simple_port_mirror_endpoint_create(hw_unit, hw_port,
+                mtp->mirror_data);
+    }
+
+    if (rc) {
+        DEBUG_MIRROR("creating the hw endpoint for mirror %s mtp %s FAILED",
+                mirror->name, mtp->name);
+        mirror_object_free(mirror);
+        return EFAULT;
+    }
+
+    /* if we are here, mirror endpoint has successfully been created */
+    *mirror_created = mirror;
+
+    DEBUG_MIRROR("succesfully created mirror %s with mirror_dest_id %d",
+            name, mtp->mirror_data->mirror_dest_id);
+
+    return 0;
+}
+
+/*
+ * add a mirror SOURCE port to an existing OUTPUT (MTP)
+ * with the specified flags.
+ */
+static int
+mirror_object_associate_port (mirror_object_t *mirror,
+        struct ofbundle *source, uint32 flags)
+{
+    int source_unit, source_port;
+    int rc;
+    struct ofbundle *mtp = mirror->mtp;
+
+    DEBUG_MIRROR("adding src port %s (0x%p) to MTP %s (0x%p)",
+            source->name, source, mtp->name, mtp);
+
+    /* is the specified MTP a fully functional mirror endpoint ? */
+    if (NULL == mtp->mirror_data) {
+        DEBUG_MIRROR("bundle %s (0x%p) is not a valid mirror destination",
+                mtp->name, mtp);
+        return OPENNSL_E_PARAM;
+    }
+
+    /* source port cannot be a lag */
+    if (bundle_is_a_lag(source)) {
+        DEBUG_MIRROR("port %s is a lag.  It cannot be a source for an MTP",
+                source->name);
+        return OPENNSL_E_DISABLED;
+    }
+
+    bundle_get_hw_info(source, &source_unit, &source_port);
+    rc = bcmsdk_mirror_associate_port(source_unit, source_port, flags,
+            mtp->mirror_data->mirror_dest_id);
+
+    /* record the source port if successfully added to the mirror */
+    if (OPENNSL_SUCCESS(rc)) {
+        DEBUG_MIRROR("port %s SUCCESSFULLY added to mirror %s mtp %s mdestid %d",
+                source->name, mirror->name, mtp->name,
+                mtp->mirror_data->mirror_dest_id);
+        mirror->mirrored_ports[mirror->n_mirrored].port_bundle = source;
+        mirror->mirrored_ports[mirror->n_mirrored].flags = flags;
+        mirror->n_mirrored++;
+    } else {
+        DEBUG_MIRROR("could NOT add port %s mirror %s mtp %s mdestid %d: %s (%d)",
+                source->name, mirror->name, mtp->name,
+                mtp->mirror_data->mirror_dest_id,
+                opennsl_errmsg(rc), rc);
+    }
+    return rc;
+}
+
+static int
+mirror_object_setup (struct mbridge *mbridge, void *aux, const char *name,
+        struct ofbundle **srcs, size_t n_srcs,
+        struct ofbundle **dsts, size_t n_dsts,
+        unsigned long *src_vlans, struct ofbundle *mtp,
+        uint16_t out_vlan)
+{
+    int rc, i, flag;
+    bool output_is_lag = false;
+    mirror_object_t *mirror;
+
+    DEBUG_MIRROR("mirror_object_setup name %s n_srcs %d n_dsts %d mtp %s",
+            name, n_srcs, n_dsts, mtp->name);
+
+    rc = mirror_object_create(name, aux, mtp, &mirror);
+    if (OPENNSL_FAILURE(rc))
+        return rc;
+
+    output_is_lag = bundle_is_a_lag(mtp);
+
+    /*
+     * this logic will add ingress mirrors AND ingress+egress mirrors
+     * to the mirror.  Once this is complete, the only remaining ones
+     * are only the egress ports alone which will be added in the 2nd
+     * loop after this one.
+     */
+    for (i = 0; i < n_srcs; i++) {
+
+        /* a mirrored port cannot also be a mirror endpoint */
+        if (srcs[i]->mirror_data) {
+            DEBUG_MIRROR("src %s is also an MTP", srcs[i]->name);
+            continue;
+        }
+
+        flag = OPENNSL_MIRROR_PORT_INGRESS;
+        if (bundle_present(srcs[i], dsts, n_dsts)) {
+            flag |= OPENNSL_MIRROR_PORT_EGRESS;
+        }
+
+        /* bcm seems to need this if MTP is a trunk */
+        if (output_is_lag)
+            flag |= OPENNSL_MIRROR_PORT_DEST_TRUNK;
+
+        mirror_object_associate_port(mirror, srcs[i], flag);
+    }
+
+    /*
+     * this logic adds ONLY egress ports to the mirror.  The ingress
+     * ones AND ingress+egress ones have already been added above.
+     * Only egress ones remain and so only search for those.
+     */
+    for (i = 0; i < n_dsts; i++) {
+
+        /* a mirrored port cannot also be a mirror endpoint */
+        if (dsts[i]->mirror_data) {
+            DEBUG_MIRROR("src %s is also an MTP", dsts[i]->name);
+            continue;
+        }
+
+        /* if ingress+egress, skip it, it was already added above */
+        if (bundle_present(dsts[i], srcs, n_srcs)) {
+            continue;
+        }
+
+        /* this can only be from an egress mirror port */
+        flag = OPENNSL_MIRROR_PORT_EGRESS;
+
+        /* bcm seems to need this if MTP is a trunk */
+        if (output_is_lag)
+            flag |= OPENNSL_MIRROR_PORT_DEST_TRUNK;
+
+        mirror_object_associate_port(mirror, dsts[i], flag);
+    }
+
+    return OPENNSL_E_NONE;
+}
+
+static int
+ofproto_class_mirror_process_function (struct ofproto *ofproto_,
+    void *aux, const struct ofproto_mirror_settings *s)
+{
+    struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
+    struct ofbundle **srcs, **dsts;
+    int error;
+    size_t i;
+
+    DEBUG_MIRROR("ofproto_class_mirror_process_function called");
+
+    /* aux MUST always be available */
+    if (NULL == aux) {
+        DEBUG_MIRROR("something wrong, aux is NULL");
+        return OPENNSL_E_PARAM;
+    }
+
+    if (NULL == s) {
+        DEBUG_MIRROR("s is NULL, destroying mirror with aux 0x%p", aux);
+        mirror_object_destroy_with_aux(aux);
+        return OPENNSL_E_NONE;
+    }
+
+    DEBUG_MIRROR("    n_srcs %d, n_dsts %d, out_vlan %u",
+            s->n_srcs, s->n_dsts, s->out_vlan);
+
+    srcs = xmalloc(s->n_srcs * sizeof *srcs);
+    dsts = xmalloc(s->n_dsts * sizeof *dsts);
+
+    for (i = 0; i < s->n_srcs; i++) {
+        srcs[i] = bundle_lookup(ofproto, s->srcs[i]);
+    }
+
+    for (i = 0; i < s->n_dsts; i++) {
+        dsts[i] = bundle_lookup(ofproto, s->dsts[i]);
+    }
+
+    error = mirror_object_setup(ofproto->mbridge, aux, s->name,
+                srcs, s->n_srcs, dsts, s->n_dsts, s->src_vlans,
+                bundle_lookup(ofproto, s->out_bundle), s->out_vlan);
+
+    free(srcs);
+    free(dsts);
+
+    return error;
+}
+
+static int
+ofproto_class_mirror_get_stats_function (struct ofproto *ofproto_,
+    void *aux, uint64_t *packets, uint64_t *bytes)
+{
+    DEBUG_MIRROR("ofproto_class_mirror_get_stats_function called");
+    *packets = 0;
+    *bytes = 0;
     return 0;
 }
 
 static bool
-is_mirror_output_bundle(const struct ofproto *ofproto_ OVS_UNUSED, void *aux OVS_UNUSED)
+is_mirror_output_bundle (const struct ofproto *ofproto_, void *aux)
 {
+    DEBUG_MIRROR("is_mirror_output_bundle called");
     return false;
 }
+
+/************************ End of Mirror related functions ***********************/
 
 static void
 forward_bpdu_changed(struct ofproto *ofproto_ OVS_UNUSED)
@@ -2132,8 +2797,11 @@ const struct ofproto_class ofproto_bcm_provider_class = {
     bundle_remove,
     bundle_get,
     set_vlan,
-    NULL,                       /* may implement mirror_set__ */
-    mirror_get_stats__,
+
+    /* mirror processing functions */
+    ofproto_class_mirror_process_function,
+    ofproto_class_mirror_get_stats_function,
+
     NULL,                       /* may implement set_flood_vlans */
     is_mirror_output_bundle,
     forward_bpdu_changed,
