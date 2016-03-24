@@ -203,6 +203,7 @@ netdev_bcmsdk_construct(struct netdev *netdev_)
     netdev->knet_if_id = 0;
     netdev->port_info = NULL;
     netdev->intf_initialized = false;
+    memset(&netdev->stats, 0, sizeof(struct netdev_stats));
 
     netdev->is_split_parent = false;
     netdev->is_split_subport = false;
@@ -743,11 +744,66 @@ netdev_bcmsdk_get_mtu(const struct netdev *netdev_, int *mtup)
     return rc;
 }
 
+/*
+ * This function is used to populate the sampling stats for sFlow
+ * per interface(netdev).
+ *
+ * Arguments:
+ * ---------
+ * bool ingress     : Packet sampled at ingress or egress of the interface.
+ * char *name       : Interface where the packet was sampled.
+ * uint64_t bytes   : Length of sampled packet
+ */
+void
+netdev_bcmsdk_populate_sflow_stats(bool ingress, const char *name,
+                                   uint64_t bytes)
+{
+    struct netdev *netdev = NULL;
+    struct netdev_bcmsdk *netdev_bcm = NULL;
+
+    if (bytes == 0)
+        return;
+
+    netdev = netdev_from_name(name);
+    if (netdev != NULL) {
+         netdev_bcm = netdev_bcmsdk_cast(netdev);
+         ovs_mutex_lock(&netdev_bcm->mutex);
+         if (ingress) {
+             netdev_bcm->stats.sflow_ingress_packets++;
+             netdev_bcm->stats.sflow_ingress_bytes += bytes;
+         } else {
+             netdev_bcm->stats.sflow_egress_packets++;
+             netdev_bcm->stats.sflow_egress_bytes += bytes;
+         }
+         ovs_mutex_unlock(&netdev_bcm->mutex);
+         netdev_close(netdev);
+    } else {
+        VLOG_ERR("Unable to get netdev for interface %s", name);
+    }
+}
+
+/*
+ * This function will update the statistics for sFlow which was previously
+ * populated into the netdev_bcmsdk->stats structure.
+ */
+static void
+netdev_bcmsdk_get_sflow_stats(const struct netdev_bcmsdk *netdev_bcm,
+                              struct netdev_stats *stats)
+{
+    ovs_mutex_lock(&netdev_bcm->mutex);
+    stats->sflow_ingress_packets = netdev_bcm->stats.sflow_ingress_packets;
+    stats->sflow_ingress_bytes = netdev_bcm->stats.sflow_ingress_bytes;
+    stats->sflow_egress_packets = netdev_bcm->stats.sflow_egress_packets;
+    stats->sflow_egress_bytes = netdev_bcm->stats.sflow_egress_bytes;
+    ovs_mutex_unlock(&netdev_bcm->mutex);
+}
+
 static int
 netdev_bcmsdk_get_stats(const struct netdev *netdev_, struct netdev_stats *stats)
 {
     struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
-
+    /* Call the function to populate sFlow statistics */
+    netdev_bcmsdk_get_sflow_stats(netdev, stats);
     return bcmsdk_get_port_stats(netdev->hw_unit, netdev->hw_id, stats);
 }
 
@@ -858,7 +914,43 @@ netdev_bcmsdk_link_state_callback(int hw_unit, int hw_id, int link_status)
     // Wakeup poll_block() function.
     seq_change(connectivity_seq_get());
 }
-
+
+/* populate some sflow related netdev info */
+void
+netdev_bcmsdk_get_sflow_intf_info(int hw_unit, int hw_id, uint32_t *index,
+                                  uint64_t *speed, uint32_t *direction,
+                                  uint32_t *status)
+{
+    int state = 0;
+    bool link_state = false;
+    enum netdev_features current, adv, supp, peer;
+    struct netdev_bcmsdk *netdev = netdev_from_hw_id(hw_unit, hw_id);
+
+    *index = hw_id; /* physical port number (?) */
+
+    if (netdev &&
+        !netdev_bcmsdk_get_features(&netdev->up, &current, &adv, &supp, &peer)) {
+        *speed = netdev_features_to_bps(current, 0);
+        *direction = (netdev_features_is_full_duplex(current) ? 1 : 2);
+    } else {
+        *speed = 100000000;
+        *direction = 0;
+    }
+
+    if (!bcmsdk_get_enable_state(hw_unit, hw_id, &state)) {
+        if (state) {
+            *status = 1; /* ifAdminStatus up. */
+        }
+        if (netdev && !netdev_bcmsdk_get_carrier(&netdev->up, &link_state)) {
+            if (link_state) {
+                *status |= 2; /* ifOperStatus up. */
+            }
+        }
+    } else {
+        *status = 0;
+    }
+}
+
 /* Helper functions. */
 
 static const struct netdev_class bcmsdk_class = {
