@@ -32,6 +32,7 @@ set (SOURCES ${SRC_DIR}/bcm.c
              ${SRC_DIR}/ops-port.c
              ${SRC_DIR}/ops-stats.c
              ${SRC_DIR}/ops-vlan.c
+             ${SRC_DIR}/ops-vxlan.c
              ${SRC_DIR}/ops-routing.c
              ${SRC_DIR}/netdev-bcmsdk.c
              ${SRC_DIR}/ofproto-bcm-provider.c

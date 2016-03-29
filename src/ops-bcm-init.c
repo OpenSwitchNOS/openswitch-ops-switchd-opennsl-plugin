@@ -32,6 +32,7 @@
 #include "ops-port.h"
 #include "ops-routing.h"
 #include "ops-vlan.h"
+#include "ops-vxlan.h"
 #include "ops-debug.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
@@ -104,6 +105,12 @@ ops_bcm_appl_init(void)
         rc = ops_l3_init(unit);
         if (rc) {
             VLOG_ERR("L3 subsystem init failed");
+            return 1;
+        }
+
+        rc = ops_vxlan_init(unit);
+        if (rc) {
+            VLOG_ERR("VXLAN subsystem init failed");
             return 1;
         }
     }
