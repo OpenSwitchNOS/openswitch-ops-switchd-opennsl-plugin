@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Hewlett-Packard Development Company, L.P.
+ * Copyright (C) 2015-2016 Hewlett-Packard Enterprise Development Company, L.P.
  * All Rights Reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -33,6 +33,7 @@
 #include "ops-routing.h"
 #include "ops-vlan.h"
 #include "ops-debug.h"
+#include "ops-mac-learning.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
 
@@ -74,6 +75,11 @@ ops_bcm_appl_init(void)
     int rc = 0;
 
     ops_debug_init();
+    rc = ops_mac_learning_init();
+    if (rc) {
+        VLOG_ERR("Mac learning init failed");
+        return (1);
+    }
 
     for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
 
