@@ -17,6 +17,7 @@
 #ifndef __OPS_CLASSIFIER_H__
 #define __OPS_CLASSIFIER_H__ 1
 
+
 #include "ofproto-ops-classifier.h"
 
 /************************************************************************//**
@@ -103,12 +104,16 @@ int ops_classifier_init (int unit);
 struct ops_classifier {
     struct hmap_node node;
     struct uuid id;
-    char *name;                         /* name of classifier list */
-    bool in_asic;                       /* classifer already in asic */
-    enum ops_cls_type type;             /* type of classifier list - aclv4, aclv6 */
-    opennsl_pbmp_t pbmp;                /* port classifier is applied */
-    struct ovs_list entry_list;         /* list of ops_acl_entry */
-    struct ovs_list update_entry_list;  /* updated ops_acl_entry list */
+    char *name;                                /* name of classifier list */
+    bool in_asic;                              /* classifer already in asic */
+    enum ops_cls_type type;                    /* type of classifier list - aclv4, aclv6 */
+    opennsl_pbmp_t pbmp;                       /* port classifier is applied */
+    struct ovs_list entry_list;                /* list of ops_classifier_entry */
+    struct ovs_list range_list;                /* list of ops_range_entry */
+    struct ovs_list stats_list;                /* list of stats entry */
+    struct ovs_list entry_update_list;         /* updated ops_classifier_entry list */
+    struct ovs_list range_update_list;         /* updated list of ops_range_entry */
+    struct ovs_list stats_update_list;         /* updated list of stats entry */
 };
 
 struct ops_classifier_entry {
@@ -124,6 +129,17 @@ struct ops_classifier_entry {
 #define dst_mask    entry_fields.dst_ip_address_mask.v4.s_addr
     struct ops_cls_list_entry_actions entry_actions;        /* action(s) to take */
 #define act_flags   entry_actions.action_flags
+};
+
+struct ops_range_entry {
+    struct ovs_list node;
+    uint32_t index;                     /* range index */
+};
+
+struct ops_stats_entry {
+    struct ovs_list node;
+    uint32_t index;                     /* stats index */
+    uint16_t rule_index;                /* rule index of PI classifier*/
 };
 
 enum ops_update_pbmp {
