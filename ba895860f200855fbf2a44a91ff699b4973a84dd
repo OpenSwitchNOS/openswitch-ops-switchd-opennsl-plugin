@@ -1,0 +1,10 @@
+Code-Review+2: MyHanh Bui <myhanh.bui@hpe.com>
+Code-Review+1: Ricky Charlet <ricky.charlet@hpe.com>
+Code-Review+2: Jin Chong <jin.chu.chong@hpe.com>
+Verified+2: Jin Chong <jin.chu.chong@hpe.com>
+Workflow+1: Jin Chong <jin.chu.chong@hpe.com>
+Submitted-by: Ricky Charlet <ricky.charlet@hpe.com>
+Submitted-at: Thu, 31 Mar 2016 23:43:24 +0000
+Reviewed-on: https://review.openswitch.net/6359
+Project: openswitch/ops-switchd-opennsl-plugin
+Branch: refs/heads/feature/vxlan
