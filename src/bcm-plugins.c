@@ -24,7 +24,8 @@
 #include "netdev-bcmsdk.h"
 #include "ofproto-bcm-provider.h"
 #include "plugin-extensions.h"
-#include "qos-asic-provider.h"
+#include "asic-plugin.h"
+#include "ops-stg.h"
 
 #define init libovs_bcm_plugin_LTX_init
 #define run libovs_bcm_plugin_LTX_run
@@ -36,21 +37,16 @@
 
 VLOG_DEFINE_THIS_MODULE(bcm_plugin);
 
-/* QOS platform-dependent API get added here. */
-struct qos_asic_plugin_interface opennsl_qos_interface = {
-    .set_port_qos_cfg = &set_port_qos_cfg,
-    .set_cos_map = &set_cos_map,
-    .set_dscp_map = &set_dscp_map,
-    .apply_qos_profile = &apply_qos_profile,
+struct asic_plugin_interface opennsl_interface ={
+    /* The new functions that need to be exported, can be declared here*/
+    .create_stg = &create_stg,
+    .delete_stg = &delete_stg,
+    .add_stg_vlan = &add_stg_vlan,
+    .remove_stg_vlan = &remove_stg_vlan,
+    .set_stg_port_state = &set_stg_port_state,
+    .get_stg_port_state = &get_stg_port_state,
+    .get_stg_default = &get_stg_default,
 };
-
-struct plugin_extension_interface opennsl_qos_extension = {
-    QOS_ASIC_PLUGIN_INTERFACE_NAME,
-    QOS_ASIC_PLUGIN_INTERFACE_MAJOR,
-    QOS_ASIC_PLUGIN_INTERFACE_MINOR,
-    (void *)&opennsl_qos_interface
-};
-
 
 /* To avoid compiler warning... */
 static void netdev_change_seq_changed(const struct netdev *) __attribute__((__unused__));
@@ -58,8 +54,14 @@ static void netdev_change_seq_changed(const struct netdev *) __attribute__((__un
 void
 init(void) {
 
-    register_plugin_extension(&opennsl_qos_extension);
-    VLOG_INFO("The %s asic plugin interface was registered", QOS_ASIC_PLUGIN_INTERFACE_NAME);
+    struct plugin_extension_interface opennsl_extension;
+    opennsl_extension.plugin_name = ASIC_PLUGIN_INTERFACE_NAME;
+    opennsl_extension.major = ASIC_PLUGIN_INTERFACE_MAJOR;
+    opennsl_extension.minor = ASIC_PLUGIN_INTERFACE_MINOR;
+    opennsl_extension.plugin_interface = (void *)&opennsl_interface;
+
+    register_plugin_extension(&opennsl_extension);
+    VLOG_INFO("The %s asic plugin interface was registered", ASIC_PLUGIN_INTERFACE_NAME);
 
     ovs_bcm_init();
 }

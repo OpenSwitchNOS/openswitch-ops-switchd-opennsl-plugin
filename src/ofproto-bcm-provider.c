@@ -40,7 +40,7 @@
 #include "seq.h"
 #include "vlan-bitmap.h"
 #include "vswitch-idl.h"
-
+#include "ops-stg.h"
 
 VLOG_DEFINE_THIS_MODULE(ofproto_bcm_provider);
 
@@ -1208,6 +1208,10 @@ bundle_set(struct ofproto *ofproto_, void *aux,
             case BM_L3_SRC_DST_HASH:
                 lag_mode = OPENNSL_TRUNK_PSC_SRCDSTIP;
                 break;
+            case BM_L4_SRC_DST_HASH:
+                bcmsdk_trunk_hash_setup(OPS_L4_SRC_DST);
+                lag_mode = OPENNSL_TRUNK_PSC_PORTFLOW;
+                break;
             default:
                 break;
             }
@@ -2243,4 +2247,5 @@ const struct ofproto_class ofproto_bcm_provider_class = {
     l3_route_action,            /* l3 route action - install, update, delete */
     l3_ecmp_set,                /* enable/disable ECMP globally */
     l3_ecmp_hash_set,           /* enable/disable ECMP hash configs */
+
 };
