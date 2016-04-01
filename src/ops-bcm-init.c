@@ -32,9 +32,9 @@
 #include "ops-port.h"
 #include "ops-routing.h"
 #include "ops-vlan.h"
-#include "ops-vxlan.h"
 #include "ops-debug.h"
 #include "ops-mac-learning.h"
+#include "ops-vport.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
 
@@ -95,7 +95,11 @@ ops_bcm_appl_init(void)
             VLOG_ERR("VLAN subsystem init failed");
             return 1;
         }
-
+        rc = ops_vport_init(unit);
+        if (rc) {
+            VLOG_ERR("vport subsystem init failed");
+            return 1;
+        }
         rc = ops_rx_init(unit);
         if (rc) {
             VLOG_ERR("RX subsystem init failed");
@@ -114,11 +118,6 @@ ops_bcm_appl_init(void)
             return 1;
         }
 
-        rc = ops_vxlan_init(unit);
-        if (rc) {
-            VLOG_ERR("VXLAN subsystem init failed");
-            return 1;
-        }
     }
 
     return 0;
