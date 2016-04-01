@@ -41,6 +41,8 @@
 #include "platform-defines.h"
 #include "ofproto-bcm-provider.h"
 #include "bcm-common.h"
+#include "netdev-bcmsdk-vport.h"
+#include "ops-vport.h"
 
 VLOG_DEFINE_THIS_MODULE(ofproto_bcm_provider);
 
@@ -55,7 +57,11 @@ static void bundle_remove(struct ofport *);
 static struct bcmsdk_provider_ofport_node *get_ofp_port(
                           const struct bcmsdk_provider_node *ofproto,
                           ofp_port_t ofp_port);
-
+static int  vport_create( struct ofbundle *bundle, struct netdev *netdev);
+static int  vport_delete( struct ofbundle *bundle, struct netdev *netdev);
+static void tnl_key_configure(int action, struct ofbundle *bundle,
+                              const struct ofproto_bundle_settings *s,
+                              opennsl_pbmp_t *temp_pbm);
 static void available_vrf_ids_init(void);
 static size_t allocate_vrf_id(void);
 static void release_vrf_id(size_t);
@@ -153,7 +159,8 @@ port_open_type(const char *datapath_type OVS_UNUSED, const char *port_type)
 {
     if( (strcmp(port_type, OVSREC_INTERFACE_TYPE_INTERNAL) == 0) ||
         (strcmp(port_type, OVSREC_INTERFACE_TYPE_LOOPBACK) == 0) ||
-        (strcmp(port_type, OVSREC_INTERFACE_TYPE_VLANSUBINT) == 0)) {
+        (strcmp(port_type, OVSREC_INTERFACE_TYPE_VLANSUBINT) == 0) ||
+        (strcmp(port_type, OVSREC_INTERFACE_TYPE_VXLAN) == 0)) {
         return port_type;
     }
     else {
@@ -498,6 +505,23 @@ handle_trunk_vlan_changes(unsigned long *old_trunks, unsigned long *new_trunks,
     bitmap_free(added_vlans);
 }
 
+static int
+bundle_get_tnl_key(const struct ofproto_bundle_settings *set)
+{
+    int idx;
+    if(!set) {
+        VLOG_ERR("Invalid pointer %s", __func__);
+        return -1;
+    }
+    for (idx = 0; idx < set->binding_cnt; idx++) {
+        if(set->vlan == set->binding_vlans[idx] && set->vlan_mode == PORT_VLAN_ACCESS)
+        {
+            return set->binding_tunnel_keys[idx];
+        }
+    }
+    return -1;
+}
+
 static struct ofbundle *
 bundle_lookup(const struct bcmsdk_provider_node *ofproto, void *aux)
 {
@@ -515,6 +539,10 @@ bundle_lookup(const struct bcmsdk_provider_node *ofproto, void *aux)
 static void
 bundle_del_port(struct bcmsdk_provider_ofport_node *port)
 {
+    if(!strcmp(netdev_get_type(port->up.netdev), OVSREC_INTERFACE_TYPE_VXLAN)) {
+        VLOG_DBG("%s name %s", __func__, port->bundle->name);
+        vport_delete( port->bundle, port->up.netdev);
+    }
     list_remove(&port->bundle_node);
     port->bundle = NULL;
 }
@@ -524,7 +552,7 @@ bundle_add_port(struct ofbundle *bundle, ofp_port_t ofp_port,
                 struct lacp_slave_settings *lacp OVS_UNUSED)
 {
     struct bcmsdk_provider_ofport_node *port;
-
+    const char *type;
     port = get_ofp_port(bundle->ofproto, ofp_port);
     if (!port) {
         return false;
@@ -535,6 +563,15 @@ bundle_add_port(struct ofbundle *bundle, ofp_port_t ofp_port,
             bundle_remove(&port->up);
         }
         port->bundle = bundle;
+        port->is_tunnel = false;
+        type = netdev_get_type(port->up.netdev);
+        if(!strcmp(type, OVSREC_INTERFACE_TYPE_VXLAN))
+        {
+            port->is_tunnel = true;
+            VLOG_DBG("%s, bundle_add_port vxlan bundle name %s, ofp_port %d",
+                     __func__, bundle->name, (int)ofp_port);
+            vport_create(bundle, port->up.netdev);
+        }
         list_push_back(&bundle->ports, &port->bundle_node);
     }
 
@@ -594,7 +631,10 @@ bundle_destroy(struct ofbundle *bundle)
                     bundle->l3_intf = NULL;
                 }
             }
-
+            /* Unbinding access port from logical switch
+             * before unconfiguring vlan (if applied)
+             */
+            tnl_key_configure(TUNNEL_KEY_UNBIND, bundle, NULL, bundle->pbm);
             /* Unconfigure any existing VLAN in h/w. */
             unconfig_all_vlans(bundle->vlan_mode, bundle->vlan,
                     bundle->trunks, bundle->pbm);
@@ -992,6 +1032,8 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     const char *type = NULL;
     struct bcmsdk_provider_ofport_node *next_port;
     bool ok;
+    bool tnl_key_unbinding;
+    bool tunnel = false;
 
     VLOG_DBG("%s: entry, ofproto_=%p, aux=%p, s=%p",
              __FUNCTION__, ofproto_, aux, s);
@@ -1024,6 +1066,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         list_init(&bundle->ports);
         bundle->vlan_mode = PORT_VLAN_ACCESS;
         bundle->vlan = -1;
+        bundle->tunnel_key = -1;
         bundle->trunks = NULL;
         bundle->trunk_all_vlans = false;
         bundle->pbm = NULL;
@@ -1074,7 +1117,19 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         bcmsdk_destroy_lag(bundle->bond_hw_handle);
         bundle->bond_hw_handle = -1;
     }
+    if (!ofproto->vrf && s->n_slaves > 0) {
+         struct bcmsdk_provider_ofport_node *port;
+         port = get_ofp_port(bundle->ofproto, s->slaves[0]);
+         if (!port) {
+             VLOG_ERR("slave is not in the ports\n");
+         }
 
+         type = netdev_get_type(port->up.netdev);
+         if (strcmp(type, OVSREC_INTERFACE_TYPE_VXLAN) == 0) {
+             tunnel = true;
+             goto add_port;
+         }
+    }
     if (ofproto->vrf &&
         (ofproto->vrf_id != BCM_MAX_VRFS)
         && s->n_slaves > 0) {
@@ -1309,7 +1364,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
             }
         }
     }
-
+add_port:
     /* Update set of ports. */
     ok = true;
     for (i = 0; i < s->n_slaves; i++) {
@@ -1344,7 +1399,9 @@ bundle_set(struct ofproto *ofproto_, void *aux,
             return 0;
         }
     }
-
+    if(tunnel) {
+        goto done;
+    }
     /* NOTE: "bundle" holds previous VLAN configuration (if any).
      * "s" holds current desired VLAN configuration. */
 
@@ -1367,6 +1424,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
      * configure everything on the new ports. */
     if (bundle->pbm == NULL || bcmsdk_pbmp_is_empty(bundle->pbm)) {
         config_all_vlans(s->vlan_mode, s->vlan, new_trunks, all_pbm);
+        tnl_key_configure(TUNNEL_KEY_BIND, bundle, s, all_pbm);
         goto done;
     }
 
@@ -1381,6 +1439,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
      * been removed from this logical port. */
     bcmsdk_pbmp_remove(temp_pbm, bundle->pbm, all_pbm);
     if (!bcmsdk_pbmp_is_empty(temp_pbm)) {
+        tnl_key_configure(TUNNEL_KEY_UNBIND, bundle, s, temp_pbm);
         unconfig_all_vlans(bundle->vlan_mode, bundle->vlan,
                            bundle->trunks, temp_pbm);
         bcmsdk_clear_pbmp(temp_pbm);
@@ -1390,9 +1449,23 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     bcmsdk_pbmp_remove(temp_pbm, all_pbm, bundle->pbm);
     if (!bcmsdk_pbmp_is_empty(temp_pbm)) {
         config_all_vlans(s->vlan_mode, s->vlan, new_trunks, temp_pbm);
+        tnl_key_configure(TUNNEL_KEY_BIND, bundle, s, temp_pbm);
         bcmsdk_clear_pbmp(temp_pbm);
     }
-
+    /*
+     * For existing interface, check if we need to unbind
+     * tunnel_key first before any vlan/vni reconfiguring
+     */
+    tnl_key_unbinding = ((bundle->vlan_mode != s->vlan_mode)
+              || (bundle->vlan != s->vlan)
+              || (bundle->tunnel_key != bundle_get_tnl_key(s)));
+    if(tnl_key_unbinding) {
+        VLOG_DBG("Detect change, unbind tunnel key if applied\n");
+        bcmsdk_pbmp_and(temp_pbm, all_pbm, bundle->pbm);
+        if (!bcmsdk_pbmp_is_empty(temp_pbm)) {
+            tnl_key_configure(TUNNEL_KEY_UNBIND, bundle, s, temp_pbm);
+        }
+    }
     /* For existing interfaces, configure only changed VLANs. */
     bcmsdk_pbmp_and(temp_pbm, all_pbm, bundle->pbm);
     if (!bcmsdk_pbmp_is_empty(temp_pbm)) {
@@ -1426,7 +1499,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                 }
 
                 /* Should have nothing else to do... */
-                goto done;
+                goto tnl_key_binding;
 
             } else {
                 /* Changing modes among one of the TRUNK types (trunk,
@@ -1492,7 +1565,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                     bcmsdk_add_access_ports(s->vlan, temp_pbm);
                 }
                 /* For ACCESS ports, nothing more to do. */
-                goto done;
+                goto tnl_key_binding;
                 break;
             case PORT_VLAN_NATIVE_TAGGED:
                 if (bundle->vlan != -1) {
@@ -1533,7 +1606,10 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                                       bundle->vlan_mode, s->vlan_mode);
         }
     }
-
+tnl_key_binding:
+    if(tnl_key_unbinding) {
+        tnl_key_configure(TUNNEL_KEY_BIND, bundle, s, temp_pbm);
+    }
     /* Done with temp_pbm. */
     bcmsdk_destroy_pbmp(temp_pbm);
 
@@ -1555,6 +1631,29 @@ done:
     bundle->trunk_all_vlans = trunk_all_vlans;
 
     return 0;
+}
+
+static void
+tnl_key_configure(int action, struct ofbundle *bundle,
+                  const struct ofproto_bundle_settings *s,
+                  opennsl_pbmp_t *temp_pbm)
+{
+    if(action == TUNNEL_KEY_UNBIND) {
+        if(bundle->tunnel_key != -1 &&
+           !ops_vport_unbind_access_port(bundle->hw_unit,
+                                         *temp_pbm, bundle->tunnel_key)) {
+            bundle->tunnel_key = -1;
+            VLOG_DBG("Successfully Unbind tunnel_key %d", bundle->tunnel_key);
+        }
+    } else if(s) {
+        int new_vni = bundle_get_tnl_key(s);
+        if((new_vni != -1) &&
+            !ops_vport_bind_access_port(bundle->hw_unit, *temp_pbm,
+                                        new_vni, s->vlan)) {
+            bundle->tunnel_key = new_vni;
+            VLOG_DBG("Successfully Bind tunnel key %d", new_vni);
+        }
+    }
 }
 
 static void
@@ -1683,6 +1782,111 @@ port_query_by_name(const struct ofproto *ofproto_, const char *devname,
     }
     return ENODEV;
 
+}
+/*
+ * Prefix string to ip address
+ * a.a.a.a/y ----> 0x0a0a0a0a
+ */
+static bool
+prefix_to_ip4(char * prefix, uint32_t *ip)
+{
+    char *p;
+    if(prefix && ip) {
+        char *tmp = strdup(prefix);
+        p = strchr(tmp, '/');
+        *p = '\0';
+        *ip = inet_network(tmp);
+        free(tmp);
+        return true;
+    }
+    return false;
+}
+/*
+ * Find the ip address prefix given a hw_port
+ * Search vrf and return the primary
+ * address, IPV4 or IPV6
+ * IPV4 is in the form x.x.x.x/y
+ */
+static char*
+find_prefix_from_port ( int hw_port, bool is_ipv6)
+{
+    struct ofbundle *bundle;
+    struct bcmsdk_provider_node *ofproto;
+    HMAP_FOR_EACH (ofproto, all_bcmsdk_provider_node,
+                   &all_bcmsdk_provider_nodes) {
+        if(ofproto->vrf) {
+            HMAP_FOR_EACH (bundle, hmap_node, &ofproto->bundles) {
+                if (bundle->hw_port == hw_port) {
+                    if(bundle->ip4_address && !is_ipv6) {
+                        return bundle->ip4_address;
+                    }
+                    else if (bundle->ip6_address && is_ipv6) {
+                        return bundle->ip6_address;
+                    }
+                }
+            }
+        }
+    }
+    return NULL;
+}
+
+bool
+ofproto_find_ipv4_from_port(int hw_port, uint32_t *ip)
+{
+    char *prefix = find_prefix_from_port(hw_port, false);
+    if(ip && prefix) {
+        return prefix_to_ip4(prefix, ip);
+    }
+    return false;
+}
+
+static void
+vport_update_route( const struct ofproto *ofprotop,
+        enum ofproto_route_action action,
+        struct ofproto_route *routep)
+{
+    switch (action)
+    {
+        case OFPROTO_ROUTE_ADD:
+            netdev_vport_update_route_chg(ROUTE_ADD, routep->prefix);
+            break;
+        case OFPROTO_ROUTE_DELETE:
+        case OFPROTO_ROUTE_DELETE_NH:
+            netdev_vport_update_route_chg(ROUTE_DELETE, routep->prefix);
+            break;
+        default:
+            break;
+    }
+}
+
+static void
+vport_update_host(struct ofbundle *bundle, int event, bool is_ipv6_addr,
+                  char *ip_addr, char *next_hop_mac_addr, int *l3_egress_id)
+{
+    VLOG_DBG("%s  on port %d ip address %s, l3_egress_id %d "
+              "next hop mac %s", event == HOST_ADD? "HOST_ADD": "HOST_DELETE",
+              bundle->hw_port,ip_addr, *l3_egress_id,
+              next_hop_mac_addr);
+    if(!is_ipv6_addr) {
+        netdev_vport_update_host_chg(event, bundle->hw_port, ip_addr,
+                                     *l3_egress_id);
+    }
+}
+
+static int
+vport_delete( struct ofbundle *bundle, struct netdev *netdev)
+{
+    ops_vport_unbind_net_port(netdev);
+    return ops_vport_delete_tunnel(netdev);
+}
+
+static int
+vport_create(struct ofbundle *bundle, struct netdev *netdev)
+{
+    if(!ops_vport_create_tunnel(netdev)) {
+        return ops_vport_bind_net_port(netdev);
+    }
+    return 1;
 }
 
 static int
@@ -1975,6 +2179,9 @@ add_l3_host_entry(const struct ofproto *ofproto_, void *aux,
                                    port_bundle->bond_hw_handle);
     if (rc) {
         VLOG_ERR("Failed to add L3 host entry for ip %s", ip_addr);
+    } else {
+        vport_update_host(port_bundle, HOST_ADD, is_ipv6_addr, ip_addr,
+                          next_hop_mac_addr, l3_egress_id);
     }
 
 
@@ -2003,6 +2210,9 @@ delete_l3_host_entry(const struct ofproto *ofproto_, void *aux,
                                       l3_egress_id);
     if (rc) {
         VLOG_ERR("Failed to delete L3 host entry for ip %s", ip_addr);
+    } else {
+        vport_update_host(port_bundle, HOST_DELETE, is_ipv6_addr,
+                          ip_addr, NULL, l3_egress_id);
     }
 
     return rc;
@@ -2038,9 +2248,12 @@ l3_route_action(const struct ofproto *ofprotop,
                 enum ofproto_route_action action,
                 struct ofproto_route *routep)
 {
+    int ret;
     struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofprotop);
 
-    return ops_routing_route_entry_action(0, ofproto->vrf_id, action, routep);
+    ret = ops_routing_route_entry_action(0, ofproto->vrf_id, action, routep);
+    vport_update_route(ofprotop, action, routep);
+    return ret;
 }
 
 /* Function to enable/disable ECMP */
