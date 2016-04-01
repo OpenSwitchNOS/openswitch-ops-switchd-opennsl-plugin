@@ -42,6 +42,7 @@
 #include "ofproto-bcm-provider.h"
 #include "ops-stg.h"
 #include "qos-asic-provider.h"
+#include "ops-mac-learning.h"
 
 VLOG_DEFINE_THIS_MODULE(ofproto_bcm_provider);
 
@@ -1625,7 +1626,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     bcmsdk_destroy_pbmp(temp_pbm);
 
 done:
-    /* Save enable/dsiable on bundle */
+    /* Save enable/disable on bundle */
     bundle->enable = s->enable;
     /* Done with VLAN configuration.  Save the new information. */
     bundle->vlan_mode = s->vlan_mode;
@@ -2484,5 +2485,4 @@ const struct ofproto_class ofproto_bcm_provider_class = {
     l3_route_action,            /* l3 route action - install, update, delete */
     l3_ecmp_set,                /* enable/disable ECMP globally */
     l3_ecmp_hash_set,           /* enable/disable ECMP hash configs */
-
 };
