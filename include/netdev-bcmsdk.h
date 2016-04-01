@@ -43,4 +43,5 @@ extern void netdev_bcmsdk_get_sflow_intf_info(int hw_unit, int hw_id,
                                               uint32_t *index, uint64_t *speed,
                                               uint32_t *direction,
                                               uint32_t *status);
+extern void netdev_port_name_from_hw_id(int hw_unit, int hw_id, char *str);
 #endif /* netdev-bcmsdk.h */
