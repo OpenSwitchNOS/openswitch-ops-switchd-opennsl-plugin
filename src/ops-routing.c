@@ -40,6 +40,7 @@
 #include "platform-defines.h"
 #include "openswitch-dflt.h"
 #include "netdev-bcmsdk.h"
+#include "ops-mac-learning.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_routing);
 /* ecmp resiliency flag */
@@ -308,7 +309,7 @@ ops_l3_init(int unit)
      * message followed by MAC add message. There will be MOVE flag set in
      * both the messages, differentiating it from regular add and delete
      * messages. */
-    rc = opennsl_l2_addr_register(unit, ops_l3_mac_move_cb, NULL);
+    rc = opennsl_l2_addr_register(unit, ops_l2_addr_reg_cb, NULL);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("L2 address registration failed");
         return 1;
@@ -1947,7 +1948,7 @@ ops_l3_mac_move_delete(int   unit,
 *
 *  Currently, it handles Add & Delete events, triggered due to mac-move. */
 void
-ops_l3_mac_move_cb(int   unit,
+ops_l2_addr_reg_cb(int   unit,
                    opennsl_l2_addr_t  *l2addr,
                    int    operation,
                    void   *userdata)
@@ -1956,6 +1957,8 @@ ops_l3_mac_move_cb(int   unit,
        VLOG_ERR("Invalid arguments. l2-addr is NULL");
        return;
    }
+
+   ops_mac_learn_cb(unit, l2addr, operation, userdata);
 
    switch(operation) {
        case OPENNSL_L2_CALLBACK_ADD:
