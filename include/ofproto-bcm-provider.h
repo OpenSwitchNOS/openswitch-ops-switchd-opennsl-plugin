@@ -54,6 +54,7 @@ struct ofbundle {
     struct ovs_list ports;      /* Contains "struct ofport"s. */
     enum port_vlan_mode vlan_mode; /* VLAN mode */
     int vlan;                   /* -1=trunk port, else a 12-bit VLAN ID. */
+    int tunnel_key;             /* tunnel key of a logical sw,-1 (not used) */
     unsigned long *trunks;      /* Bitmap of trunked VLANs, if 'vlan' == -1.
                                  * NULL if all VLANs are trunked. */
     bool trunk_all_vlans;       /* Indicates whether this port is implicitly
@@ -188,5 +189,5 @@ enum { N_TABLES = 255 };
 enum { TBL_INTERNAL = N_TABLES - 1 };    /* Used for internal hidden rules. */
 
 extern const struct ofproto_class ofproto_bcm_provider_class;
-
+extern bool  ofproto_find_ip4_from_port(int hw_port, uint32_t *ip);
 #endif  /* ofproto-bcm-provider.h */

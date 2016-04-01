@@ -20,6 +20,8 @@
 #ifndef NETDEV_BCMSDK_H
 #define NETDEV_BCMSDK_H 1
 
+#include <opennsl/vlan.h>
+
 #define STR_EQ(s1, s2)      ((s1 != NULL) && (s2 != NULL) && \
                              (strlen((s1)) == strlen((s2))) && \
                              (!strncmp((s1), (s2), strlen((s2)))))
@@ -35,4 +37,7 @@ netdev_bcmsdk_get_subintf_vlan(struct netdev *netdev, opennsl_vlan_t *vlan);
 extern void handle_bcmsdk_knet_l3_port_filters(struct netdev *netdev_, opennsl_vlan_t vlan_id, bool enable);
 extern void handle_bcmsdk_knet_subinterface_filters(struct netdev *netdev_, bool enable);
 extern void netdev_port_name_from_hw_id(int hw_unit, int hw_id, char *str);
+extern void netdev_bcmsdk_set_vport_id(int hw_unit, int port, int vport_id);
+extern int  netdev_bcmsdk_get_vport_id(int hw_unit, int port);
+extern bool netdevv_bcmsdk_get_link_status(int hw_unit, int port);
 #endif /* netdev-bcmsdk.h */

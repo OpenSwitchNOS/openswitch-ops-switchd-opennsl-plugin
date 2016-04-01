@@ -156,4 +156,9 @@ extern void ops_l3ecmp_egress_dump(struct ds *ds, int ecmpid);
 extern void ops_l2_addr_reg_cb(int unit, opennsl_l2_addr_t *l2addr,
                                int operation, void *userdata);
 
+extern bool ops_egress_lookup_from_dst_ip(int vrf, uint32_t ip_dst,
+                                          opennsl_if_t * l3_egr_id);
+extern bool ops_egress_lookup_from_route(int vrf, char *route_prefix,
+                                         opennsl_if_t * l3_egr_id);
+
 #endif /* __OPS_ROUTING_H__ */

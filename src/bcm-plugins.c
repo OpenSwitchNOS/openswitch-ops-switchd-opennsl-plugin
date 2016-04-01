@@ -26,6 +26,7 @@
 #include "qos.h"
 #include "plugin-extensions.h"
 #include "asic-plugin.h"
+#include "netdev-bcmsdk-vport.h"
 
 #define init libovs_bcm_plugin_LTX_init
 #define run libovs_bcm_plugin_LTX_run
@@ -78,6 +79,7 @@ destroy(void) {
 void
 netdev_register(void) {
     netdev_bcmsdk_register();
+    netdev_bcmsdk_vport_register();
 }
 
 void
