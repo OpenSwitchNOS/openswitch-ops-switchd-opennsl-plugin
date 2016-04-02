@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Hewlett-Packard Development Company, L.P.
+ * Copyright (c) 2015-2016 Hewlett-Packard Enterprise Development LP
  * All Rights Reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -19,13 +19,13 @@
 
 #include <openvswitch/vlog.h>
 #include <netdev-provider.h>
+#include "asic-plugin.h"
 #include "bcm.h"
 #include "bufmon-bcm-provider.h"
 #include "netdev-bcmsdk.h"
 #include "ofproto-bcm-provider.h"
-#include "plugin-extensions.h"
-#include "asic-plugin.h"
 #include "ops-stg.h"
+#include "plugin-extensions.h"
 
 #define init libovs_bcm_plugin_LTX_init
 #define run libovs_bcm_plugin_LTX_run
@@ -62,6 +62,8 @@ init(void) {
 
     register_plugin_extension(&opennsl_extension);
     VLOG_INFO("The %s asic plugin interface was registered", ASIC_PLUGIN_INTERFACE_NAME);
+
+    register_qos_extension();
 
     ovs_bcm_init();
 }

@@ -36,6 +36,7 @@
 #include "ofproto/tunnel.h"
 #include "openswitch-idl.h"
 #include "openvswitch/vlog.h"
+#include "plugin-extensions.h"
 #include "qos-asic-provider.h"
 #include "seq.h"
 #include "vlan-bitmap.h"
@@ -2142,6 +2143,27 @@ apply_qos_profile(struct ofproto *ofproto,
 
     return 0;
 }
+
+static struct qos_asic_plugin_interface qos_asic_plugin = {
+    set_port_qos_cfg,
+    set_cos_map,
+    set_dscp_map,
+    apply_qos_profile
+};
+
+static struct plugin_extension_interface qos_extension = {
+    QOS_ASIC_PLUGIN_INTERFACE_NAME,
+    QOS_ASIC_PLUGIN_INTERFACE_MAJOR,
+    QOS_ASIC_PLUGIN_INTERFACE_MINOR,
+    (void *)&qos_asic_plugin
+};
+
+int
+register_qos_extension(void)
+{
+    return(register_plugin_extension(&qos_extension));
+}
+
 
 const struct ofproto_class ofproto_bcm_provider_class = {
     init,

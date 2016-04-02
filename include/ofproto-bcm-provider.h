@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Hewlett-Packard Development Company, L.P.
+ * Copyright (c) 2015-2016 Hewlett-Packard Enterprise Development LP
  * All Rights Reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -188,5 +188,7 @@ enum { N_TABLES = 255 };
 enum { TBL_INTERNAL = N_TABLES - 1 };    /* Used for internal hidden rules. */
 
 extern const struct ofproto_class ofproto_bcm_provider_class;
+
+int register_qos_extension(void);
 
 #endif  /* ofproto-bcm-provider.h */
