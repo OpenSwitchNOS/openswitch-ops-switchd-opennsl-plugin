@@ -64,6 +64,7 @@ struct netdev_bcmsdk {
 
     int hw_unit;
     int hw_id;
+    int parent_hw_id;
     int l3_intf_id;
     int knet_if_id;             /* BCM KNET interface ID. */
     int knet_bpdu_filter_id;                 /* BCM KNET BPDU filter ID. */
@@ -125,7 +126,7 @@ netdev_bcmsdk_get_hw_info(struct netdev *netdev, int *hw_unit, int *hw_id,
     ovs_assert(is_bcmsdk_class(netdev_get_class(netdev)));
 
     *hw_unit = nb->hw_unit;
-    *hw_id = nb->hw_id;
+    *hw_id = (nb->hw_id > 0) ? nb->hw_id : nb->parent_hw_id;
     if (hwaddr) {
         memcpy(hwaddr, nb->hwaddr, ETH_ADDR_LEN);
     }
@@ -200,6 +201,7 @@ netdev_bcmsdk_construct(struct netdev *netdev_)
 
     netdev->hw_unit = -1;
     netdev->hw_id = -1;
+    netdev->parent_hw_id = -1;
     netdev->knet_if_id = 0;
     netdev->port_info = NULL;
     netdev->intf_initialized = false;
@@ -250,7 +252,7 @@ netdev_bcmsdk_dealloc(struct netdev *netdev_)
 }
 
 static int
-netdev_bcmsdk_set_config(struct netdev *netdev_, const struct smap *args)
+netdev_vlansub_bcmsdk_set_config(struct netdev *netdev_, const struct smap *args)
 {
     struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
     struct netdev *parent = NULL;
@@ -269,7 +271,8 @@ netdev_bcmsdk_set_config(struct netdev *netdev_, const struct smap *args)
         if (parent != NULL) {
             parent_netdev = netdev_bcmsdk_cast(parent);
             if (parent_netdev != NULL) {
-                netdev->hw_id = parent_netdev->hw_id;
+                netdev->hw_id = -1;
+                netdev->parent_hw_id = parent_netdev->hw_id;
                 netdev->hw_unit = parent_netdev->hw_unit;
                 memcpy(netdev->hwaddr, parent_netdev->hwaddr, ETH_ALEN);
                 netdev->subintf_vlan_id = vlanid;
@@ -528,7 +531,7 @@ handle_bcmsdk_knet_subinterface_filters(struct netdev *netdev_, bool enable)
     if (enable == true && netdev->knet_subinterface_filter_id == 0) {
         VLOG_DBG("Create subinterface knet filter\n");
         netdev->hw_unit = 0;
-        bcmsdk_knet_subinterface_filter_create(netdev->hw_unit, netdev->hw_id,
+        bcmsdk_knet_subinterface_filter_create(netdev->hw_unit, netdev->parent_hw_id,
                 netdev->knet_if_id, &(netdev->knet_subinterface_filter_id));
     } else if ((enable == false) && (netdev->knet_subinterface_filter_id != 0)) {
         VLOG_DBG("Destroy subinterface knet filter\n");
@@ -983,6 +986,7 @@ netdev_internal_bcmsdk_set_hw_intf_info(struct netdev *netdev_, const struct sma
     if (netdev->intf_initialized == false) {
         netdev->hw_unit = 0;
         netdev->hw_id = -1;
+        netdev->parent_hw_id = -1;
         if(is_bridge_interface) {
             ether_mac = (struct ether_addr *) netdev->hwaddr;
             rc = bcmsdk_knet_if_create(netdev->up.name, netdev->hw_unit, netdev->hw_id, ether_mac,
@@ -1060,6 +1064,56 @@ netdev_internal_bcmsdk_update_flags(struct netdev *netdev_,
 
     ovs_mutex_lock(&netdev->mutex);
     *old_flagsp = netdev->flags;
+    ovs_mutex_unlock(&netdev->mutex);
+
+    return 0;
+}
+
+static int
+netdev_vlansub_bcmsdk_update_flags(struct netdev *netdev_,
+                                    enum netdev_flags off,
+                                    enum netdev_flags on,
+                                    enum netdev_flags *old_flagsp)
+{
+    int rc = 0;
+    int state = 0;
+    enum netdev_flags parent_flagsp = 0;
+    /*  We ignore the incoming flags as the underlying hardware responsible to
+     *  change the status of the flags is absent. Thus, we set new flags to
+     *  preconfigured values. */
+    struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
+    VLOG_DBG("%s Calling Netdev name=%s unit=%d port=%d",
+             __FUNCTION__,
+             netdev->up.name,
+             netdev->hw_unit,
+             netdev->hw_id);
+    /* Use subinterface netdev parent_hw_id to get the parent netdev */
+    struct netdev_bcmsdk *parent_netdev = netdev_from_hw_id(netdev->hw_unit,
+                                                            netdev->parent_hw_id);
+    ovs_mutex_lock(&parent_netdev->mutex);
+    VLOG_DBG("%s Calling Netdev name=%s unit=%d port=%d",
+             __FUNCTION__,
+             parent_netdev->up.name,
+             parent_netdev->hw_unit,
+             parent_netdev->hw_id);
+
+    if ((off | on) & ~NETDEV_UP) {
+        return EOPNOTSUPP;
+    }
+    rc = bcmsdk_get_enable_state(parent_netdev->hw_unit, parent_netdev->hw_id, &state);
+    if (!rc) {
+        if (state) {
+            parent_flagsp |= NETDEV_UP;
+        } else {
+            parent_flagsp &= ~NETDEV_UP;
+        }
+    }
+    VLOG_DBG("%s parent_flagsp = %d",__FUNCTION__, parent_flagsp);
+    ovs_mutex_unlock(&parent_netdev->mutex);
+
+    ovs_mutex_lock(&netdev->mutex);
+    VLOG_DBG("%s flagsp = %d",__FUNCTION__, netdev->flags);
+    *old_flagsp = netdev->flags & parent_flagsp;
     ovs_mutex_unlock(&netdev->mutex);
 
     return 0;
@@ -1208,9 +1262,9 @@ static const struct netdev_class bcmsdk_subintf_class = {
     netdev_bcmsdk_destruct,
     netdev_bcmsdk_dealloc,
     NULL,                       /* get_config */
-    netdev_bcmsdk_set_config,   /* set_config */
+    netdev_vlansub_bcmsdk_set_config,   /* set_config */
     netdev_internal_bcmsdk_set_hw_intf_info,
-    NULL,
+    netdev_internal_bcmsdk_set_hw_intf_config,
     NULL,                       /* get_tunnel_config */
     NULL,                       /* build header */
     NULL,                       /* push header */
@@ -1256,7 +1310,7 @@ static const struct netdev_class bcmsdk_subintf_class = {
     NULL,                       /* get_status */
     NULL,                       /* arp_lookup */
 
-    netdev_internal_bcmsdk_update_flags,
+    netdev_vlansub_bcmsdk_update_flags,
 
     NULL,                       /* rxq_alloc */
     NULL,                       /* rxq_construct */
