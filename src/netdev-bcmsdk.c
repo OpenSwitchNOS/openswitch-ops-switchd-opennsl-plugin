@@ -1210,7 +1210,7 @@ static const struct netdev_class bcmsdk_subintf_class = {
     NULL,                       /* get_config */
     netdev_bcmsdk_set_config,   /* set_config */
     netdev_internal_bcmsdk_set_hw_intf_info,
-    NULL,
+    netdev_internal_bcmsdk_set_hw_intf_config,
     NULL,                       /* get_tunnel_config */
     NULL,                       /* build header */
     NULL,                       /* push header */
