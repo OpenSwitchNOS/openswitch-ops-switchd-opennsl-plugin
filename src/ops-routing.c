@@ -283,6 +283,16 @@ ops_l3_init(int unit)
                  unit, opennsl_errmsg(rc));
         return 1;
     }
+    /* Creating profile for ip-options */
+    rc = opennsl_l3_ip4_options_profile_create(unit,
+                                               OPENNSL_L3_IP4_OPTIONS_WITH_ID,
+                                               opennslIntfIPOptionActionCopyCPUAndDrop,
+                                               &default_ip4_options_profile_id);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to set opennslIntfIPOptionActionCopyCPUAndDrop: unit=%d rc=%s",
+                 unit, opennsl_errmsg(rc));
+        return 1;
+    }
 
     /* initialize route table hash map */
     hmap_init(&ops_rtable.routes);
