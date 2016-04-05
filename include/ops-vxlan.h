@@ -91,7 +91,7 @@ typedef struct bcmsdk_vxlan_logical_switch_ {
  * struct bcmsdk_vxlan_tunnel_t
  *      Structure for configuring/modifying tunnel.
  *
- * tunnel_ip:
+ * local_ip:
  *      this tunnel's IP address.
  *
  * remote_ip:
@@ -109,6 +109,9 @@ typedef struct bcmsdk_vxlan_logical_switch_ {
  *
  * ttl:
  *      Time to live to be used while creating L3 header.
+ *
+ * tunnel_id:
+ *      tunnel ID return by HW
  */
 typedef struct bcmsdk_vxlan_tunnel_t_ {
     uint32_t local_ip;
@@ -128,6 +131,9 @@ typedef struct bcmsdk_vxlan_tunnel_t_ {
  * [In] port:
  *      Port number of the access/network port.
  *
+ * [In] port_type:
+ *      Vxlan port type, see bcmsdk_vxlan_port_type_t.
+ *
  * [In] vlan:
  *      VLAN for access/network port.
  *
@@ -146,7 +152,7 @@ typedef struct bcmsdk_vxlan_tunnel_t_ {
  * [In] tunnel_id
  *      Tunnel initiator/terminator ID. Only used for network port.
  *
- * [Out] port_id:
+ * [Out] vxlan_port_id:
  *      Virtual port ID.
  *
  * [In/Internal use] l3_intf_id:
