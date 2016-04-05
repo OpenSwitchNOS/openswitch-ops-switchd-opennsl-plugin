@@ -19,6 +19,15 @@
         - [Test Result Criteria](#test-result-criteria-1)
                 - [Test Pass Criteria](#test-pass-criteria-1)
                 - [Test Fail Criteria](#test-fail-criteria-1)
+- [Test TCP/UDP load balance mode](#test-tcp/udp-load-balance-mode)
+        - [Objective](#objective)
+        - [Requirements](#requirements)
+        - [Setup](#setup)
+                - [Topology Diagram](#topology-diagram)
+        - [Description](#description)
+        - [Test Result Criteria](#test-result-criteria)
+                - [Test Pass Criteria](#test-pass-criteria)
+                - [Test Fail Criteria](#test-fail-criteria)
 - [Test L3 LAG creation and deletion](#test-l3-lag-creation-and-deletion)
 	- [Objective](#objective)
 	- [Requirements](#requirements)
@@ -88,6 +97,43 @@ The ECMP resiliency is toggled and all the l3 ecmp egress objects must reflect t
 
 #### Test Fail Criteria
    When resiliency flag in the l3 ecmp egress object is false when enabled, or set to true when disabled.
+
+## Test TCP/UDP load balance mode
+### Objective
+This test checks for the load balance mode programmed in the ASIC.
+### Requirements
+Two physical switches are required for this test.
+
+### Setup
+#### Topology diagram
+```ditaa
++---------------+            +---------------+
+|               |            |               |
+|               +------------+               |
+|   Switch 1    |            |   Switch 2    |
+|               +------------+               |
+|               |            |               |
++---------------+            +---------------+
+```
+### Description
+1. Create interface lag 100 on switch 1.
+2. Select hashing algorithm hash l4-src-dst on switch 1.
+3. Add interface 2 to lag 100 on switch 1.
+4. Add interface 3 to lag 100 on switch 1.
+5. Create interface lag 100 on switch 2.
+6. Select hashing algorithm hash l4-src-dst on switch 2.
+7. Add interface 2 to lag 100 on switch 2.
+8. Add interface 3 to lag 100 on switch 2.
+9. Use the `ovs-appctl` command on switch 1 for retrieving the load mode entry in the ASIC.
+    ```
+    ovs-appctl plugin/debug lag
+    ```
+
+### Test result criteria
+#### Test pass criteria
+The Load mode entry in the ASIC is l4-src-dst.
+#### Test fail criteria
+The Load mode entry in the ASIC is not l4-src-dst.
 
 ## Test L3 LAG creation and deletion
 ### Objective
