@@ -74,8 +74,29 @@ typedef struct vxlan_setting_t_ {
     bool vnid_miss_to_cpu_endis;
 } vxlan_setting_t;
 
-
-typedef struct vxlan_logical_sw_element_t_t {
+/*
+ * struct vxlan_logical_sw_element_t
+ *      Structure for logical switch hash element node
+ *
+ * vnid:
+ *      VNI (key)
+ *
+ * vpn_id:
+ *      HW vpn ID (value)
+ *
+ * broadcast_group:
+ *      Broadcast group associated with this logical switch
+ *
+ * unknown multicast group:
+ *      Unknown multicast group for this logical switch
+ *
+ * unknown_unicast_group:
+ *      Unknown unicast group for this logical switch
+ *
+ * node:
+ *      hash node
+ */
+typedef struct vxlan_logical_sw_element_t {
     int vnid;                       /* key */
     int vpn_id;                     /* value */
     int broadcast_group;            /* value */
@@ -85,6 +106,14 @@ typedef struct vxlan_logical_sw_element_t_t {
 } vxlan_logical_sw_element_t;
 
 
+/*
+ * struct vxlan_global_t
+ *      Structure to store global variables for Vxlan
+ *
+ * logical_sw_hmap:
+ *      logical switch hash map
+ *
+ */
 typedef struct vxlan_global_t_ {
     /* Hash vni to vpn_id for logical switch. It contains
        vxlan_logical_sw_element_t as element. */
@@ -483,6 +512,12 @@ vxlan_insert_logical_switch_hash_element(int unit,
     vxlan_logical_sw_element_t *logical_sw_element_p;
     uint32_t hash;
 
+    if (logical_sw_p == NULL) {
+        VLOG_ERR("Error [%s, %d], logical_sw_p is null for unit:%d vnid:%d vpn_id:%d\n",
+                 __FUNCTION__, __LINE__, unit, logical_sw_p->vnid,
+                 logical_sw_p->vpn_id);
+    }
+
     logical_sw_element_p = (vxlan_logical_sw_element_t *)calloc(1, sizeof(vxlan_logical_sw_element_t));
 
     if (logical_sw_element_p == NULL) {
@@ -654,6 +689,11 @@ vxlan_destroy_logical_switch(int unit, bcmsdk_vxlan_logical_switch_t *logical_sw
 {
     int rc;
     vxlan_logical_sw_element_t *logical_sw_element_p;
+
+    if (logical_sw_p == NULL) {
+        VLOG_ERR("Error [%s, %d], logical_sw_p is null for unit:%d vnid:%d\n",
+                 __FUNCTION__, __LINE__, unit, logical_sw_p->vnid);
+    }
 
     logical_sw_element_p = vxlan_find_logical_switch_hash_element(unit,
                                            logical_sw_p->vnid);
