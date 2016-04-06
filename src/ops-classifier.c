@@ -37,6 +37,7 @@
 #include <openvswitch/types.h>
 #include <openvswitch/vlog.h>
 #include <uuid.h>
+#include "plugin-extensions.h"
 
 #include "platform-defines.h"
 /* Broadcom provider */
@@ -50,6 +51,31 @@ VLOG_DEFINE_THIS_MODULE(ops_classifier);
 struct hmap classifier_map;
 
 opennsl_field_group_t ip_group;
+
+/**************************************************************************//**
+ * OPS_CLS plugin interface definition. This is the instance containing all
+ * implementations of ops_cls plugin on this platform.
+ *****************************************************************************/
+static struct ops_cls_plugin_interface ops_cls_plugin = {
+    ops_cls_pd_apply,
+    ops_cls_pd_remove,
+    ops_cls_pd_replace,
+    ops_cls_pd_list_update,
+    ops_cls_pd_statistics_get,
+    ops_cls_pd_statistics_clear,
+    ops_cls_pd_statistics_clear_all
+};
+
+/**************************************************************************//**
+ * Ofproto plugin extension for OPS_CLS plugin. Holds the name, version and
+ * plugin interface information.
+ *****************************************************************************/
+static struct plugin_extension_interface ops_cls_extension = {
+    OPS_CLS_ASIC_PLUGIN_INTERFACE_NAME,
+    OPS_CLS_ASIC_PLUGIN_INTERFACE_MAJOR,
+    OPS_CLS_ASIC_PLUGIN_INTERFACE_MINOR,
+    (void *)&ops_cls_plugin
+};
 
 /*
  * Init function (IFP initialization)
@@ -1318,4 +1344,10 @@ ops_cls_pd_statistics_clear_all(struct ops_cls_pd_list_status *status)
 {
     VLOG_ERR("%s unimplemented", __func__);
     return OPS_FAIL;
+}
+
+int
+register_ops_cls_plugin()
+{
+    return (register_plugin_extension(&ops_cls_extension));
 }
