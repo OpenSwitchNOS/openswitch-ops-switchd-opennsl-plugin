@@ -17,6 +17,7 @@
 #ifndef __OPS_CLASSIFIER_H__
 #define __OPS_CLASSIFIER_H__ 1
 
+#include <opennsl/rx.h>
 
 #include "ops-cls-asic-plugin.h"
 
@@ -89,7 +90,15 @@ int ops_cls_pd_statistics_clear_all(struct ops_cls_pd_list_status *status);
 int
 ops_cls_pd_acl_log_pkt_data_set(void (*callback_handler)(struct acl_log_info *));
 
-
+/**
+ * Receive a packet with a metadata header that was copied to the CPU for ACL
+ * logging.  This function extracts relevant data from the metadata and the
+ * header from the packet itself, populates a structure with that information,
+ * and passes that structure to a callback for logging.
+ *
+ * @param pkt  Pointer to the packet with metadata
+ */
+void acl_log_handle_rx_event(opennsl_pkt_t *pkt);
 
 
 /**
@@ -148,3 +157,4 @@ enum ops_update_pbmp {
 };
 
 #endif /* __OPS_CLASSIFIER_H__ */
+

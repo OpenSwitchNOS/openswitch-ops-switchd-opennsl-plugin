@@ -29,6 +29,7 @@
 #include <opennsl/knet.h>
 #include <opennsl/rx.h>
 
+#include "bcm.h"
 #include "platform-defines.h"
 #include "ops-debug.h"
 #include "ops-knet.h"
@@ -340,6 +341,42 @@ void bcmsdk_knet_bridge_normal_filter_create(char *knet_dst_if_name,
     opennsl_knet_filter_create(0, &knet_filter);
     return;
 }
+
+void bcmsdk_knet_acl_logging_filter_create(char *knet_dst_if_name,
+        int *knet_filter_id)
+{
+    opennsl_error_t rc;
+    const char *desc = "knet_filter_acl_logging";
+    opennsl_knet_filter_t knet_filter;
+    opennsl_knet_filter_t_init(&knet_filter);
+
+    int knet_dst_id = bcmsdk_knet_ifid_get_by_name(knet_dst_if_name, 0);
+
+    knet_filter.type = OPENNSL_KNET_FILTER_T_RX_PKT;
+    snprintf(knet_filter.desc, OPENNSL_KNET_FILTER_DESC_MAX,
+             desc);
+
+    /* Note that this priority can be very high because the only packets copied
+     * for ACL logging are packets that should be denied/dropped, so no other
+     * parts of the system should need to see them. */
+    knet_filter.priority = 0x4;
+    knet_filter.dest_type = OPENNSL_KNET_DEST_T_BCM_RX_API;
+    knet_filter.dest_id = knet_dst_id;
+    knet_filter.flags |= OPENNSL_KNET_FILTER_F_STRIP_TAG;
+    knet_filter.match_flags |= OPENNSL_KNET_FILTER_M_REASON;
+    OPENNSL_RX_REASON_SET(knet_filter.m_reason, opennslRxReasonFilterMatch);
+
+    rc = opennsl_knet_filter_create(0, &knet_filter);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to create KNET filter for: %s", desc);
+    } else {
+        VLOG_DBG("Successfully created KNET filter for: %s, id=%d", desc, knet_filter.id);
+    }
+
+    return;
+}
+
+
 ///////////////////////////////// DEBUG/DUMP /////////////////////////////////
 
 /* Note:  See knet.h, OPENNSL_KNET_NETIF_T_xxx */
