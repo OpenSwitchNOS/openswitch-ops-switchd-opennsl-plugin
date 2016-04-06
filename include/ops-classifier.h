@@ -18,7 +18,7 @@
 #define __OPS_CLASSIFIER_H__ 1
 
 
-#include "ofproto-ops-classifier.h"
+#include "ops-cls-asic-plugin.h"
 
 /************************************************************************//**
  * @defgroup ops-switchd-classifier-api classifier plug-in interface
@@ -33,9 +33,8 @@
  *
  * @file
  * Prototypes for the Classifier List plug-in interface. For now,
- * documentation for these functions can be found in the ops-openvswitch
- * repo:
- * vswitchd/plugins/ops-classifier/include/ofproto-ops-classifier.h"
+ * documentation for these functions can be found in ops-cls-asic-plugin.h
+ *
  ***************************************************************************/
 int ops_cls_pd_apply(struct ops_cls_list            *list,
                      struct ofproto                 *ofproto,
@@ -100,6 +99,11 @@ int ops_cls_pd_statistics_clear_all(struct ops_cls_pd_list_status *status);
  * @retval != 0                - if not initialized successfully
  */
 int ops_classifier_init (int unit);
+
+/**
+ * Register BCM classifier plugin extension
+ */
+int register_ops_cls_plugin(void);
 
 struct ops_classifier {
     struct hmap_node node;

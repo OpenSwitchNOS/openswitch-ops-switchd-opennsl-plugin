@@ -195,5 +195,9 @@ struct ofbundle * bundle_lookup(const struct bcmsdk_provider_node *ofproto,
 struct bcmsdk_provider_node * bcmsdk_provider_node_cast(
     const struct ofproto *ofproto);
 
+/**
+ * Register asic plugins for various features such as ACL
+ */
+int register_asic_plugins(void);
 
 #endif  /* ofproto-bcm-provider.h */

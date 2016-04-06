@@ -2055,6 +2055,17 @@ l3_ecmp_hash_set(const struct ofproto *ofprotop, unsigned int hash, bool enable)
     return ops_routing_ecmp_hash_set(0, hash, enable);
 }
 
+int
+register_asic_plugins()
+{
+    int rc;
+
+    /* Register classifier plugin extension */
+    rc = register_ops_cls_plugin();
+
+    return rc;
+}
+
 
 const struct ofproto_class ofproto_bcm_provider_class = {
     init,
@@ -2159,13 +2170,5 @@ const struct ofproto_class ofproto_bcm_provider_class = {
     get_l3_host_hit_bit,        /* Get l3 host entry hit bits */
     l3_route_action,            /* l3 route action - install, update, delete */
     l3_ecmp_set,                /* enable/disable ECMP globally */
-    l3_ecmp_hash_set,           /* enable/disable ECMP hash configs */
-
-    ops_cls_pd_apply,           /* ops-classifier functions */
-    ops_cls_pd_remove,
-    ops_cls_pd_replace,
-    ops_cls_pd_list_update,
-    ops_cls_pd_statistics_get,
-    ops_cls_pd_statistics_clear,
-    ops_cls_pd_statistics_clear_all
+    l3_ecmp_hash_set           /* enable/disable ECMP hash configs */
 };
