@@ -65,6 +65,8 @@ struct knet_user_data {
     int count;
 };
 
+#define OPENNSL_KNET_DEST_T_BCM_RX_API   2          /**< Send packet to VCM Rx API. */
+
 extern int ops_knet_init(int unit);
 extern int bcmsdk_knet_if_create(char *name, int unit, opennsl_port_t port,
                                  struct ether_addr *mac, int *knet_if_id);
@@ -80,6 +82,8 @@ extern void bcmsdk_knet_subinterface_filter_create(int hw_unit, opennsl_port_t h
 extern void bcmsdk_knet_port_bpdu_filter_create(char *name, int hw_unit, opennsl_port_t hw_port,
                                            int knet_if_id, int *knet_filter_id);
 extern void bcmsdk_knet_bridge_normal_filter_create(char *knet_dst_if_name,
+        int *knet_filter_id);
+extern void bcmsdk_knet_acl_logging_filter_create(char *knet_dst_if_name,
         int *knet_filter_id);
 extern void ops_knet_dump(struct ds *ds, knet_debug_type_t debug_type);
 

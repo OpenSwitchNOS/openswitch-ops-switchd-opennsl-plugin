@@ -41,7 +41,6 @@
 
 VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
 
-
 extern int
 opennsl_rx_register(int, const char *, opennsl_rx_cb_f, uint8, void *, uint32);
 
@@ -83,6 +82,13 @@ opennsl_rx_t opennsl_rx_callback(int unit, opennsl_pkt_t *pkt, void *cookie)
         /* Write incoming data to Receivers buffer. When buffer is full,
          * data is sent to Collectors. */
         ops_sflow_write_sampled_pkt(pkt);
+    }
+
+    /* ACL logging packet */
+    if (OPENNSL_RX_REASON_GET(pkt->rx_reasons, opennslRxReasonFilterMatch)) {
+        /* Copy relevant parts of the metadata and header to an ACL logging
+         * buffer */
+        acl_log_handle_rx_event(pkt);
     }
 
     return OPENNSL_RX_HANDLED;

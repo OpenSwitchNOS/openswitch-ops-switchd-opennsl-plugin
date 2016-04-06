@@ -32,17 +32,22 @@
 #include <ovs/list.h>
 #include <opennsl/port.h>
 #include <opennsl/field.h>
+#include <opennsl/rx.h>
 
 #include <ofproto/ofproto-provider.h>
 #include <openvswitch/types.h>
 #include <openvswitch/vlog.h>
 #include <uuid.h>
-#include "plugin-extensions.h"
 
+#include "bcm.h"
 #include "netdev-bcmsdk.h"
-#include "platform-defines.h"
 /* Broadcom provider */
 #include "ofproto-bcm-provider.h"
+#include "ops-knet.h"
+#include "ops-cls-asic-plugin.h"
+#include "platform-defines.h"
+#include "plugin-extensions.h"
+#include "seq.h"
 /* Private header */
 #include "ops-classifier.h"
 
@@ -123,6 +128,8 @@ ops_classifier_init(int unit)
     } else {
         VLOG_DBG("Created group %d successfully", ip_group);
     }
+
+    bcmsdk_knet_acl_logging_filter_create("AclLog", NULL);
 
     /* Initialize the classifier hash map */
     hmap_init(&classifier_map);
@@ -379,6 +386,7 @@ ops_cls_set_action(int                          unit,
     VLOG_DBG("Classifier list entry action flag: 0x%x", cls_entry->act_flags);
 
     if (cls_entry->act_flags & OPS_CLS_ACTION_DENY) {
+        VLOG_DBG("Drop action being added at entry %d", entry);
         rc = opennsl_field_action_add(unit, entry, opennslFieldActionDrop,
                                       0, 0);
         if (OPENNSL_FAILURE(rc)) {
@@ -388,6 +396,7 @@ ops_cls_set_action(int                          unit,
     }
 
     if (cls_entry->act_flags & OPS_CLS_ACTION_COUNT) {
+        VLOG_DBG("Count action being added at entry %d", entry);
         rc = opennsl_field_stat_create(unit, ip_group, 2, stats_type, &stat_id);
         if (OPENNSL_FAILURE(rc)) {
             VLOG_ERR("Failed to create stats for ACL %s rc=%s",
@@ -414,7 +423,16 @@ ops_cls_set_action(int                          unit,
     }
 
     if (cls_entry->act_flags & OPS_CLS_ACTION_LOG) {
-        VLOG_DBG("Log action not supported");
+        uint8_t entry_id;
+
+        VLOG_DBG("Log action being added at entry %d", entry);
+        entry_id = MIN(entry, (uint8_t)(-1));
+        rc = opennsl_field_action_add(unit, entry, opennslFieldActionCopyToCpu,
+                                      1, entry_id);
+        if (OPENNSL_FAILURE(rc)) {
+            VLOG_ERR("Failed to set copy action: rc=%s", opennsl_errmsg(rc));
+            return rc;
+        }
     }
 
     return rc;
@@ -1027,7 +1045,6 @@ ops_cls_pd_apply(struct ops_cls_list            *list,
         }
     }
 
-    (*acl_pd_log_pkt_data_set)(NULL);
     return OPS_OK;
 
 apply_fail:
@@ -1381,4 +1398,57 @@ int
 register_ops_cls_plugin()
 {
     return (register_plugin_extension(&ops_cls_extension));
+}
+
+void
+acl_log_handle_rx_event(opennsl_pkt_t *pkt)
+{
+    static long long int last_pkt_rxd_time = 0;
+    long long int cur_time;
+
+    if (!pkt) {
+        VLOG_ERR("Invalid pkt sent by ASIC");
+        return;
+    }
+
+    cur_time = time_msec();
+    /* ignore packets received within a small time window after the last ACL
+     * logging packet
+     */
+    if (cur_time >= (last_pkt_rxd_time + 1000)) {
+        struct acl_log_info pkt_info = { .valid_fields = 0 };
+
+        VLOG_DBG("ACL logging packet of length %d received", pkt->pkt_len);
+        last_pkt_rxd_time = cur_time;
+
+        /* fill in the acl_log_info struct */
+        /* first fill in fields only available from the ASIC */
+        pkt_info.ingress_port  = pkt->src_port;
+        pkt_info.valid_fields |= ACL_LOG_INGRESS_PORT;
+        pkt_info.egress_port   = pkt->dest_port;
+        pkt_info.valid_fields |= ACL_LOG_EGRESS_PORT;
+        pkt_info.ingress_vlan  = pkt->vlan;
+        pkt_info.valid_fields |= ACL_LOG_INGRESS_VLAN;
+        pkt_info.node          = pkt->unit;
+        pkt_info.valid_fields |= ACL_LOG_NODE;
+        pkt_info.in_cos        = pkt->cos;
+        pkt_info.valid_fields |= ACL_LOG_IN_COS;
+
+        /* provide any available on which ACE this packet matched */
+        if (pkt->reserved29 < (uint8_t)(-1)) {
+            pkt_info.entry_num = pkt->reserved29;
+            pkt_info.valid_fields |= ACL_LOG_ENTRY_NUM;
+        }
+
+        /* fill in fields related to packet data */
+        pkt_info.total_pkt_len = pkt->tot_len;
+        pkt_info.pkt_buffer_len = MIN(pkt->pkt_len, sizeof(pkt_info.pkt_data));
+        pkt_info.pkt_buffer_len =
+            MIN(pkt->pkt_data[0].len, pkt_info.pkt_buffer_len);
+        memcpy(&pkt_info.pkt_data, pkt->pkt_data[0].data,
+                pkt_info.pkt_buffer_len);
+
+        /* submit packet data for PI code to retrieve */
+        (*acl_pd_log_pkt_data_set)(&pkt_info);
+    }
 }
