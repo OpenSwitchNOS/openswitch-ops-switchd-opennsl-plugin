@@ -1509,7 +1509,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                     }
                 }
                 if (s->vlan != -1) {
-                    bcmsdk_add_native_tagged_ports(bundle->vlan, temp_pbm);
+                    bcmsdk_add_native_tagged_ports(s->vlan, temp_pbm);
                 }
                 break;
             case PORT_VLAN_NATIVE_UNTAGGED:
@@ -1522,7 +1522,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                     }
                 }
                 if (s->vlan != -1) {
-                    bcmsdk_add_native_untagged_ports(bundle->vlan, temp_pbm, false);
+                    bcmsdk_add_native_untagged_ports(s->vlan, temp_pbm, false);
                 }
                 break;
             case PORT_VLAN_TRUNK:
