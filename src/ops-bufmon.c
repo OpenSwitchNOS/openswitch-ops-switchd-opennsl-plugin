@@ -29,6 +29,7 @@
 #include <opennsl/types.h>
 #include <opennsl/cosq.h>
 #include <opennsl/switch.h>
+#include <opennsl/init.h>
 
 #include "bufmon-bcm-provider.h"
 #include "platform-defines.h"
@@ -58,7 +59,27 @@ typedef struct realm_helper {
 
 static int trigger_user_data[MAX_SWITCH_UNITS];
 
-#define INVALID  (-1)
+#define  INVALID  (-1)
+#define  NUM_SERVICE_POLL  (4)
+#define  NUM_PG            (8)
+#define  NUM_RQE           (11)
+#define  CELL_TO_BYTES     (208)
+
+#define  IS_TRIDEN2(_device)  (((_device) >= 0xb850 && (_device) <= 0xb867) || \
+                                (_device) == 0xb760 || (_device) == 0xb832  || \
+                                (_device) == 0xb833 || (_device) == 0xb865)
+
+#define  IS_TOMAHWAK(_device) ((_device) == 0xb960 || (_device) == 0xb961 || \
+                               (_device) == 0xb962 || (_device) == 0xb965)
+
+#define  IS_STAT_PORT_BASED(_statId)                         \
+            ((_statId) == opennslBstStatIdIngPool ||         \
+             (_statId) == opennslBstStatIdEgrMCastPool ||    \
+             (_statId) == opennslBstStatIdEgrPool ||         \
+             (_statId) == opennslBstStatIdRQEQueue ||        \
+             (_statId) == opennslBstStatIdUcastGroup||       \
+             (_statId) == opennslBstStatIdDevice ||          \
+             (_statId) == opennslBstStatIdCpuQueue) ? true : false
 
 /* Checks the input parameters are valid */
 #define INPUT_PARAM_VALIDATE(_param)                   \
@@ -99,6 +120,12 @@ static int trigger_user_data[MAX_SWITCH_UNITS];
 static inline unsigned int get_max_stats(void);
 static inline int get_realm_index(int statid, char *str);
 static const realm_helper_t *get_all_realm_list(void);
+static int64_t get_stat_default_threshold (int asic, int statId);
+
+int cell_to_byte()
+{
+  return CELL_TO_BYTES;
+} /*cell_to_byte*/
 
 static void
 device_data_stats(int statid, counter_operations_t type,
@@ -495,7 +522,12 @@ handle_bufmon_counter_mgmt(bufmon_counter_info_t *counter,
     index = get_realm_index(statid, counter->name);
 
     INPUT_PARAM_VALIDATE(index);
-
+    /* Set default threshold if counter->trigger_threshold is -1*/
+    if (SET_COUNTER_THRESHOLD == type &&
+        INVALID == counter->trigger_threshold) {
+        counter->trigger_threshold = 
+         get_stat_default_threshold (counter->hw_unit_id, statid);
+    }
     /* Call the bufmon handler specific to realm */
     if ((index) < MAX_STATS) {
         realm_list[index].bufmon_counter_handler(statid, type, counter);
@@ -505,6 +537,135 @@ handle_bufmon_counter_mgmt(bufmon_counter_info_t *counter,
 
     return;
 }/* handle_bufmon_counter_mgmt */
+
+static int 
+get_ports (int unit)
+{
+  int rv = 0;
+  opennsl_port_config_t  port_cfg;
+
+  int num_ports = 0, num_front_panel_ports =0;
+
+  rv = opennsl_port_config_get (unit, &port_cfg);
+  if (OPENNSL_E_NONE != rv) {
+    return INVALID;
+  }
+  
+  OPENNSL_PBMP_COUNT(port_cfg.ge, num_ports);
+  num_front_panel_ports = num_ports;
+
+  OPENNSL_PBMP_COUNT(port_cfg.xe, num_ports);
+  num_front_panel_ports += num_ports;
+ 
+  return num_front_panel_ports;
+}
+
+static int 
+get_stat_queue_max (int statId)
+{
+  if (statId == opennslBstStatIdEgrPool||
+      statId == opennslBstStatIdEgrMCastPool ||
+      statId == opennslBstStatIdEgrUCastPortShared ||
+      statId == opennslBstStatIdEgrPortShared ||
+      statId == opennslBstStatIdUcastGroup||
+      statId == opennslBstStatIdPortPool ||
+      statId == opennslBstStatIdIngPool){
+    return NUM_SERVICE_POLL;
+  }
+  else if (statId == opennslBstStatIdPriGroupShared ||
+           statId == opennslBstStatIdPriGroupHeadroom ||
+           statId == opennslBstStatIdUcast ||
+           statId == opennslBstStatIdMcast ||
+           statId == opennslBstStatIdCpuQueue){
+    return NUM_PG;
+  }
+  else if (statId == opennslBstStatIdRQEQueue){
+    return NUM_RQE;
+  }
+  else if (statId == opennslBstStatIdDevice){
+    return 1;
+  }
+ 
+  return INVALID;
+}
+
+static int64_t
+get_stat_default_threshold (int asic, int statId)
+{
+  opennsl_info_t  info;
+
+  opennsl_info_get (asic, &info);
+ 
+  if (IS_TRIDEN2(info.device)) {
+    if (statId == opennslBstStatIdUcast ||
+      statId == opennslBstStatIdEgrUCastPortShared ||
+      statId == opennslBstStatIdUcastGroup) {
+      return (0x3FFF*CELL_TO_BYTES);
+    } else if (statId == opennslBstStatIdPriGroupHeadroom) {
+      return (0xFFF*CELL_TO_BYTES);
+    } else {
+      return (0x1FFFF*CELL_TO_BYTES);
+    }
+  } if (IS_TOMAHWAK(info.device)) {
+     if (statId == opennslBstStatIdUcast ||
+         statId == opennslBstStatIdUcastGroup) {
+        return (0xFFF*CELL_TO_BYTES);
+     } else {
+        return (0x7FFF*CELL_TO_BYTES);
+     }
+  }
+  return INVALID;
+}
+
+void 
+bst_init_thresholds()
+{
+  opennsl_cosq_bst_profile_t profile;
+  opennsl_gport_t gport =0;
+  int   num_ports = 0, port =0, index =0, statId=0;
+  int   rv  = 0;
+  int   asic = 0;
+  int   queue =0;
+  int64_t   threshold =0;
+
+  for (asic = 0; asic < MAX_SWITCH_UNITS; asic++) {
+    num_ports = get_ports(asic);
+  
+    for (statId = 0 ;statId < opennslBstStatIdMaxCount; 
+         statId++) {
+      queue = get_stat_queue_max (statId);
+      if (queue == INVALID) {
+         continue;
+      }
+      threshold = get_stat_default_threshold (asic,statId);  
+      profile.byte = threshold;
+      if (!(IS_STAT_PORT_BASED(statId))) {
+        gport = 0;
+        for (index = 0 ; index < queue; index++){
+          rv = BCM_API_BST_PROFILE_SET(asic, gport, 
+                                       index,statId, &profile);
+          if (OPENNSL_E_NONE != rv) {
+            VLOG_INFO("Threshold set failed (%d %d %d)",
+                      profile.byte, statId, index);
+          }
+        }
+      } else {
+        for (port = 1; port <= num_ports; port++) {
+          rv = opennsl_port_gport_get(asic, port, &gport);
+          for (index = 0 ; index < queue; index++) {
+            rv = BCM_API_BST_PROFILE_SET(asic, gport, 
+                                         index, statId,&profile);
+            if (OPENNSL_E_NONE != rv) {  
+               VLOG_INFO("Threshold set failed (%d %d %d %d)",
+                     profile.byte, statId, port, index);
+            }
+          } 
+        } /* End of port iteration*/      
+      }   
+    }  /* End of statId iteration*/
+  } /* End of ASIC iteration*/
+  return;  
+}
 
 void
 bst_switch_control_get(int unit, opennsl_switch_control_t type, int *value)
@@ -578,8 +739,6 @@ bst_switch_event_callback (int asic, opennsl_switch_event_t event,
     const realm_helper_t *realm_list = get_all_realm_list();
 
     /* Disable tracking mode to avoid spurious triggers from HW */
-    bst_switch_control_set(opennslSwitchBstEnable, 0);
-
     /* Call the switchd Callback registered with plugin */
     if (event == OPENNSL_SWITCH_EVENT_MMU_BST_TRIGGER) {
         /* Validate BID */
