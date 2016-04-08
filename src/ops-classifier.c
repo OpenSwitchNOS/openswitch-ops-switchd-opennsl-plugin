@@ -45,6 +45,13 @@
 /* Private header */
 #include "ops-classifier.h"
 
+/** Local macros */
+#define match_flags entry_fields.entry_flags
+#define src_ip      entry_fields.src_ip_address.v4.s_addr
+#define src_mask    entry_fields.src_ip_address_mask.v4.s_addr
+#define dst_ip      entry_fields.dst_ip_address.v4.s_addr
+#define dst_mask    entry_fields.dst_ip_address_mask.v4.s_addr
+#define act_flags   entry_actions.action_flags
 
 /** Define a module for VLOG_ functionality */
 VLOG_DEFINE_THIS_MODULE(ops_classifier);

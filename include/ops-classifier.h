@@ -126,13 +126,7 @@ struct ops_classifier_entry {
     struct ops_classifier *pacl;
     bool in_asic;                       /* installed in asic */
     struct ops_cls_list_entry_match_fields entry_fields;   /* field(s)/value(s) to match */
-#define match_flags entry_fields.entry_flags
-#define src_ip      entry_fields.src_ip_address.v4.s_addr
-#define src_mask    entry_fields.src_ip_address_mask.v4.s_addr
-#define dst_ip      entry_fields.dst_ip_address.v4.s_addr
-#define dst_mask    entry_fields.dst_ip_address_mask.v4.s_addr
     struct ops_cls_list_entry_actions entry_actions;        /* action(s) to take */
-#define act_flags   entry_actions.action_flags
 };
 
 struct ops_range_entry {
