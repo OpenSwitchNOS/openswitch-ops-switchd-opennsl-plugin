@@ -39,6 +39,7 @@
 #include <uuid.h>
 #include "plugin-extensions.h"
 
+#include "netdev-bcmsdk.h"
 #include "platform-defines.h"
 /* Broadcom provider */
 #include "ofproto-bcm-provider.h"
@@ -327,6 +328,7 @@ ops_cls_get_port_bitmap(struct ofproto *ofproto_,
                         int            *hw_unit,
                         opennsl_pbmp_t *pbmp)
 {
+    int unit, hw_port;
     struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
 
     struct ofbundle *bundle = bundle_lookup(ofproto, aux);
@@ -337,7 +339,9 @@ ops_cls_get_port_bitmap(struct ofproto *ofproto_,
 
     struct bcmsdk_provider_ofport_node *port, *next_port;
     LIST_FOR_EACH_SAFE (port, next_port, bundle_node, &bundle->ports) {
-        OPENNSL_PBMP_PORT_ADD(*pbmp, port->up.ofp_port);
+        netdev_bcmsdk_get_hw_info(port->up.netdev, &unit, &hw_port, NULL);
+        VLOG_DBG("Hardware unit: %d, Hardware port: %d\n", unit, hw_port);
+        OPENNSL_PBMP_PORT_ADD(*pbmp, hw_port);
     }
 
     if (OPENNSL_PBMP_IS_NULL(*pbmp)) {
@@ -345,7 +349,7 @@ ops_cls_get_port_bitmap(struct ofproto *ofproto_,
         return OPS_FAIL;
     }
 
-    *hw_unit = bundle->hw_unit;
+    *hw_unit = unit;
     return OPS_OK;
 }
 
