@@ -75,7 +75,23 @@ typedef struct vxlan_setting_t_ {
 } vxlan_setting_t;
 
 
-typedef struct vxlan_logical_sw_element_t_t {
+/*
+ * struct vxlan_egr_obj_t
+ *      Structure for egress object operations
+ *
+ * gport:
+ *      gport
+ *
+ * egr_obj_id:
+ *      egress object ID.
+ */
+typedef struct bcmsdk_vxlan_egr_obj_ {
+    int gport;
+    int egr_obj_id;
+} bcmsdk_vxlan_egr_obj_t;
+
+
+typedef struct vxlan_logical_sw_element_t_ {
     int vnid;                       /* key */
     int vpn_id;                     /* value */
     int broadcast_group;            /* value */
@@ -84,11 +100,37 @@ typedef struct vxlan_logical_sw_element_t_t {
     struct hmap_node node;
 } vxlan_logical_sw_element_t;
 
+/*
+ * struct vxlan_egr_obj_element_t
+ *      Structure for egress object hash element
+ *
+ * unit:
+ *      ASIC unit number
+ *
+ * gport:
+ *      gport
+ *
+ * egr_obj_id:
+ *      egress object ID.
+ *
+ * node:
+ *      hash node
+ */
+typedef struct vxlan_egr_obj_element_t_ {
+    int unit;                       /* key */
+    int gport;                      /* key */
+    int egr_obj_id;                 /* value */
+    struct hmap_node node;
+} vxlan_egr_obj_element_t;
 
 typedef struct vxlan_global_t_ {
     /* Hash vni to vpn_id for logical switch. It contains
        vxlan_logical_sw_element_t as element. */
     struct hmap logical_sw_hmap;
+
+    /* Hash gport to L3 egress object. It contains
+       vxlan_egr_obj_element_t as element */
+    struct hmap egr_obj_hmap;
 } vxlan_global_t;
 
 
@@ -103,6 +145,10 @@ static int vxlan_configure_global(int unit, vxlan_setting_t *vxlan_set_p);
 
 static int vxlan_insert_logical_switch_hash_element(int unit, bcmsdk_vxlan_logical_switch_t *logical_sw_p);
 static vxlan_logical_sw_element_t *vxlan_find_logical_switch_hash_element(int unit, int vnid);
+
+static int vxlan_insert_egr_obj_hash_element(int unit,
+                                             bcmsdk_vxlan_egr_obj_t *egr_obj_p);
+static vxlan_egr_obj_element_t *vxlan_find_egr_obj_hash_element(int unit, int gport);
 
 static int vxlan_create_logical_switch(int unit, bcmsdk_vxlan_logical_switch_t *logical_sw_p);
 static int vxlan_destroy_logical_switch(int unit, bcmsdk_vxlan_logical_switch_t *logical_sw_p);
@@ -545,6 +591,91 @@ vxlan_find_logical_switch_hash_element(int unit, int vnid)
     return  logical_sw_element_found_p;
 }
 
+
+/*
+ * Function: vxlan_insert_egr_obj_hash_element
+ *      Insert gport and egr_obj value pair to hash map.
+ *      User must check if the gport and egr_obj pair does not
+ *      exist first using vxlan_find_egr_obj_hash_element().
+ *
+ * [In] unit
+ *      HW unit
+ *
+ * [In] egr_obj_p
+ *      egr_obj_p->gport
+ *      egr_obj_p->egr_obj
+ *
+ * [Out] return
+ *       See BCMSDK_E_XXX
+ */
+static
+int
+vxlan_insert_egr_obj_hash_element(int unit,
+                                  bcmsdk_vxlan_egr_obj_t *egr_obj_p)
+{
+    vxlan_egr_obj_element_t *egr_obj_element_p;
+    uint32_t hash;
+
+    egr_obj_element_p = (vxlan_egr_obj_element_t *)
+        calloc(1, sizeof(vxlan_egr_obj_element_t));
+
+    if (egr_obj_element_p == NULL) {
+        VLOG_ERR("Error [%s, %d], egr_obj_element_p calloc failed for unit:%d gport:0x%x egr_obj:0x%x\n",
+                 __FUNCTION__, __LINE__, unit, egr_obj_p->gport,
+                 egr_obj_p->egr_obj_id);
+        return BCMSDK_E_RESOURCE;
+    }
+
+    /* Update hash element key and value */
+    egr_obj_element_p->gport = egr_obj_p->gport;
+    egr_obj_element_p->egr_obj_id = egr_obj_p->egr_obj_id;
+
+    /* insert this element to egr_obj_hmap hash table */
+    hash = hash_2words((uint32_t)egr_obj_element_p->gport, unit);
+    hmap_insert(&vxlan_global.egr_obj_hmap,
+                &egr_obj_element_p->node, hash);
+
+    return BCMSDK_E_NONE;
+}
+
+
+
+/*
+ * Function: vxlan_find_egr_obj_hash_element
+ *      Find egr_obj from gport from hash map
+ *
+ * [In] unit
+ *      HW unit
+ *
+ * [In] gport
+ *      gport
+ *
+ * [Out] return vxlan_egr_obj_element_t *
+ *       Not found - NULL
+ *       Found - (vxlan_egr_obj_element_t *)->egr_obj
+ */
+static
+vxlan_egr_obj_element_t *
+vxlan_find_egr_obj_hash_element(int unit, int gport)
+{
+    uint32_t hash;
+    vxlan_egr_obj_element_t *egr_obj_element_p;
+    vxlan_egr_obj_element_t *egr_obj_element_found_p;
+
+    hash = hash_2words((uint32_t)gport, unit);
+
+    egr_obj_element_found_p = NULL;
+    HMAP_FOR_EACH_WITH_HASH (egr_obj_element_p, node, hash,
+                             &vxlan_global.egr_obj_hmap) {
+        if ((egr_obj_element_p->unit == unit) &&
+            (egr_obj_element_p->gport == gport)) {
+            egr_obj_element_found_p = egr_obj_element_p;
+            break;
+        }
+    }
+
+    return  egr_obj_element_found_p;
+}
 
 /*
  * Function: vxlan_create_logical_switch
@@ -2006,6 +2137,8 @@ vxlan_bind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
     //opennsl_l2_station_t l2_station;
     //int i;
     vxlan_logical_sw_element_t *logical_sw_element_p;
+    vxlan_egr_obj_element_t *egr_obj_element_p;
+    bcmsdk_vxlan_egr_obj_t egr_obj;
 
     if (net_port_p == NULL) {
         VLOG_ERR("Error [%s, %d], net_port_p is NULL unit:%d\n",
@@ -2027,22 +2160,40 @@ vxlan_bind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
         return rc;
     }
 
-    opennsl_l3_egress_t_init(&l3_egr);
-    l3_egr.flags = OPENNSL_L3_VXLAN_ONLY;
-    l3_egr.intf = net_port_p->l3_intf_id;
-    memcpy(l3_egr.mac_addr, net_port_p->next_hop_mac, ETH_ALEN);
-    l3_egr.vlan = net_port_p->vlan;
-    l3_egr.port = gport;
-    rc = opennsl_l3_egress_create(unit, 0, &l3_egr,
-                                  &(net_port_p->egr_obj_id));
-    if (rc) {
-        VLOG_ERR("Error [%s, %d], opennsl_l3_egress_create rc:%d unit:%d next_hop_mac:%02x%02x%02x%02x%02x%02x vlan:%d vrf:%d\n",
-                 __FUNCTION__, __LINE__, rc, unit,
-                 net_port_p->next_hop_mac[0], net_port_p->next_hop_mac[1],
-                 net_port_p->next_hop_mac[2], net_port_p->next_hop_mac[3],
-                 net_port_p->next_hop_mac[4], net_port_p->next_hop_mac[5],
-                 net_port_p->vlan, net_port_p->vrf);
-        goto CLEANUP_EGRESS_OBJ;
+    /* Check if egress object for this gport already exist,
+       if not, create a new one. Otherwise, re-use the existing one */
+    egr_obj_element_p = vxlan_find_egr_obj_hash_element(unit, gport);
+    if (!egr_obj_element_p) {
+        opennsl_l3_egress_t_init(&l3_egr);
+        l3_egr.flags = OPENNSL_L3_VXLAN_ONLY;
+        l3_egr.intf = net_port_p->l3_intf_id;
+        memcpy(l3_egr.mac_addr, net_port_p->next_hop_mac, ETH_ALEN);
+        l3_egr.vlan = net_port_p->vlan;
+        l3_egr.port = gport;
+        rc = opennsl_l3_egress_create(unit, 0, &l3_egr,
+                                      &(net_port_p->egr_obj_id));
+        if (rc) {
+            VLOG_ERR("Error [%s, %d], opennsl_l3_egress_create rc:%d unit:%d next_hop_mac:%02x%02x%02x%02x%02x%02x vlan:%d vrf:%d\n",
+                     __FUNCTION__, __LINE__, rc, unit,
+                     net_port_p->next_hop_mac[0], net_port_p->next_hop_mac[1],
+                     net_port_p->next_hop_mac[2], net_port_p->next_hop_mac[3],
+                     net_port_p->next_hop_mac[4], net_port_p->next_hop_mac[5],
+                     net_port_p->vlan, net_port_p->vrf);
+            goto CLEANUP_EGRESS_OBJ;
+        }
+
+        egr_obj.gport = gport;
+        egr_obj.egr_obj_id = net_port_p->egr_obj_id;
+        rc = vxlan_insert_egr_obj_hash_element(unit, &egr_obj);
+        if (rc) {
+            VLOG_ERR("Error [%s, %d],  vxlan_insert_egr_obj_hash_element rc:%d unit:%d gport:0x%x egr_obj_id:0x%x\n",
+                     __FUNCTION__, __LINE__, rc, unit,
+                     egr_obj.gport, egr_obj.egr_obj_id);
+            goto CLEANUP_EGRESS_OBJ;
+        }
+    } else {
+        /* If egress object already exist, re-use it */
+        net_port_p->egr_obj_id = egr_obj_element_p->egr_obj_id;
     }
 
     logical_sw_element_p = vxlan_find_logical_switch_hash_element(unit, net_port_p->vnid);
@@ -2615,15 +2766,28 @@ static
 int
 vxlan_hmap_cleanup(int unit)
 {
-    vxlan_logical_sw_element_t *logical_sw_element_p, *next;
+    vxlan_logical_sw_element_t *logical_sw_element_p,
+        *logical_sw_element_next_p;
+    vxlan_egr_obj_element_t *egr_obj_element_p,
+        *egr_obj_element_next_p;
 
-    HMAP_FOR_EACH_SAFE(logical_sw_element_p, next, node, &(vxlan_global.logical_sw_hmap)) {
+    HMAP_FOR_EACH_SAFE(logical_sw_element_p, logical_sw_element_next_p,
+                       node, &(vxlan_global.logical_sw_hmap)) {
         hmap_remove(&vxlan_global.logical_sw_hmap,
                     &logical_sw_element_p->node);
         free(logical_sw_element_p);
     }
 
     hmap_destroy(&vxlan_global.logical_sw_hmap);
+
+    HMAP_FOR_EACH_SAFE(egr_obj_element_p, egr_obj_element_next_p,
+                       node, &(vxlan_global.egr_obj_hmap)) {
+        hmap_remove(&vxlan_global.egr_obj_hmap,
+                    &egr_obj_element_p->node);
+        free(egr_obj_element_p);
+    }
+
+    hmap_destroy(&vxlan_global.egr_obj_hmap);
 
     return BCMSDK_E_NONE;
 }
@@ -2646,6 +2810,7 @@ ops_vxlan_init(int unit)
     }
 
     hmap_init(&vxlan_global.logical_sw_hmap);
+    hmap_init(&vxlan_global.egr_obj_hmap);
 
     return BCMSDK_E_NONE;
 } // ops_vxlan_init
