@@ -36,6 +36,7 @@
 #include "platform-defines.h"
 #include "netdev-bcmsdk.h"
 #include "ops-routing.h"
+#include "ops-sflow.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_bcmsdk);
 
@@ -64,6 +65,7 @@ struct netdev_bcmsdk {
 
     int hw_unit;
     int hw_id;
+    char *parent_netdev_name;
     int l3_intf_id;
     int knet_if_id;             /* BCM KNET interface ID. */
     int knet_bpdu_filter_id;                 /* BCM KNET BPDU filter ID. */
@@ -128,6 +130,22 @@ netdev_bcmsdk_get_hw_info(struct netdev *netdev, int *hw_unit, int *hw_id,
     *hw_id = nb->hw_id;
     if (hwaddr) {
         memcpy(hwaddr, nb->hwaddr, ETH_ADDR_LEN);
+    }
+}
+
+void
+netdev_bcmsdk_get_hw_info_from_name(const char *name, int *hw_unit,
+                                    int *hw_id)
+{
+    struct netdev *netdev = NULL;
+    netdev = netdev_from_name(name);
+    if (netdev != NULL) {
+        struct netdev_bcmsdk *nb = netdev_bcmsdk_cast(netdev);
+        ovs_assert(is_bcmsdk_class(netdev_get_class(netdev)));
+        *hw_unit = nb->hw_unit;
+        *hw_id = nb->hw_id;
+    } else {
+        VLOG_ERR("Unable to get netdev for interface %s", name);
     }
 }
 
@@ -200,9 +218,11 @@ netdev_bcmsdk_construct(struct netdev *netdev_)
 
     netdev->hw_unit = -1;
     netdev->hw_id = -1;
+    netdev->parent_netdev_name = NULL;
     netdev->knet_if_id = 0;
     netdev->port_info = NULL;
     netdev->intf_initialized = false;
+    memset(&netdev->stats, 0, sizeof(struct netdev_stats));
 
     netdev->is_split_parent = false;
     netdev->is_split_subport = false;
@@ -245,12 +265,16 @@ static void
 netdev_bcmsdk_dealloc(struct netdev *netdev_)
 {
     struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
+    if (netdev->parent_netdev_name != NULL) {
+        free(netdev->parent_netdev_name);
+    }
+    /* TODO Free all allocated pointers */
 
     free(netdev);
 }
 
 static int
-netdev_bcmsdk_set_config(struct netdev *netdev_, const struct smap *args)
+netdev_vlansub_bcmsdk_set_config(struct netdev *netdev_, const struct smap *args)
 {
     struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
     struct netdev *parent = NULL;
@@ -270,11 +294,14 @@ netdev_bcmsdk_set_config(struct netdev *netdev_, const struct smap *args)
             parent_netdev = netdev_bcmsdk_cast(parent);
             if (parent_netdev != NULL) {
                 netdev->hw_id = parent_netdev->hw_id;
+                netdev->parent_netdev_name = xstrdup(parent_intf_name);
                 netdev->hw_unit = parent_netdev->hw_unit;
                 memcpy(netdev->hwaddr, parent_netdev->hwaddr, ETH_ALEN);
                 netdev->subintf_vlan_id = vlanid;
                 netdev->knet_if_id = parent_netdev->knet_if_id;
             }
+            /* netdev_from_name() opens a reference, so we need to close it here. */
+            netdev_close(parent);
         }
     }
 
@@ -743,11 +770,66 @@ netdev_bcmsdk_get_mtu(const struct netdev *netdev_, int *mtup)
     return rc;
 }
 
+/*
+ * This function is used to populate the sampling stats for sFlow
+ * per interface(netdev).
+ *
+ * Arguments:
+ * ---------
+ * bool ingress     : Packet sampled at ingress or egress of the interface.
+ * char *name       : Interface where the packet was sampled.
+ * uint64_t bytes   : Length of sampled packet
+ */
+void
+netdev_bcmsdk_populate_sflow_stats(bool ingress, const char *name,
+                                   uint64_t bytes)
+{
+    struct netdev *netdev = NULL;
+    struct netdev_bcmsdk *netdev_bcm = NULL;
+
+    if (bytes == 0)
+        return;
+
+    netdev = netdev_from_name(name);
+    if (netdev != NULL) {
+         netdev_bcm = netdev_bcmsdk_cast(netdev);
+         ovs_mutex_lock(&netdev_bcm->mutex);
+         if (ingress) {
+             netdev_bcm->stats.sflow_ingress_packets++;
+             netdev_bcm->stats.sflow_ingress_bytes += bytes;
+         } else {
+             netdev_bcm->stats.sflow_egress_packets++;
+             netdev_bcm->stats.sflow_egress_bytes += bytes;
+         }
+         ovs_mutex_unlock(&netdev_bcm->mutex);
+         netdev_close(netdev);
+    } else {
+        VLOG_ERR("Unable to get netdev for interface %s", name);
+    }
+}
+
+/*
+ * This function will update the statistics for sFlow which was previously
+ * populated into the netdev_bcmsdk->stats structure.
+ */
+static void
+netdev_bcmsdk_get_sflow_stats(const struct netdev_bcmsdk *netdev_bcm,
+                              struct netdev_stats *stats)
+{
+    ovs_mutex_lock(&netdev_bcm->mutex);
+    stats->sflow_ingress_packets = netdev_bcm->stats.sflow_ingress_packets;
+    stats->sflow_ingress_bytes = netdev_bcm->stats.sflow_ingress_bytes;
+    stats->sflow_egress_packets = netdev_bcm->stats.sflow_egress_packets;
+    stats->sflow_egress_bytes = netdev_bcm->stats.sflow_egress_bytes;
+    ovs_mutex_unlock(&netdev_bcm->mutex);
+}
+
 static int
 netdev_bcmsdk_get_stats(const struct netdev *netdev_, struct netdev_stats *stats)
 {
     struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
-
+    /* Call the function to populate sFlow statistics */
+    netdev_bcmsdk_get_sflow_stats(netdev, stats);
     return bcmsdk_get_port_stats(netdev->hw_unit, netdev->hw_id, stats);
 }
 
@@ -895,7 +977,43 @@ bool netdev_hw_id_from_name(const char *name, int *hw_unit, int *hw_id)
         return false;
     }
 }
-
+
+/* populate sflow related netdev info */
+void
+netdev_bcmsdk_get_sflow_intf_info(int hw_unit, int hw_id, uint32_t *index,
+                                  uint64_t *speed, uint32_t *direction,
+                                  uint32_t *status)
+{
+    int state = 0;
+    bool link_state = false;
+    enum netdev_features current, adv, supp, peer;
+    struct netdev_bcmsdk *netdev = netdev_from_hw_id(hw_unit, hw_id);
+
+    *index = hw_id; /* physical port number */
+
+    if (netdev &&
+        !netdev_bcmsdk_get_features(&netdev->up, &current, &adv, &supp, &peer)) {
+        *speed = netdev_features_to_bps(current, 0);
+        *direction = (netdev_features_is_full_duplex(current) ? 1 : 2);
+    } else {
+        *speed = SFLOW_CNTR_SAMPLE_SPEED_DEFAULT;
+        *direction = SFLOW_CNTR_SAMPLE_DIRECTION_DEFAULT;
+    }
+
+    if (!bcmsdk_get_enable_state(hw_unit, hw_id, &state)) {
+        if (state) {
+            *status = SFLOW_CNTR_SAMPLE_ADMIN_STATE_UP; /* ifAdminStatus up. */
+        }
+        if (netdev && !netdev_bcmsdk_get_carrier(&netdev->up, &link_state)) {
+            if (link_state) {
+                *status |= SFLOW_CNTR_SAMPLE_OPER_STATE_UP; /* ifOperStatus up. */
+            }
+        }
+    } else {
+        *status = SFLOW_CNTR_SAMPLE_STATE_DOWN;
+    }
+}
+
 /* Helper functions. */
 
 static const struct netdev_class bcmsdk_class = {
@@ -983,6 +1101,7 @@ netdev_internal_bcmsdk_set_hw_intf_info(struct netdev *netdev_, const struct sma
     if (netdev->intf_initialized == false) {
         netdev->hw_unit = 0;
         netdev->hw_id = -1;
+        netdev->parent_netdev_name = NULL;
         if(is_bridge_interface) {
             ether_mac = (struct ether_addr *) netdev->hwaddr;
             rc = bcmsdk_knet_if_create(netdev->up.name, netdev->hw_unit, netdev->hw_id, ether_mac,
@@ -1060,6 +1179,67 @@ netdev_internal_bcmsdk_update_flags(struct netdev *netdev_,
 
     ovs_mutex_lock(&netdev->mutex);
     *old_flagsp = netdev->flags;
+    ovs_mutex_unlock(&netdev->mutex);
+
+    return 0;
+}
+
+static int
+netdev_vlansub_bcmsdk_update_flags(struct netdev *netdev_,
+                                    enum netdev_flags off,
+                                    enum netdev_flags on,
+                                    enum netdev_flags *old_flagsp)
+{
+    int rc = 0;
+    int state = 0;
+    enum netdev_flags parent_flagsp = 0;
+    struct netdev *parent = NULL;
+    struct netdev_bcmsdk *parent_netdev = NULL;
+
+    /*  We ignore the incoming flags as the underlying hardware responsible to
+     *  change the status of the flags is absent. Thus, we set new flags to
+     *  preconfigured values. */
+    struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
+    VLOG_DBG("%s Calling Netdev name=%s unit=%d port=%d",
+             __FUNCTION__,
+             netdev->up.name,
+             netdev->hw_unit,
+             netdev->hw_id);
+
+    /* Use subinterface netdev to get the parent netdev by name*/
+    if (netdev->parent_netdev_name != NULL) {
+        parent = netdev_from_name(netdev->parent_netdev_name);
+        if (parent != NULL) {
+            parent_netdev = netdev_bcmsdk_cast(parent);
+
+            ovs_mutex_lock(&parent_netdev->mutex);
+            VLOG_DBG("%s 2. Calling Netdev name=%s unit=%d port=%d",
+                    __FUNCTION__,
+                    parent_netdev->up.name,
+                    parent_netdev->hw_unit,
+                    parent_netdev->hw_id);
+
+            if ((off | on) & ~NETDEV_UP) {
+                return EOPNOTSUPP;
+            }
+            rc = bcmsdk_get_enable_state(parent_netdev->hw_unit, parent_netdev->hw_id, &state);
+            if (!rc) {
+                if (state) {
+                    parent_flagsp |= NETDEV_UP;
+                } else {
+                    parent_flagsp &= ~NETDEV_UP;
+                }
+            }
+            /* netdev_from_name() opens a reference, so we need to close it here. */
+            netdev_close(parent);
+            ovs_mutex_unlock(&parent_netdev->mutex);
+        }
+    }
+    VLOG_DBG("%s parent_flagsp = %d",__FUNCTION__, parent_flagsp);
+
+    ovs_mutex_lock(&netdev->mutex);
+    VLOG_DBG("%s flagsp = %d",__FUNCTION__, netdev->flags);
+    *old_flagsp = netdev->flags & parent_flagsp;
     ovs_mutex_unlock(&netdev->mutex);
 
     return 0;
@@ -1208,9 +1388,9 @@ static const struct netdev_class bcmsdk_subintf_class = {
     netdev_bcmsdk_destruct,
     netdev_bcmsdk_dealloc,
     NULL,                       /* get_config */
-    netdev_bcmsdk_set_config,   /* set_config */
+    netdev_vlansub_bcmsdk_set_config,   /* set_config */
     netdev_internal_bcmsdk_set_hw_intf_info,
-    NULL,
+    netdev_internal_bcmsdk_set_hw_intf_config,
     NULL,                       /* get_tunnel_config */
     NULL,                       /* build header */
     NULL,                       /* push header */
@@ -1256,7 +1436,7 @@ static const struct netdev_class bcmsdk_subintf_class = {
     NULL,                       /* get_status */
     NULL,                       /* arp_lookup */
 
-    netdev_internal_bcmsdk_update_flags,
+    netdev_vlansub_bcmsdk_update_flags,
 
     NULL,                       /* rxq_alloc */
     NULL,                       /* rxq_construct */
