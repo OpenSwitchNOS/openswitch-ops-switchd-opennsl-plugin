@@ -813,7 +813,9 @@ void
 bcmsdk_add_trunk_ports(int vid, opennsl_pbmp_t *pbm)
 {
     int unit;
+    int default_vid = 1;
     ops_vlan_data_t *vlanp = NULL;
+    ops_vlan_data_t *default_vlanp = NULL;
 
     // A TRUNK port carries packets on one or more specified
     // VLANs specified in the trunks column (often,  on  every
@@ -831,6 +833,7 @@ bcmsdk_add_trunk_ports(int vid, opennsl_pbmp_t *pbm)
     SW_VLAN_DBG("%s entry: vid=%d", __FUNCTION__, vid);
 
     vlanp = get_vlan_data(vid, false);
+    default_vlanp = get_vlan_data(default_vid, false);
     if (!vlanp) {
         VLOG_ERR("Failed to allocate & save trunk ports "
                  "for VID %d", vid);
@@ -838,7 +841,7 @@ bcmsdk_add_trunk_ports(int vid, opennsl_pbmp_t *pbm)
     }
 
     for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
-        opennsl_pbmp_t bcm_pbm, temp_bcm_pbm;
+        opennsl_pbmp_t bcm_pbm, temp_bcm_pbm, def_bcm_pbm;
 
         // Save trunk port membership info.
         bcm_pbm = pbm[unit];
@@ -846,7 +849,15 @@ bcmsdk_add_trunk_ports(int vid, opennsl_pbmp_t *pbm)
 
         // Filter out ports that are not linked up.
         OPENNSL_PBMP_AND(bcm_pbm, ops_get_link_up_pbm(unit));
+        OPENNSL_PBMP_CLEAR(def_bcm_pbm);
+        OPENNSL_PBMP_OR(def_bcm_pbm, default_vlanp->hw_trunk_ports[unit]);
+        OPENNSL_PBMP_AND(def_bcm_pbm, bcm_pbm);
+        if (OPENNSL_PBMP_IS_NULL(def_bcm_pbm) && (vid != default_vid)) {
+            hw_add_ports_to_vlan(unit, bcm_pbm, bcm_pbm, default_vid, 0);
+            VLOG_ERR("SWATI:came into trunk ports if condition"
+                 "for VID %d", vid);
 
+        }
         // If any port is left, and VLAN is already created
         // in h/w, go ahead and configure it.
         VLOG_DBG("vlanp->hw_created = %d\n", vlanp->hw_created);
