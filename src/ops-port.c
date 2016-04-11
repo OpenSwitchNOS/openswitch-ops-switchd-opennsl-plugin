@@ -287,6 +287,9 @@ bcmsdk_set_port_config(int hw_unit, opennsl_port_t hw_port, const struct port_cf
             } else if (40000 == pcfg->cfg_speed) {
                 port_ability.speed_full_duplex = OPENNSL_PORT_ABILITY_40GB;
 
+            } else if (100000 == pcfg->cfg_speed) {
+                port_ability.speed_full_duplex = OPENNSL_PORT_ABILITY_100GB;
+
             } else {
                 // Unsupported speed.
                 VLOG_ERR("Failed to configure unavailable speed %d",
@@ -351,6 +354,8 @@ bcmsdk_set_port_config(int hw_unit, opennsl_port_t hw_port, const struct port_cf
     } else {
         SW_PORT_DBG("Disabling hw_port=%d", hw_port);
         bcm_pinfo.enable = 0;
+        bcm_pinfo.autoneg = FALSE;
+        bcm_pinfo.action_mask  |= OPENNSL_PORT_ATTR_AUTONEG_MASK;
     }
 
     // Program h/w with the given values.
