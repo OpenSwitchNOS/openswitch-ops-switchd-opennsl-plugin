@@ -86,6 +86,8 @@ int ops_cls_pd_statistics_clear(const struct uuid               *list_id,
 
 int ops_cls_pd_statistics_clear_all(struct ops_cls_pd_list_status *status);
 
+int
+ops_cls_pd_acl_log_pkt_data_set(void (*callback_handler)(struct acl_log_info *));
 
 
 

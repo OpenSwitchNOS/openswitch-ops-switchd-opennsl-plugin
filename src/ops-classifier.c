@@ -60,6 +60,13 @@ struct hmap classifier_map;
 
 opennsl_field_group_t ip_group;
 
+/**
+ * Function pointer to handle ACL logging packet data set functionality.
+ * A callback is registered from PI at the init time to this function.
+ * PD code needs to call this function when logging ACL packets.
+ */
+void (*acl_pd_log_pkt_data_set)(struct acl_log_info *);
+
 /**************************************************************************//**
  * OPS_CLS plugin interface definition. This is the instance containing all
  * implementations of ops_cls plugin on this platform.
@@ -71,7 +78,8 @@ static struct ops_cls_plugin_interface ops_cls_plugin = {
     ops_cls_pd_list_update,
     ops_cls_pd_statistics_get,
     ops_cls_pd_statistics_clear,
-    ops_cls_pd_statistics_clear_all
+    ops_cls_pd_statistics_clear_all,
+    ops_cls_pd_acl_log_pkt_data_set
 };
 
 /**************************************************************************//**
@@ -1019,6 +1027,7 @@ ops_cls_pd_apply(struct ops_cls_list            *list,
         }
     }
 
+    (*acl_pd_log_pkt_data_set)(NULL);
     return OPS_OK;
 
 apply_fail:
@@ -1355,6 +1364,17 @@ ops_cls_pd_statistics_clear_all(struct ops_cls_pd_list_status *status)
 {
     VLOG_ERR("%s unimplemented", __func__);
     return OPS_FAIL;
+}
+
+int
+ops_cls_pd_acl_log_pkt_data_set(void (*callback_handler)(struct acl_log_info *))
+{
+    if (!callback_handler) {
+        VLOG_ERR("No ACL logging callback provided");
+        return OPS_FAIL;
+    }
+    acl_pd_log_pkt_data_set = callback_handler;
+    return OPS_OK;
 }
 
 int
