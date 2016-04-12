@@ -514,8 +514,8 @@ bundle_get_tnl_key(const struct ofproto_bundle_settings *set)
         return -1;
     }
     for (idx = 0; idx < set->binding_cnt; idx++) {
-        if(set->vlan == set->binding_vlans[idx] && set->vlan_mode == PORT_VLAN_ACCESS)
-        {
+        if(set->vlan == set->binding_vlans[idx] &&
+           set->vlan_mode == PORT_VLAN_ACCESS) {
             return set->binding_tunnel_keys[idx];
         }
     }
@@ -539,7 +539,8 @@ bundle_lookup(const struct bcmsdk_provider_node *ofproto, void *aux)
 static void
 bundle_del_port(struct bcmsdk_provider_ofport_node *port)
 {
-    if(!strcmp(netdev_get_type(port->up.netdev), OVSREC_INTERFACE_TYPE_VXLAN)) {
+    if(!strcmp(netdev_get_type(port->up.netdev),
+        OVSREC_INTERFACE_TYPE_VXLAN)) {
         VLOG_DBG("%s name %s", __func__, port->bundle->name);
         vport_delete( port->bundle, port->up.netdev);
     }
@@ -1868,8 +1869,7 @@ vport_update_host(struct ofbundle *bundle, int event, bool is_ipv6_addr,
               bundle->hw_port,ip_addr, *l3_egress_id,
               next_hop_mac_addr);
     if(!is_ipv6_addr) {
-        netdev_vport_update_host_chg(event, bundle->hw_port, ip_addr,
-                                     *l3_egress_id);
+        netdev_vport_update_host_chg(event, ip_addr, *l3_egress_id);
     }
 }
 
