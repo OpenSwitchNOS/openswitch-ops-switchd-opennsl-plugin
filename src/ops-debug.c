@@ -80,6 +80,7 @@ char cmd_hp_usage[] =
 "   l3egress [<entry>] - display an egress object info.\n"
 "   l3ecmp [<entry>] - display an ecmp egress object info.\n"
 "   lag [<lagid>] - displays OpenSwitch LAG info.\n"
+"   stg [hw] <stgid> - displays Spanning Tree Group Info. \n"
 "   fp - displays programmed fp rules.\n"
 "   help - displays this help text.\n"
 ;
@@ -551,11 +552,24 @@ bcm_plugin_debug(struct unixctl_conn *conn, int argc,
             int stgid = -1;
 
             if (NULL != (ch = NEXT_ARG())) {
+                if (!strcmp(ch, "hw")) {
+                    if (NULL != (ch = NEXT_ARG())) {
+                        stgid = atoi(ch);
+                        ops_stg_hw_dump(&ds, stgid);
+                        goto done;
+                    } else {
+                        ds_put_format(&ds, "%s", cmd_hp_usage);
+                        goto done;
+                    }
+                }
                 stgid = atoi(ch);
+                ops_stg_dump(&ds, stgid);
+                goto done;
+            } else {
+                /* dump all stg */
+                ops_stg_dump(&ds, stgid);
+                goto done;
             }
-            ops_stg_dump(&ds, stgid);
-            goto done;
-
         } else if (!strcmp(ch, "knet")) {
             if (NULL != (ch = NEXT_ARG())) {
                 if (!strcmp(ch, "netif")) {
