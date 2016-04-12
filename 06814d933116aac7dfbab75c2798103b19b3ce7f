@@ -1,0 +1,8 @@
+Verified+2: Nachiket Abhyankar <nabhyank@hpe.com>
+Workflow+1: Nachiket Abhyankar <nabhyank@hpe.com>
+Code-Review+2: Kevin Worth <kevin.worth@hpe.com>
+Submitted-by: Nachiket Abhyankar <nabhyank@hpe.com>
+Submitted-at: Tue, 12 Apr 2016 00:01:40 +0000
+Reviewed-on: https://review.openswitch.net/6969
+Project: openswitch/ops-switchd-opennsl-plugin
+Branch: refs/heads/feature/acl
