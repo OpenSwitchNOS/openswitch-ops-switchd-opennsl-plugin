@@ -105,6 +105,15 @@ struct vport_class {
     struct netdev_class netdev_class;
 };
 
+typedef struct tunnel_node_ {
+    struct hmap_node hmap_t_node;
+    uint32_t remote_ip;
+    struct netdev_vport *vport;
+}tunnel_node;
+
+struct hmap tunnel_hmap = HMAP_INITIALIZER(&tunnel_hmap);
+
+
 static const struct vport_class vport_classes;
 static uint16_t tnl_udp_port_min = UDP_PORT_MIN;
 static uint16_t tnl_udp_port_max = UDP_PORT_MAX;
@@ -120,6 +129,60 @@ static void init_carrier(carrier_t *port);
 static bool tunnel_check_status_change__(struct netdev_vport *netdev);
 
 
+static uint32_t
+hash_ip(uint32_t ip)
+{
+    return hash_int(ip, 0);
+}
+
+/* caller has to validate *dev */
+static void
+tnl_insert(struct netdev_vport *dev)
+{
+    uint32_t ip = ntohl(in6_addr_get_mapped_ipv4(&dev->tnl_cfg.ipv6_dst));
+    if (ip) {
+        tunnel_node *tunnel_id = xmalloc(sizeof *tunnel_id);
+        hmap_insert(&tunnel_hmap, &tunnel_id->hmap_t_node, hash_ip(ip));
+        tunnel_id->remote_ip = ip;
+        tunnel_id->vport = dev;
+    }
+}
+
+static tunnel_node *
+tnl_lookup_ip(uint32_t ip)
+{
+    tunnel_node *node;
+    HMAP_FOR_EACH_WITH_HASH(node, hmap_t_node, hash_ip(ip), &tunnel_hmap) {
+        if (node->remote_ip == ip) {
+            return node;
+        }
+    }
+    return NULL;
+}
+
+/* caller has to validate *dev */
+static tunnel_node *
+tnl_lookup_netdev(struct netdev_vport *dev)
+{
+    uint32_t ip = ntohl(in6_addr_get_mapped_ipv4(&dev->tnl_cfg.ipv6_dst));
+    if(!ip) {
+        /* TODO with ipv6 */
+        return NULL;
+    }
+    return tnl_lookup_ip(ip);
+}
+
+/* caller has to validate *dev */
+static void
+tnl_remove(struct netdev_vport *dev)
+{
+    tunnel_node *node;
+    node = tnl_lookup_netdev(dev);
+    if(node) {
+        hmap_remove(&tunnel_hmap, &node->hmap_t_node);
+        free(node);
+    }
+}
 
 static bool
 is_vport_class(const struct netdev_class *class) {
@@ -190,6 +253,7 @@ static void
 netdev_vport_destruct(struct netdev *netdev_)
 {
     struct netdev_vport *netdev = netdev_vport_cast(netdev_);
+    tnl_remove(netdev);
     ovs_mutex_destroy(&netdev->mutex);
 }
 
@@ -444,7 +508,6 @@ set_tunnel_config(struct netdev *dev_, const struct smap *args)
 
     SMAP_FOR_EACH (node, args) {
         if (!strcmp(node->key, "remote_ip")) {
-            VLOG_INFO("Set_tunnel_config remote_IP %s",node->value);
             int err;
             err = parse_tunnel_ip(node->value, false, &tnl_cfg.ip_dst_flow,
                                   &tnl_cfg.ipv6_dst, &dst_proto);
@@ -459,7 +522,6 @@ set_tunnel_config(struct netdev *dev_, const struct smap *args)
             }
         } else if (!strcmp(node->key, "local_ip")) {
             int err;
-            VLOG_INFO("Set_tunnel_config local_ip %s",node->value);
             err = parse_tunnel_ip(node->value, true, &tnl_cfg.ip_src_flow,
                                   &tnl_cfg.ipv6_src, &src_proto);
             switch (err) {
@@ -614,6 +676,7 @@ set_tunnel_config(struct netdev *dev_, const struct smap *args)
     ovs_mutex_lock(&dev->mutex);
     dev->tnl_cfg = tnl_cfg;
     dev->tnl_state = TNL_INIT;
+    tnl_insert(dev);
     netdev_change_seq_changed(dev_);
     ovs_mutex_unlock(&dev->mutex);
     check_route(dev);
@@ -865,14 +928,14 @@ create_tunnel(struct netdev_vport *netdev, int l3_egress_id)
  * When destination host is added, create tunnel and bind it
  */
 static void
-upon_host_chg(int event, struct netdev_vport *netdev, int l3_egr_id)
+upon_host_chg(int event, struct netdev_vport *dev, int l3_egr_id)
 {
-    if(TUNNEL_UNBIND(event, netdev->tnl_state)) {
-        ops_vport_unbind_net_port(&netdev->up);
-        return;
+    if(TUNNEL_UNBIND(event, dev->tnl_state)) {
+        ops_vport_unbind_net_port(&dev->up);
     }
-    if(set_tunnel_nexthop(netdev, l3_egr_id)) {
-        create_tunnel(netdev, l3_egr_id);
+    else if((TUNNEL_BIND(event, dev->tnl_state)) &&
+             set_tunnel_nexthop(dev, l3_egr_id)) {
+        create_tunnel(dev, l3_egr_id);
     }
 }
 /*
@@ -885,48 +948,23 @@ upon_host_chg(int event, struct netdev_vport *netdev, int l3_egr_id)
  * Asic doesn't receive any trigger to add host again (bug?)
  *
  */
+
 void
-netdev_vport_update_host_chg(int event, int port, char *ip_addr,
-        int l3_egress_id)
+netdev_vport_update_host_chg(int event, char *ip_addr, int l3_egress_id)
 {
-    struct shash device_shash;
-    struct shash_node *node;
-    ovs_be32 ipv4;
-    struct netdev_vport *dev;
-    char ip[INET_ADDRSTRLEN];
-    int count = 0;
+    uint32_t ip;
+    tunnel_node * node;
     if(!ip_addr) {
         VLOG_ERR("%s Null pointer\n", __func__);
         return;
     }
-    shash_init(&device_shash);
-    netdev_get_devices(&vport_classes.netdev_class, &device_shash);
-    SHASH_FOR_EACH (node, &device_shash) {
-        struct netdev *netdev = node->data;
-        if(netdev) {
-            dev = netdev_vport_cast(netdev);
-            if(dev && (TUNNEL_ACTION(event, dev->tnl_state))) {
-                count++;
-                ipv4 =  in6_addr_get_mapped_ipv4(&dev->tnl_cfg.ipv6_dst);
-                if(!ipv4) {
-                    /* IPV6 To be supported */
-                    netdev_close(netdev);
-                    continue;
-                }
-                VLOG_DBG("%s event %d, tnl state %s\n", dev->up.name,
-                         event, tnl_state_str[dev->tnl_state]);
-                inet_ntop(AF_INET, &ipv4, ip, INET_ADDRSTRLEN);
+    if(!inet_pton(AF_INET, ip_addr, &ip))
+        return;
 
-                /* If destination IP matches host,it's neighbor */
-                if(strcmp(ip, ip_addr) == 0) {
-                    upon_host_chg(event, dev, l3_egress_id);
-                }
-            }
-            netdev_close(netdev);
-        }
+    node = tnl_lookup_ip(ntohl(ip));
+    if(node) {
+        upon_host_chg(event, node->vport, l3_egress_id);
     }
-    shash_destroy(&device_shash);
-    VLOG_DBG("%s Number of tunnels %d", __func__, count);
 }
 
 uint32_t
@@ -969,8 +1007,8 @@ upon_route_chg(struct netdev_vport *dev, int event, char *route_prefix)
              tnl_state_str[dev->tnl_state]);
 
     if(TUNNEL_BIND(event, dev->tnl_state)) {
-
-        if(ops_egress_lookup_from_route(dev->carrier.vrf, route_prefix, &l3_egr_id)) {
+        if(ops_egress_lookup_from_route(dev->carrier.vrf,
+           route_prefix, &l3_egr_id)) {
             if(set_tunnel_nexthop(dev, l3_egr_id)) {
                 create_tunnel(dev, l3_egr_id);
             } else {
@@ -985,7 +1023,6 @@ upon_route_chg(struct netdev_vport *dev, int event, char *route_prefix)
         }
 
     } else if(TUNNEL_UNBIND(event, dev->tnl_state)) {
-        VLOG_DBG("Event %s - State BOUND\n", events_str[event]);
         ops_vport_unbind_net_port(&dev->up);
     }
 
@@ -998,49 +1035,36 @@ upon_route_chg(struct netdev_vport *dev, int event, char *route_prefix)
  * creat/bind/unbind tunnels depending on the
  * tunnel state and route action
  */
+
 void
 netdev_vport_update_route_chg(int event, char* route_prefix)
 {
-    struct shash device_shash;
-    struct shash_node *node;
+    tunnel_node * tnl, *next;
     struct netdev_vport *dev;
-    ovs_be32 ipv4;
-    int count = 0;
-    int plen = get_prefix_len(route_prefix);
+    int plen;
     char ip_prefix[INET_ADDRSTRLEN];
+    uint32_t ipv4;
+
     if(!route_prefix) {
         VLOG_DBG("%s Null pointer \n", __func__);
         return;
     }
-    VLOG_DBG("%s entered route prefix %s", __func__,route_prefix);
-    shash_init(&device_shash);
-    netdev_get_devices(&vport_classes.netdev_class, &device_shash);
-    SHASH_FOR_EACH (node, &device_shash) {
-        struct netdev *netdev = node->data;
-        if(netdev) {
-            dev = netdev_vport_cast(netdev);
-            if(dev) {
-                count++;
-                VLOG_DBG("%s", dev->up.name);
-                ipv4 =  in6_addr_get_mapped_ipv4(&dev->tnl_cfg.ipv6_dst);
-                if(!ipv4) {
-                    /* IPV6 To be supported */
-                    netdev_close(netdev);
-                    continue;
-                }
-                ip_to_prefix(ipv4, plen, ip_prefix);
-                if(strcmp(ip_prefix, route_prefix)== 0){
-                    upon_route_chg(dev, event, route_prefix);
-                }
+
+    VLOG_DBG("%s entered, route prefix %s", __func__,route_prefix);
+    plen = get_prefix_len(route_prefix);
+    HMAP_FOR_EACH_SAFE(tnl, next, hmap_t_node, &tunnel_hmap) {
+        dev = tnl->vport;
+        if(dev && (TUNNEL_ACTION(event, dev->tnl_state))) {
+            ipv4 =  htonl(tnl->remote_ip);
+            ip_to_prefix(ipv4, plen, ip_prefix);
+            if(strcmp(ip_prefix, route_prefix)== 0){
+                upon_route_chg(dev, event, route_prefix);
             }
-            netdev_close(netdev);
         }
     }
-    shash_destroy(&device_shash);
-    VLOG_DBG("%s Number of tunnels %d", __func__, count);
 }
 
-/* ip_dst is in host byte order */
+/* ip_dst is in net byte order */
 OVS_UNUSED static void
 do_ping(uint32_t *ip_dst)
 {
@@ -1141,28 +1165,21 @@ vport_dump(bcmsdk_vport_t *vport)
 static void
 netdev_vport_dump(struct ds *ds)
 {
-    struct shash device_shash;
-    struct shash_node *node;
+    tunnel_node * tnl, *next;
+    struct netdev_vport *dev;
     int count = 0;
-    shash_init(&device_shash);
-    netdev_get_devices(&vport_classes.netdev_class, &device_shash);
-    SHASH_FOR_EACH (node, &device_shash) {
-        struct netdev *netdev = node->data;
-        if(netdev) {
-            struct netdev_vport *dev = netdev_vport_cast(netdev);
-            if(dev) {
-                VLOG_DBG("\nTUNNEL %s state %s\n",
-                         dev->up.name,tnl_state_str[dev->tnl_state]);
-                tunnel_print(ds, &dev->tnl_cfg);
-                carrier_print(ds, &dev->carrier);
-                vport_print(ds, &dev->vport);
-                VLOG_DBG("%s",ds_cstr(ds));
-                count++;
-            }
-            netdev_close(netdev);
+    HMAP_FOR_EACH_SAFE(tnl, next, hmap_t_node, &tunnel_hmap) {
+        dev = tnl->vport;
+        if(dev) {
+            VLOG_DBG("\nTUNNEL %s state %s\n",
+                     dev->up.name,tnl_state_str[dev->tnl_state]);
+            tunnel_print(ds, &dev->tnl_cfg);
+            carrier_print(ds, &dev->carrier);
+            vport_print(ds, &dev->vport);
+            VLOG_DBG("%s",ds_cstr(ds));
+            count++;
         }
     }
-    shash_destroy(&device_shash);
     VLOG_DBG("%s COUNT OF VPORT %d", __func__, count);
 }
 
