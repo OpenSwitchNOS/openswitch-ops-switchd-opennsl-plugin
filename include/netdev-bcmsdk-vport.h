@@ -95,7 +95,7 @@ const bcmsdk_vport_t * netdev_bcmsdk_vport_get_tunnel_vport
                                                  (struct netdev *netdev);
 const carrier_t * netdev_bcmsdk_vport_get_carrier(struct netdev *netdev);
 
-void netdev_vport_update_host_chg(int event, int port, char *ip_addr,
+void netdev_vport_update_host_chg(int event, char *ip_addr,
                                   int l3_egress_id);
 void netdev_vport_update_route_chg(int event, char* route_prefix);
 
