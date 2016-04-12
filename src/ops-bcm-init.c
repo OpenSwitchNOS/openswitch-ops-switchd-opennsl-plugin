@@ -36,6 +36,7 @@
 #include "ops-stg.h"
 #include "ops-sflow.h"
 #include "netdev-bcmsdk.h"
+#include "eventlog.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
 
@@ -132,6 +133,10 @@ ops_bcm_appl_init(void)
     int rc = 0;
 
     ops_debug_init();
+    rc = event_log_init("LAG");
+    if(rc < 0) {
+        VLOG_ERR("Event log initialization failed for LAG");
+    }
 
     for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
 
