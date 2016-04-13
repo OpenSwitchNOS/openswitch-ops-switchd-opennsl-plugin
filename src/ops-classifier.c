@@ -402,7 +402,7 @@ ops_cls_set_action(int                          unit,
         rc = opennsl_field_stat_create(unit, ip_group, 2, stats_type, &stat_id);
         if (OPENNSL_FAILURE(rc)) {
             VLOG_ERR("Failed to create stats for ACL %s at entry %d rc=%s",
-                     entry, cls->name, opennsl_errmsg(rc));
+                     cls->name, entry, opennsl_errmsg(rc));
             return rc;
         } else {
             VLOG_DBG("Count action added at entry %d.", entry);
