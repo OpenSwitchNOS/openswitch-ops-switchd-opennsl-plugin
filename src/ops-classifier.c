@@ -486,7 +486,7 @@ ops_cls_set_pd_status(int                        rc,
     case OPENNSL_E_FULL:
     case OPENNSL_E_FAIL:
     case OPENNSL_E_RESOURCE:
-        pd_status->status_code = OPS_CLS_PD_STATUS_HW_ENTRY_ALLOCATION_ERROR;
+        pd_status->status_code = OPS_CLS_STATUS_HW_RESOURCE_ERR;
         pd_status->entry_id = rule_index;
         break;
     default:
@@ -514,7 +514,7 @@ ops_cls_set_pd_list_status(int                             rc,
     case OPENNSL_E_FULL:
     case OPENNSL_E_FAIL:
     case OPENNSL_E_RESOURCE:
-        status->status_code = OPS_CLS_PD_STATUS_HW_ENTRY_ALLOCATION_ERROR;
+        status->status_code = OPS_CLS_STATUS_HW_RESOURCE_ERR;
         status->entry_id = rule_index;
         break;
     default:
