@@ -594,6 +594,8 @@ bundle_destroy(struct ofbundle *bundle)
                             hw_port,
                             bundle->l3_intf,
                             port->up.netdev);
+                    /* Destroy L3 stats */
+                    netdev_bcmsdk_l3intf_fp_stats_destroy(bundle->hw_port, bundle->hw_unit);
                     bundle->l3_intf = NULL;
                 }
             }
@@ -618,6 +620,7 @@ bundle_destroy(struct ofbundle *bundle)
                 bundle->l3_intf = NULL;
             }
         }
+        netdev_bcmsdk_l3_global_stats_destroy(port->up.netdev);
         bundle_del_port(port);
     }
 
@@ -980,6 +983,60 @@ port_ip_reconfigure(struct ofproto *ofproto, struct ofbundle *bundle,
 }
 
 static int
+init_l3_ingress_stats(struct bcmsdk_provider_ofport_node *port, opennsl_vlan_t vlan_id)
+{
+    int rc = 0;
+    uint32_t ing_stat_id = 0;
+    uint32_t ing_num_id = 0;
+
+    /* Create Ingress stat object using the vlan id */
+    rc = opennsl_stat_group_create(0, opennslStatObjectIngL3Intf,
+            opennslStatGroupModeTrafficType, &ing_stat_id,
+            &ing_num_id);
+    if (rc) {
+        VLOG_ERR("Failed to create bcm stat group for ingress id %d",
+                vlan_id);
+        return 1; /* Return error */
+    }
+    VLOG_DBG("opennsl_stat_group_create SUCCESS for ing id %d"
+            ", ing_stat_id %d, ing_num_id %d", vlan_id,
+            ing_stat_id, ing_num_id);
+
+    /* Attach stat to customized group mode */
+    rc = opennsl_stat_custom_group_create(0, l3_stats_mode_id,
+            opennslStatObjectIngL3Intf, &ing_stat_id, &ing_num_id);
+    if (rc) {
+        VLOG_ERR("Failed to create custom stat group for ing id %d",
+                vlan_id);
+        return 1; /* Return error */
+    }
+    VLOG_DBG("opennsl custom stat group create SUCCESS for ing id %d"
+            ", ing_stat_id %d, ing_num_id %d", vlan_id,
+            ing_stat_id, ing_num_id);
+
+    rc = opennsl_l3_ingress_stat_attach(0, vlan_id, ing_stat_id);
+    if (rc) {
+        VLOG_ERR("Failed to attach stat obj, for ingress id %d, %s",
+                vlan_id, opennsl_errmsg(rc));
+        return 1; /* Return error */
+    }
+    VLOG_DBG("opennsl_l3_ingress_stat_attach SUCCESS for ing id %d",
+            vlan_id);
+
+    rc = netdev_bcmsdk_set_l3_ingress_stat_obj(port->up.netdev,
+            vlan_id,
+            ing_stat_id,
+            ing_num_id);
+    if (rc) {
+        VLOG_ERR("Failed to set l3 ingress stats obj for vlanid %d",
+                vlan_id);
+        return 1; /* Return error */
+    }
+    VLOG_DBG("Successfully set l3 ingress stat objects data");
+    return 0;
+}
+
+static int
 bundle_set(struct ofproto *ofproto_, void *aux,
            const struct ofproto_bundle_settings *s)
 {
@@ -1023,7 +1080,6 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         bundle->l3_intf = NULL;
         bundle->hw_unit = 0;
         bundle->hw_port = -1;
-
         list_init(&bundle->ports);
         bundle->vlan_mode = PORT_VLAN_ACCESS;
         bundle->vlan = -1;
@@ -1087,6 +1143,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         int hw_unit, hw_port;
         opennsl_vlan_t vlan_id;
         uint8_t mac[ETH_ADDR_LEN];
+        int rc = 0;
 
         port = get_ofp_port(bundle->ofproto, s->slaves[0]);
         if (!port) {
@@ -1135,9 +1192,13 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                     ops_routing_disable_l3_interface(hw_unit, hw_port,
                                                      bundle->l3_intf,
                                                      port->up.netdev);
+                    /* Destroy L3 stats */
+                    netdev_bcmsdk_l3intf_fp_stats_destroy(hw_port, hw_unit);
+
                 } else if (strcmp(type, OVSREC_INTERFACE_TYPE_INTERNAL) == 0) {
                     opennsl_l3_intf_delete(hw_unit, bundle->l3_intf);
                 }
+                netdev_bcmsdk_l3_global_stats_destroy(port->up.netdev);
                 bundle->l3_intf = NULL;
                 bundle->hw_unit = 0;
                 bundle->hw_port = -1;
@@ -1153,10 +1214,18 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                 bundle->l3_intf = ops_routing_enable_l3_interface(
                             hw_unit, hw_port, ofproto->vrf_id, vlan_id,
                             mac, port->up.netdev);
+
                 if (bundle->l3_intf) {
                     bundle->hw_unit = hw_unit;
                     bundle->hw_port = hw_port;
+                    /* Initilize FP entries for l3 interface stats */
+                    rc = netdev_bcmsdk_l3intf_fp_stats_init(vlan_id, hw_port, hw_unit);
+                    if (rc) {
+                        VLOG_ERR("Failed to initialize FP stat entries for l3 \
+                                  interface id:  %d", vlan_id);
+                    }
                 }
+
             } else if (strcmp(type, OVSREC_INTERFACE_TYPE_VLANSUBINT) == 0) {
                 VLOG_DBG("%s enable subinterface l3", __FUNCTION__);
                 int unit = 0;
@@ -1167,6 +1236,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                     bundle->hw_unit = hw_unit;
                     bundle->hw_port = hw_port;
                 }
+
             } else if (strcmp(type, OVSREC_INTERFACE_TYPE_INTERNAL) == 0) {
                 int unit = 0;
                 for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
@@ -1175,6 +1245,13 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                             mac);
                 }
             }
+            /* Initialize L3 ingress flex counters. The L3 egress flex counters are
+             * installed dynamically per egress object at creation time. */
+            init_l3_ingress_stats(port, vlan_id);
+
+            /* Install iptables rules to account for slowpath
+             * egress traffic that is not visible to the ASIC. */
+            netdev_bcmsdk_l3stats_xtables_rules_create(port->up.netdev);
         }
     }
 
@@ -1984,6 +2061,7 @@ add_l3_host_entry(const struct ofproto *ofproto_, void *aux,
 {
     struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
     struct ofbundle *port_bundle;
+    struct bcmsdk_provider_ofport_node *port = NULL, *next_port;
     int rc = 0;
 
     port_bundle = bundle_lookup(ofproto, aux);
@@ -2002,8 +2080,29 @@ add_l3_host_entry(const struct ofproto *ofproto_, void *aux,
                                    port_bundle->bond_hw_handle);
     if (rc) {
         VLOG_ERR("Failed to add L3 host entry for ip %s", ip_addr);
+        return rc;
     }
 
+    LIST_FOR_EACH_SAFE (port, next_port, bundle_node, &port_bundle->ports) {
+        /* Break because we are looking for the first slave */
+        VLOG_DBG("port_t->up.ofp_port = %d\n", port->up.ofp_port);
+        VLOG_DBG(" add numslaves = %zu", list_size(&port_bundle->ports));
+        break;
+    }
+
+    if (!port) {
+        VLOG_ERR("Failed to get port while adding l3 host entry");
+        return 1; /* Return error */
+    }
+
+    if (list_size(&port_bundle->ports) == 1) {
+        VLOG_DBG("in the IF before entering netdev_bcmsdk_set_l3_egress_id");
+        rc = netdev_bcmsdk_set_l3_egress_id(port->up.netdev, *l3_egress_id);
+        if (rc) {
+            VLOG_ERR("Failed to set l3 egress data in netdev bcmsdk for egress"
+                     " object, %d", *l3_egress_id);
+        }
+    }
 
     return rc;
 } /* add_l3_host_entry */
@@ -2016,12 +2115,33 @@ delete_l3_host_entry(const struct ofproto *ofproto_, void *aux,
 {
     struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
     struct ofbundle *port_bundle;
+    struct bcmsdk_provider_ofport_node *port = NULL, *next_port;
     int rc = 0;
 
     port_bundle = bundle_lookup(ofproto, aux);
     if (port_bundle == NULL) {
         VLOG_ERR("Failed to get port bundle");
         return 1; /* Return error */
+    }
+
+    LIST_FOR_EACH_SAFE (port, next_port, bundle_node, &port_bundle->ports) {
+        /* Break because we are looking for the first slave */
+        VLOG_DBG("port_t->up.ofp_port = %d\n", port->up.ofp_port);
+        VLOG_DBG(" delete numslaves = %zu", list_size(&port_bundle->ports));
+        break;
+    }
+
+    if (!port) {
+        VLOG_ERR("Failed to get port while deleting l3 host entry");
+        return 1; /* Return error */
+    }
+
+    if ((list_size(&port_bundle->ports) == 1)) {
+        rc = netdev_bcmsdk_remove_l3_egress_id(port->up.netdev, *l3_egress_id);
+        if (rc) {
+            VLOG_ERR("Failed to remove l3 egress data in netdev bcmsdk for "
+                     " egress object, %d", *l3_egress_id);
+        }
     }
 
     rc = ops_routing_delete_host_entry(port_bundle->hw_unit,
