@@ -3999,6 +3999,130 @@ int get_copp_counts (uint32 num_packets_classes,
     return(OPS_COPP_SUCCESS_CODE);
 }
 
+static
+enum ops_copp_packet_class_code_t copp_packet_class_mapper(enum copp_protocol_class global_class)
+{
+    switch(global_class) {
+        case COPP_ACL_LOGGING:
+            return OPS_COPP_ACL_LOGGING_PACKET;
+        case COPP_ARP_BROADCAST:
+            return OPS_COPP_BROADCAST_ARP_PACKET;
+        case COPP_ARP_MY_UNICAST:
+            return OPS_COPP_UNICAST_ARP_PACKET;
+        case COPP_ARP_SNOOP:
+            return OPS_COPP_MAX_CLASSES;
+        case COPP_BGP:
+            return OPS_COPP_BGP_PACKET;
+        case COPP_DEFAULT_UNKNOWN:
+            return OPS_COPP_UNCLASSIFIED_PACKET;
+        case COPP_DHCPv4:
+            return OPS_COPP_DHCPV4_PACKET;
+        case COPP_DHCPv6:
+            return OPS_COPP_DHCPV6_PACKET;
+        case COPP_ICMPv4_MULTIDEST:
+            return OPS_COPP_ICMPV4_BMCAST_PACKET;
+        case COPP_ICMPv4_UNICAST:
+            return OPS_COPP_ICMPV4_UCAST_PACKET;
+        case COPP_ICMPv6_MULTICAST:
+            return OPS_COPP_ICMPV6_MCAST_PACKET;
+        case COPP_ICMPv6_UNICAST:
+            return OPS_COPP_ICMPV6_UCAST_PACKET;
+        case COPP_LACP:
+            return OPS_COPP_LACP_PACKET;
+        case COPP_LLDP:
+            return OPS_COPP_LLDP_PACKET;
+        case COPP_OSPFv2_MULTICAST:
+            return OPS_COPP_OSPFV2_MCAST_PACKET;
+        case COPP_OSPFv2_UNICAST:
+            return OPS_COPP_OSPFV2_UCAST_PACKET;
+        case COPP_sFLOW_SAMPLES:
+            return OPS_COPP_SFLOW_PACKET;
+        case COPP_STP_BPDU:
+            return OPS_COPP_STP_PACKET;
+        case COPP_UNKNOWN_IP_UNICAST:
+            return OPS_COPP_UNKNOWN_IP_UNICAST_PACKET;
+        default:
+            return OPS_COPP_MAX_CLASSES;
+    }
+}
+
+int copp_stats_get(const unsigned int hw_asic_id,
+                   const enum copp_protocol_class class,
+                   struct copp_protocol_stats *const stats)
+{
+    int    retval;
+    enum   ops_copp_packet_class_code_t mapped_packet_class;
+    struct ops_copp_stats_t* copp_stats_array = NULL;
+
+    /* Map the incoming enum to our copp class enum */
+    mapped_packet_class = copp_packet_class_mapper(class);
+    if (mapped_packet_class == OPS_COPP_MAX_CLASSES) {
+        VLOG_ERR("CoPP packet class %d not supported.\n", mapped_packet_class);
+        return EOPNOTSUPP;
+    }
+
+    copp_stats_array = (struct ops_copp_stats_t *) malloc(sizeof(struct ops_copp_stats_t));
+    if (copp_stats_array == NULL) {
+        VLOG_ERR("Failed to alloc memory for copp stats array");
+        return ENOMEM;
+    }
+
+    copp_stats_array->ops_copp_packet_class = mapped_packet_class;
+    copp_stats_array->ops_copp_hardware_unit_number = hw_asic_id;
+
+    /* After the above 2 fields are filled, pass it to the get_copp_counts.
+     * The number of copp classes passed is just one.
+     */
+    retval = get_copp_counts(1, copp_stats_array);
+    if (retval != OPS_COPP_SUCCESS_CODE) {
+        VLOG_ERR("Error getting stats for hardware unit %u", hw_asic_id);
+        free(copp_stats_array);
+        return EIO;
+    }
+
+    /* Fill in the 4 stats field in the stats pointer */
+    stats->packets_passed = copp_stats_array->ops_copp_packets_allowed;
+    stats->bytes_passed = copp_stats_array->ops_copp_bytes_allowed;
+    stats->packets_dropped = copp_stats_array->ops_copp_packets_dropped;
+    stats->bytes_dropped = copp_stats_array->ops_copp_bytes_dropped;
+
+    free(copp_stats_array);
+
+    return(OPS_COPP_SUCCESS_CODE);
+}
+
+int copp_hw_status_get(const unsigned int hw_asic_id,
+                       const enum copp_protocol_class class,
+                       struct copp_hw_status *const hw_status)
+{
+    enum   ops_copp_packet_class_code_t mapped_packet_class;
+    /* Map the incoming enum to our copp class enum */
+    mapped_packet_class = copp_packet_class_mapper(class);
+    if (mapped_packet_class == OPS_COPP_MAX_CLASSES) {
+        VLOG_ERR("CoPP packet class %d not supported.\n", mapped_packet_class);
+        return EOPNOTSUPP;
+    }
+
+    /* Check for error condition.
+     * if the packet_class struct has egress or ingress fp as NULL ptr,
+     * it means that, the configuration has not gone througgh fine.
+     */
+    if (ops_copp_packet_class_t[mapped_packet_class].ops_copp_egress_fp_entry[hw_asic_id]
+        == NULL) {
+        VLOG_ERR("Error getting hw status for hardware unit %u", hw_asic_id);
+        return EIO;
+    }
+
+    hw_status->rate =
+          ops_copp_packet_class_t[mapped_packet_class].ops_copp_egress_fp_rate;
+    hw_status->burst =
+          ops_copp_packet_class_t[mapped_packet_class].ops_copp_egress_fp_burst;
+    hw_status->local_priority =
+          ops_copp_packet_class_t[mapped_packet_class].ops_copp_ingress_fp_queue_number;
+
+    return(OPS_COPP_SUCCESS_CODE);
+}
+
 /*
  * ops_copp_packet_stats_to_string
  *

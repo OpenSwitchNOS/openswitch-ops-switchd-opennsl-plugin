@@ -510,6 +510,58 @@ struct ops_copp_stats_t {
     uint64      ops_copp_bytes_dropped;
 };
 
+/**************** To Be removed - Adith ***********************/
+enum copp_protocol_class {
+    COPP_ACL_LOGGING,
+    COPP_ARP_BROADCAST,
+    COPP_ARP_MY_UNICAST,    /* Unicast MAC or broadcast w/ TPA=switch IP */
+    COPP_ARP_SNOOP,         /* Unicast ARPs not to any switch MAC */
+    COPP_BGP,
+    COPP_DEFAULT_UNKNOWN,   /* Packets not matching any other class */
+    COPP_DHCPv4,
+    COPP_DHCPv6,
+    COPP_ICMPv4_MULTIDEST,  /* Broadcast or multicast */
+    COPP_ICMPv4_UNICAST,
+    COPP_ICMPv6_MULTICAST,
+    COPP_ICMPv6_UNICAST,
+    COPP_LACP,
+    COPP_LLDP,
+    COPP_OSPFv2_MULTICAST,  /* All OSPF Router address, etc */
+    COPP_OSPFv2_UNICAST,
+    COPP_sFLOW_SAMPLES,     /* Packets sent to CPU to be sFlow encapsated */
+    COPP_STP_BPDU,
+    COPP_UNKNOWN_IP_UNICAST,
+
+    /* add new classes above this line */
+    COPP_MAX                /* not used */
+};
+
+/* Per COPP Protocol Class statistics
+ *
+ * Values of unsupported statistics are set to all-1-bits (UINT64_MAX) */
+struct copp_protocol_stats {
+    uint64_t  packets_passed;
+    uint64_t  bytes_passed;
+    uint64_t  packets_dropped;
+    uint64_t  bytes_dropped;
+};
+
+/* Per COPP Protocol Class Hardware Status */
+struct copp_hw_status {
+    uint64_t  rate;            /* Units of packets-per-second */
+    uint64_t  burst;           /* Units of packets */
+    uint64_t  local_priority;
+};
+
+/**************** END To Be removed - Adith ***********************/
+
+extern int copp_stats_get(const unsigned int hw_asic_id,
+                          const enum copp_protocol_class class,
+                          struct copp_protocol_stats *const stats);
+extern int copp_hw_status_get(const unsigned int hw_asic_id,
+                              const enum copp_protocol_class class,
+                              struct copp_hw_status *const hw_status);
+
 extern int ops_copp_init();
 extern int ops_get_all_packet_stats();
 extern int get_copp_counts (uint32 num_packets_classes,

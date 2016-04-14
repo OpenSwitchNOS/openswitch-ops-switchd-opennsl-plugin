@@ -784,6 +784,92 @@ ops_fp_dump_copp_egress_rules (struct ds *ds)
     }
 }
 
+static
+enum copp_protocol_class get_packet_class(struct ds *ds, const char* ch)
+{
+    if (!strcmp(ch, "Acl-Logging")) {
+        return COPP_ACL_LOGGING;
+    } else if (!strcmp(ch, "broadcast-arp")) {
+        return COPP_ARP_BROADCAST;
+    } else if (!strcmp(ch, "unicast-arp")) {
+        return COPP_ARP_MY_UNICAST;
+    } else if (!strcmp(ch, "arp-snoop")) {
+        return COPP_ARP_SNOOP;
+    } else if (!strcmp(ch, "BGP")) {
+        return COPP_BGP;
+    } else if (!strcmp(ch, "Unclassified")) {
+        return COPP_DEFAULT_UNKNOWN;
+    } else if (!strcmp(ch, "DHCP")) {
+        return COPP_DHCPv4;
+    } else if (!strcmp(ch, "DHCPV6")) {
+        return COPP_DHCPv6;
+    } else if (!strcmp(ch, "ICMPV4-broadcast")) {
+        return COPP_ICMPv4_MULTIDEST;
+    } else if (!strcmp(ch, "ICMPV4-unicast")) {
+        return COPP_ICMPv4_UNICAST;
+    } else if (!strcmp(ch, "ICMPV6-multicast")) {
+        return COPP_ICMPv6_MULTICAST;
+    } else if (!strcmp(ch, "ICMPV6-unicast")) {
+        return COPP_ICMPv6_UNICAST;
+    } else if (!strcmp(ch, "LACP")) {
+        return COPP_LACP;
+    } else if (!strcmp(ch, "LLDP")) {
+        return COPP_LLDP;
+    } else if (!strcmp(ch, "OSPFV2-multicast")) {
+        return COPP_OSPFv2_MULTICAST;
+    } else if (!strcmp(ch, "OSPFV2-unicast")) {
+        return COPP_OSPFv2_UNICAST;
+    } else if (!strcmp(ch, "Sflow")) {
+        return COPP_sFLOW_SAMPLES;
+    } else if (!strcmp(ch, "STP")) {
+        return COPP_STP_BPDU;
+    } else if (!strcmp(ch, "Unknown-IP")) {
+        return COPP_UNKNOWN_IP_UNICAST;
+    } else {
+        ds_put_format(ds, "Invalid Argument");
+        return COPP_MAX;
+    }
+}
+
+static
+void display_copp_stats(struct ds *ds,
+                        enum copp_protocol_class packet_class, const char *ch)
+{
+    const int hw_asic_id = 0;
+    int retval = 1;
+    struct copp_protocol_stats *const stats =
+       (struct copp_protocol_stats *)malloc(sizeof(struct copp_protocol_stats));
+    struct copp_hw_status *const hw_status =
+             (struct copp_hw_status *)malloc(sizeof(struct copp_hw_status));
+
+    retval = copp_stats_get(hw_asic_id,
+                (const enum copp_protocol_class) packet_class, stats);
+    if(retval) {
+        ds_put_format(ds, "Failed to get stats for %s\n", ch);
+        return;
+    }
+
+    retval = copp_hw_status_get(hw_asic_id,
+                (const enum copp_protocol_class) packet_class, hw_status);
+    if(retval) {
+        ds_put_format(ds, "Failed to get hw_status for %s\n", ch);
+        return;
+    }
+
+    ds_put_format(ds, "Stats for h/w unit %d, for class %s\n", hw_asic_id, ch);
+    ds_put_format(ds, " Rate (pps) = \t%"PRIu64"\n", hw_status->rate);
+    ds_put_format(ds, " Burst (pkts) = \t%"PRIu64"\n", hw_status->burst);
+    ds_put_format(ds, " Local_priority = \t%"PRIu64"\n\n", hw_status->local_priority);
+    ds_put_format(ds, "Transmitted Packets = \t%"PRIu64"\n", stats->packets_passed);
+    ds_put_format(ds, "Transmitted Bytes = \t%"PRIu64"\n", stats->bytes_passed);
+    ds_put_format(ds, "Dropped Packets = \t%"PRIu64"\n", stats->packets_dropped);
+    ds_put_format(ds, "Dropped Bytes = \t%"PRIu64"\n", stats->bytes_dropped);
+
+    free(stats);
+    free(hw_status);
+
+}
+
 static void
 ops_get_cpu_queue_stats (struct ds *ds, opennsl_cos_queue_t queueid)
 {
@@ -1092,6 +1178,14 @@ copp_config_help:
             if (NULL != (ch = NEXT_ARG())) {
                 queueid = atoi(ch);
                 ops_get_cpu_queue_stats(&ds, queueid);
+            }
+            goto done;
+
+        } else if (!strcmp(ch, "display_copp_stats")) {
+            enum copp_protocol_class packet_class;
+            if (NULL != (ch = NEXT_ARG())) {
+                packet_class = get_packet_class(&ds, ch);
+                display_copp_stats(&ds, packet_class, ch);
             }
             goto done;
 
