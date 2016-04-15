@@ -87,10 +87,18 @@ bufmon_trigger_register(bool enable)
     bst_switch_event_register(enable);
 } /* bufmon_trigger_register */
 
+void
+bufmon_cell_to_byte (int *byte)
+{
+  *byte = cell_to_byte();
+  return;
+} /*bufmon_cell_to_byte*/
+
 const struct bufmon_class bufmon_bcm_provider_class = {
     init,
     bufmon_system_config,
     bufmon_counter_config,
     bufmon_counter_stats_get,
     bufmon_trigger_register,
+    bufmon_cell_to_byte,
 };

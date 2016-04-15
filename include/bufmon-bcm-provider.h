@@ -35,6 +35,8 @@ typedef enum counter_operations
 
 extern const struct bufmon_class bufmon_bcm_provider_class;
 
+int  cell_to_byte(void);
+
 void realm_sync_all(void);
 
 void handle_bufmon_counter_mgmt(bufmon_counter_info_t *counter,

@@ -63,6 +63,7 @@ static int trigger_user_data[MAX_SWITCH_UNITS];
 #define  NUM_SERVICE_POLL  (4)
 #define  NUM_PG            (8)
 #define  NUM_RQE           (11)
+#define  CELL_TO_BYTES     (208)
 
 #define  IS_TRIDEN2(_device)  (((_device) >= 0xb850 && (_device) <= 0xb867) || \
                                 (_device) == 0xb760 || (_device) == 0xb832  || \
@@ -120,6 +121,11 @@ static inline unsigned int get_max_stats(void);
 static inline int get_realm_index(int statid, char *str);
 static const realm_helper_t *get_all_realm_list(void);
 static int64_t get_stat_default_threshold (int asic, int statId);
+
+int cell_to_byte()
+{
+  return CELL_TO_BYTES;
+} /*cell_to_byte*/
 
 static void
 device_data_stats(int statid, counter_operations_t type,
@@ -594,18 +600,18 @@ get_stat_default_threshold (int asic, int statId)
     if (statId == opennslBstStatIdUcast ||
       statId == opennslBstStatIdEgrUCastPortShared ||
       statId == opennslBstStatIdUcastGroup) {
-      return 0x3FFF*208;
+      return (0x3FFF*CELL_TO_BYTES);
     } else if (statId == opennslBstStatIdPriGroupHeadroom) {
-      return 0xFFF*208;
+      return (0xFFF*CELL_TO_BYTES);
     } else {
-      return 0x1FFFF*208;
+      return (0x1FFFF*CELL_TO_BYTES);
     }
   } if (IS_TOMAHWAK(info.device)) {
      if (statId == opennslBstStatIdUcast ||
          statId == opennslBstStatIdUcastGroup) {
-        return 0xFFF*208;
+        return (0xFFF*CELL_TO_BYTES);
      } else {
-        return 0x7FFF*208;
+        return (0x7FFF*CELL_TO_BYTES);
      }
   }
   return INVALID;
@@ -644,7 +650,7 @@ bst_init_thresholds()
           }
         }
       } else {
-        for (port = 0; port < num_ports; port++) {
+        for (port = 1; port <= num_ports; port++) {
           rv = opennsl_port_gport_get(asic, port, &gport);
           for (index = 0 ; index < queue; index++) {
             rv = BCM_API_BST_PROFILE_SET(asic, gport, 
@@ -733,8 +739,6 @@ bst_switch_event_callback (int asic, opennsl_switch_event_t event,
     const realm_helper_t *realm_list = get_all_realm_list();
 
     /* Disable tracking mode to avoid spurious triggers from HW */
-    bst_switch_control_set(opennslSwitchBstEnable, 0);
-
     /* Call the switchd Callback registered with plugin */
     if (event == OPENNSL_SWITCH_EVENT_MMU_BST_TRIGGER) {
         /* Validate BID */
