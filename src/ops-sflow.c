@@ -31,6 +31,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <platform-defines.h>
+#include  <diag_dump.h>
 
 #include "ofproto/collectors.h"
 #include "ops-stats.h"
@@ -40,6 +41,7 @@
 
 VLOG_DEFINE_THIS_MODULE(ops_sflow);
 
+#define DIAGNOSTIC_BUFFER_LEN 16000
 /* sFlow parameters - TODO make these per ofproto */
 SFLAgent *ops_sflow_agent = NULL;
 struct ofproto_sflow_options *sflow_options = NULL;
@@ -511,6 +513,51 @@ ops_sflow_set_rate(struct unixctl_conn *conn, int argc, const char *argv[],
     ops_sflow_set_sampling_rate(hw_unit, hw_id, ingress_rate, egress_rate);
 
     unixctl_command_reply(conn, '\0');
+}
+
+static void
+sflow_diag_dump_basic_cb(const char *feature , char **buf)
+{
+    struct ds ds = DS_EMPTY_INITIALIZER;
+    if (!buf)
+        return;
+    *buf =  xcalloc(1,DIAGNOSTIC_BUFFER_LEN);
+    if (*buf) {
+        int rc;
+        int ingress_rate, egress_rate;
+        opennsl_port_t tempPort = 0;
+        opennsl_port_config_t port_config;
+        ds_put_format(&ds, "\t\t SFLOW SETTINGS\n");
+        ds_put_format(&ds, "\t\t ==============\n");
+        ds_put_format(&ds, "\tPORT\tINGRESS RATE\tEGRESS RATE\n");
+        ds_put_format(&ds, "\t====\t============\t===========\n");
+
+        /* Retrieve the port configuration of the unit */
+        rc = opennsl_port_config_get (0, &port_config);
+        if (OPENNSL_FAILURE(rc)) {
+            VLOG_ERR("Failed to retrieve port config. Can't get sampling rate. "
+                         "(rc=%s)", opennsl_errmsg(rc));
+            return;
+        }
+
+        /* sflow on all ports of switch */
+        OPENNSL_PBMP_ITER (port_config.e, tempPort) {
+            rc = opennsl_port_sample_rate_get(0, tempPort, &ingress_rate, &egress_rate);
+            if (OPENNSL_FAILURE(rc)) {
+                VLOG_ERR("Failed on port (%d) while getting global sample rate "
+                             "(error-%s)", tempPort, opennsl_errmsg(rc));
+                return ;
+            }
+            ds_put_format(&ds, "\t%2d\t%6d\t\t%6d\n", tempPort, ingress_rate, egress_rate);
+        }
+            sprintf(*buf, "%s", ds_cstr(&ds));
+            VLOG_INFO("basic diag-dump data populated for feature %s",feature);
+    }
+    else {
+            VLOG_ERR("Memory allocation failed for feature %s , %d bytes",
+                         feature , DIAGNOSTIC_BUFFER_LEN);
+    }
+    return;
 }
 
 static void
@@ -1061,7 +1108,7 @@ ops_sflow_init (int unit OVS_UNUSED)
 {
     /* TODO: Make this in to a thread so as to read messages from callback
      * function in Rx thread. */
-
+    INIT_DIAG_DUMP_BASIC(sflow_diag_dump_basic_cb);
     sflow_main();
 
     return 0;
