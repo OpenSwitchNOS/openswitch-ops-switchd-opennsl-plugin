@@ -65,38 +65,24 @@ typedef struct carrier_t_ {
 
     int port;                /* physical port for this tunnel */
     int vrf;                 /* vrf the port belongs */
+    int vlan;                /* vlan of the carrier port */
+    int l3_intf_id;          /* l3 intf id of the carrier port */
     uint8_t local_mac[6];    /* local MAC of carrier port */
     uint8_t next_hop_mac[6]; /* MAC of neighbor */
     int status;              /* link status of this port */
 } carrier_t;
 
-typedef struct bcmsdk_vport_t_ {
-    int vlan;           /* BCM assign 4095 always */
-    int tunnel_id;      /* If tnl creation successful, get 0x4C000000 etc...*/
-    int vxlan_port_id;  /* If bind successful, get 0x8000001 etc..*/
-    int l3_intf_id;     /* l3 intf id of the carrier port */
-    int egr_obj_id;     /* vxlan egress object */
-    int station_id;     /*   */
-} bcmsdk_vport_t;
-
-
 /* BCM provider API. */
 int  netdev_bcmsdk_vport_get_tunnel_id(struct netdev *netdev, int *tunnel_id);
 void netdev_bcmsdk_vport_set_tunnel_id(struct netdev *netdev,
                                        int tunnel_id, int state);
-void netdev_bcmsdk_vport_set_tunnel_vport(struct netdev *netdev,
-                                          bcmsdk_vxlan_port_t *vport);
-void netdev_bcmsdk_vport_reset_tunnel_vport(struct netdev *netdev);
-bool netdev_bcmsdk_vport_get_vport_id(char *port, int *vxlan_port_id);
+void netdev_bcmsdk_vport_set_tunnel_state(struct netdev *netdev, int state);
 void netdev_bcmsdk_vport_register(void);
 void netdev_bcmsdk_vport_get_hw_info(struct netdev *netdev, int *hw_unit,
                                      int *hw_id, uint8_t *hwaddr);
-const bcmsdk_vport_t * netdev_bcmsdk_vport_get_tunnel_vport
-                                                 (struct netdev *netdev);
+struct netdev* netdev_bcmsdk_vport_tnl_from_name(char *port);
 const carrier_t * netdev_bcmsdk_vport_get_carrier(struct netdev *netdev);
-
-void netdev_vport_update_host_chg(int event, char *ip_addr,
-                                  int l3_egress_id);
+void netdev_vport_update_host_chg(int event, char *ip_addr, int l3_egress_id);
 void netdev_vport_update_route_chg(int event, char* route_prefix);
 
 #endif /* NETDEV_BCMSDK_VPORT_H */

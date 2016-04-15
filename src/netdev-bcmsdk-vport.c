@@ -84,7 +84,7 @@ struct netdev_vport {
     int hw_unit;            /* 0 */
     int tnl_state;          /* state of tunnel, created, bound etc...*/
     carrier_t carrier;      /* physical carrier */
-    bcmsdk_vport_t vport;   /* bcm related info */
+    int tunnel_id;
 };
 
 static char *events_str[] = {
@@ -124,7 +124,6 @@ static void check_route(struct netdev_vport *netdev);
 static int  netdev_vport_construct(struct netdev *);
 static int  get_tunnel_config(const struct netdev *, struct smap *args);
 static bool set_tunnel_nexthop(struct netdev_vport *netdev, int egr_id);
-static void init_vport(bcmsdk_vport_t *vport);
 static void init_carrier(carrier_t *port);
 static bool tunnel_check_status_change__(struct netdev_vport *netdev);
 
@@ -239,7 +238,7 @@ netdev_vport_construct(struct netdev *netdev_)
     dev->carrier.status = false;
     dev->hw_unit = 0;
     dev->tnl_state = TNL_UNDEFINED;
-    init_vport(&dev->vport);
+    dev->tunnel_id = INVALID_VALUE;
     init_carrier(&dev->carrier);
     return 0;
 }
@@ -375,7 +374,7 @@ set_local_mac(struct netdev_vport *netdev)
         return 1;
     }
     opennsl_l3_intf_t_init(&intf);
-    intf.l3a_intf_id = netdev->vport.l3_intf_id;
+    intf.l3a_intf_id = netdev->carrier.l3_intf_id;
     rc = opennsl_l3_intf_get(netdev->hw_unit, &intf);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Error, opennsl_l3_intf_get rc:%s l3_intf_id:0x%x\n",
@@ -423,9 +422,9 @@ set_tunnel_nexthop( struct netdev_vport *netdev, int egr_id)
 
         ovs_mutex_lock(&netdev->mutex);
         netdev->carrier.port = egress_object.port;
-        netdev->vport.l3_intf_id = egress_object.intf;
+        netdev->carrier.l3_intf_id = egress_object.intf;
         /* Use the default vlan 1024, 1025, ...etc  */
-        netdev->vport.vlan = egress_object.vlan;
+        netdev->carrier.vlan = egress_object.vlan;
         memcpy(netdev->carrier.next_hop_mac, egress_object.mac_addr, ETH_ALEN);
         ovs_mutex_unlock(&netdev->mutex);
         /* API needs local mac even though l3 intf id is provided
@@ -755,19 +754,8 @@ get_tunnel_config(const struct netdev *dev, struct smap *args)
     return 0;
 }
 
-static void
-init_vport(bcmsdk_vport_t *vport)
-{
-    if (vport) {
-        vport->egr_obj_id = INVALID_VALUE;
-        vport->l3_intf_id = INVALID_VALUE;
-        vport->tunnel_id = INVALID_VALUE;
-        vport->vlan = INVALID_VALUE;
-        vport->vxlan_port_id = INVALID_VALUE;
-    }
-}
 
-static void
+static inline void
 init_carrier(carrier_t *port)
 {
     if (port) {
@@ -797,7 +785,7 @@ netdev_bcmsdk_vport_get_tunnel_id(struct netdev *netdev, int *tunnel_id) {
     struct netdev_vport *dev = netdev_vport_cast(netdev);
     if (tunnel_id) {
         ovs_mutex_lock(&dev->mutex);
-        *tunnel_id = dev->vport.tunnel_id;
+        *tunnel_id = dev->tunnel_id;
         ovs_mutex_unlock(&dev->mutex);
     }
     return 0;
@@ -808,70 +796,44 @@ netdev_bcmsdk_vport_set_tunnel_id(struct netdev *netdev, int tunnel_id, int stat
 {
     struct netdev_vport *dev = netdev_vport_cast(netdev);
     ovs_mutex_lock(&dev->mutex);
-    dev->vport.tunnel_id = tunnel_id;
+    dev->tunnel_id = tunnel_id;
     dev->tnl_state = state;
     ovs_mutex_unlock(&dev->mutex);
 }
 
-const bcmsdk_vport_t *
-netdev_bcmsdk_vport_get_tunnel_vport(struct netdev *netdev)
-{
-    struct netdev_vport *dev = netdev_vport_cast(netdev);
-    return &dev->vport;
-}
 const carrier_t *
 netdev_bcmsdk_vport_get_carrier(struct netdev *netdev)
 {
     struct netdev_vport *dev = netdev_vport_cast(netdev);
     return &dev->carrier;
 }
-/* Return vxlan_port id given port name */
-bool
-netdev_bcmsdk_vport_get_vport_id(char *port, int* vxlan_port_id)
+
+struct netdev*
+netdev_bcmsdk_vport_tnl_from_name(char *port)
 {
-    struct netdev *netdev_;
-    int ret = false;
-    if(port && vxlan_port_id) {
-        netdev_ = netdev_from_name(port);
-        if(netdev_ && is_vport_class(netdev_get_class(netdev_))) {
-            struct netdev_vport *dev = netdev_vport_cast(netdev_);
-            if(dev->tnl_state == TNL_BOUND) {
-                ovs_mutex_lock(&dev->mutex);
-                *vxlan_port_id = dev->vport.vxlan_port_id;
-                ovs_mutex_unlock(&dev->mutex);
-                ret = true;
+    const char* tnl_name;
+    if(port) {
+        tunnel_node * node, *next;
+        HMAP_FOR_EACH_SAFE(node, next, hmap_t_node, &tunnel_hmap) {
+            tnl_name = netdev_get_name(&node->vport->up);
+            if(strcmp(port, tnl_name) == 0) {
+                VLOG_DBG("Found netdev for %s\n", port);
+                return &node->vport->up;
             }
-            netdev_close(netdev_);
         }
     }
-    return ret;
+    return NULL;
 }
 void
-netdev_bcmsdk_vport_set_tunnel_vport(struct netdev *netdev,
-                                     bcmsdk_vxlan_port_t * vport)
+netdev_bcmsdk_vport_set_tunnel_state(struct netdev *netdev, int state)
 {
     struct netdev_vport *dev  = netdev_vport_cast(netdev);
-    if(vport) {
-        dev = netdev_vport_cast(netdev);
-        ovs_mutex_lock(&dev->mutex);
-        dev->vport.egr_obj_id = vport->egr_obj_id;
-        dev->vport.station_id = vport->station_id;
-        dev->vport.vxlan_port_id = vport->vxlan_port_id;
-        dev->tnl_state = TNL_BOUND;
-        ovs_mutex_unlock(&dev->mutex);
-    }
-}
-void
-netdev_bcmsdk_vport_reset_tunnel_vport(struct netdev *netdev)
-{
-    struct netdev_vport *dev = netdev_vport_cast(netdev);
-        ovs_mutex_lock(&dev->mutex);
-        dev->tnl_state = TNL_CREATED;
-        dev->vport.egr_obj_id = INVALID_VALUE;
-        dev->vport.station_id = INVALID_VALUE;
-        dev->vport.vxlan_port_id = INVALID_VALUE;
+    ovs_mutex_lock(&dev->mutex);
+    dev->tnl_state = state;
+    if(state == TNL_CREATED) {
         dev->carrier.port = INVALID_VALUE;
-        ovs_mutex_unlock(&dev->mutex);
+    }
+    ovs_mutex_unlock(&dev->mutex);
 }
 
 static bool
@@ -906,12 +868,12 @@ create_tunnel(struct netdev_vport *netdev, int l3_egress_id)
         case TNL_INIT:
             /*Tunnel doesn't exist.  Route up, create tunnel and bind port*/
             if(!ops_vport_create_tunnel(&netdev->up)) {
-                ops_vport_bind_net_port(&netdev->up);
+                ops_vport_bind_net_port(&netdev->up, -1);
             }
             break;
         case TNL_CREATED:
             /*Tunnel exists and not bound.  Bind it to this net port*/
-            ops_vport_bind_net_port(&netdev->up);
+            ops_vport_bind_net_port(&netdev->up, -1);
             break;
         default:
             break;
@@ -919,16 +881,12 @@ create_tunnel(struct netdev_vport *netdev, int l3_egress_id)
 }
 
 /*
- * When destination host is deleted, unbind tunnel
  * When destination host is added, create tunnel and bind it
  */
 static void
 upon_host_chg(int event, struct netdev_vport *dev, int l3_egr_id)
 {
-    if(TUNNEL_UNBIND(event, dev->tnl_state)) {
-        ops_vport_unbind_net_port(&dev->up);
-    }
-    else if((TUNNEL_BIND(event, dev->tnl_state)) &&
+    if((TUNNEL_BIND(event, dev->tnl_state)) &&
              set_tunnel_nexthop(dev, l3_egr_id)) {
         create_tunnel(dev, l3_egr_id);
     }
@@ -989,10 +947,8 @@ ip_to_prefix(uint32_t ip, uint32_t prefix_len, char *ip_prefix)
     }
 }
 /*
- * When route is deleted and tunnel is bound to this route,
- * unbind tunnel
  * When route is added and tunnel is not created or not bound,
- * create tunnel and bind it
+ * create tunnel and bind it if there is a configured tunnel key
  */
 static void
 upon_route_chg(struct netdev_vport *dev, int event, char *route_prefix)
@@ -1016,11 +972,7 @@ upon_route_chg(struct netdev_vport *dev, int event, char *route_prefix)
                 */
             }
         }
-
-    } else if(TUNNEL_UNBIND(event, dev->tnl_state)) {
-        ops_vport_unbind_net_port(&dev->up);
     }
-
 }
 /*
  * When ASIC receives Route Action (Add, Delete),
@@ -1123,39 +1075,13 @@ carrier_print(struct ds *ds, carrier_t *carrier)
         return;
     }
     ds_put_format(ds, "\nCARRIER PORT:\n");
-    ds_put_format(ds, "port %5d  vrf  %5d status %s\n",\
-                  carrier->port, carrier->vrf, carrier->status? "up":"down");
+    ds_put_format(ds, "port %5d  vrf  %5d status %s\n"
+                      "l3_intf_id    = %d\n",
+                      carrier->port, carrier->vrf,
+                      carrier->status? "up":"down", carrier->l3_intf_id);
     ds_put_format(ds, mac_format(carrier->local_mac));
     ds_put_format(ds, mac_format(carrier->next_hop_mac));
 }
-
-static void
-vport_print(struct ds *ds, bcmsdk_vport_t *vport)
-{
-    if (!vport || !ds) {
-        ds_put_format(ds, "%s ERR: vport is NULL", __func__);
-        return;
-    }
-    ds_put_format(ds, "\nVXLAN PORT:\n");
-    ds_put_format(ds, "tunnel_id     = 0x%x\n"
-                      "vxlan_port_id = 0x%x\n"
-                      "l3_intf_id    = %d\n"
-                      "egr_obj_id    = 0x%x\n"
-                      "station_id    = %d\n"
-                      ,vport->tunnel_id, vport->vxlan_port_id
-                      ,vport->l3_intf_id,vport->egr_obj_id
-                      ,vport->station_id);
-}
-
-OVS_UNUSED static void
-vport_dump(bcmsdk_vport_t *vport)
-{
-    struct ds ds = DS_EMPTY_INITIALIZER;
-    vport_print(&ds, vport);
-    VLOG_DBG("%s",ds_cstr(&ds));
-    ds_destroy(&ds);
-}
-
 
 static void
 netdev_vport_dump(struct ds *ds)
@@ -1170,7 +1096,7 @@ netdev_vport_dump(struct ds *ds)
                      dev->up.name,tnl_state_str[dev->tnl_state]);
             tunnel_print(ds, &dev->tnl_cfg);
             carrier_print(ds, &dev->carrier);
-            vport_print(ds, &dev->vport);
+            hmap_vnode_print(ds);
             VLOG_DBG("%s",ds_cstr(ds));
             count++;
         }
@@ -1212,21 +1138,20 @@ vport_bind_from_term(struct ds *ds, int argc, const char *argv[])
         ds_put_format(ds, "Nexthop Data for Tunnel %s:\n", tnl_name);
         if(dev) {
             dev->carrier.port = atoi(argv[2]);
-            dev->vport.l3_intf_id = atoi(argv[5]);
+            dev->carrier.l3_intf_id = atoi(argv[5]);
             converting_mac(argv[3], dev->carrier.local_mac);
             converting_mac(argv[4], dev->carrier.next_hop_mac);
             if(argc > 6) {
-                dev->vport.vlan = atoi(argv[6]);
-                ds_put_format(ds, "vlan %d\n", dev->vport.vlan);
+                dev->carrier.vlan = atoi(argv[6]);
+                ds_put_format(ds, "vlan %d\n", dev->carrier.vlan);
             }
-            ds_put_format(ds, "port %d, intf id %d vlan %d\n",
-                          dev->carrier.port, dev->vport.l3_intf_id,
-                          dev->vport.l3_intf_id);
+            ds_put_format(ds, "port %d, intf id %d vlan %d\n",dev->carrier.port,
+                         dev->carrier.l3_intf_id, dev->carrier.l3_intf_id);
             ds_put_format(ds, mac_format(dev->carrier.local_mac));
 
             ds_put_format(ds, mac_format(dev->carrier.next_hop_mac));
             if(!ops_vport_create_tunnel(&dev->up)) {
-                 ops_vport_bind_net_port(&dev->up);
+                 ops_vport_bind_net_port(&dev->up, -1);
             }
         }
         netdev_close(netdev_);
