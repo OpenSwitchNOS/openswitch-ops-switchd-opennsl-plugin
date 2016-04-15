@@ -112,7 +112,7 @@ static struct ops_copp_fp_rule_t ops_copp_packet_class_t[] =
 /*
  * Maximum number of CoPP rules
  */
-#define OPS_COPP_MAX_CLASSES  sizeof(ops_copp_packet_class_t)/\
+#define PLUGIN_COPP_MAX_CLASSES  sizeof(ops_copp_packet_class_t)/\
                               sizeof(struct ops_copp_fp_rule_t)
 
 /*
@@ -120,7 +120,7 @@ static struct ops_copp_fp_rule_t ops_copp_packet_class_t[] =
  * statistics.
  */
 char ops_copp_all_packet_stat_buffer[COPP_MAX_PACKET_STAT_BUFFER_SIZE
-                                     * OPS_COPP_MAX_CLASSES];
+                                     * PLUGIN_COPP_MAX_CLASSES];
 
 /*
  * Array of strings for names for CPU queue numbers
@@ -230,7 +230,7 @@ ops_copp_get_packet_name_from_packet_class (
      * return from this function.
      */
     if ((packet_class < 0) ||
-        (packet_class >= OPS_COPP_MAX_CLASSES)) {
+        (packet_class >= PLUGIN_COPP_MAX_CLASSES)) {
         VLOG_ERR("Not a valid packet class");
         return(NULL);
     }
@@ -338,7 +338,7 @@ ops_copp_get_packet_class_from_packet_name (char* packet_name)
      */
     found_packet_class = ~0;
     if (num_packet_name_sub_parts) {
-        for (fp_rule_iterator = 0; fp_rule_iterator < OPS_COPP_MAX_CLASSES;
+        for (fp_rule_iterator = 0; fp_rule_iterator < PLUGIN_COPP_MAX_CLASSES;
              ++fp_rule_iterator) {
 
             packet_class_name_lowercase =
@@ -2852,6 +2852,43 @@ int ops_copp_egress_fp_unclassified (
 }
 
 /*
+ * ops_copp_packet_class_set_status
+ *
+ * This function sets the status value in the copp_packet_class structure
+ * to the value specified in the input parameters.
+ */
+
+static int ops_copp_packet_class_set_status(
+                              uint32 unit,
+                              enum ops_copp_packet_class_code_t packet_class,
+                              bool status_value)
+{
+    struct ops_copp_fp_rule_t* copp_packet_class = NULL;
+
+    /*
+     * If the packet class is not valid, then do not do anything and
+     * return from this function.
+     */
+    if ((packet_class < 0) ||
+        (packet_class >= PLUGIN_COPP_MAX_CLASSES)) {
+        VLOG_ERR("Not a valid packet class");
+        return(OPS_COPP_FAILURE_CODE);
+    }
+
+    /*
+     * Get the pointer reference to the control packet rule.
+     */
+    copp_packet_class = &ops_copp_packet_class_t[packet_class];
+
+    /*
+     * Set the status value passed into the function for the hw_unit.
+     */
+    copp_packet_class->status[unit] = status_value;
+
+    return(OPS_COPP_SUCCESS_CODE);
+}
+
+/*
  * ops_copp_packet_class_programmer
  *
  * This function programs the global packet rules for some packet types for a
@@ -2870,7 +2907,7 @@ static int ops_copp_packet_class_programmer(
      * return from this function.
      */
     if ((packet_class < 0) ||
-        (packet_class >= OPS_COPP_MAX_CLASSES)) {
+        (packet_class >= PLUGIN_COPP_MAX_CLASSES)) {
         VLOG_ERR("Not a valid packet class");
         return(OPS_COPP_FAILURE_CODE);
     }
@@ -2936,7 +2973,7 @@ static int ops_copp_ingress_fp_programmer (
      * return from this function.
      */
     if ((packet_class < 0) ||
-        (packet_class >= OPS_COPP_MAX_CLASSES)) {
+        (packet_class >= PLUGIN_COPP_MAX_CLASSES)) {
         VLOG_ERR("Not a valid packet class");
         return(OPS_COPP_FAILURE_CODE);
     }
@@ -2955,10 +2992,10 @@ static int ops_copp_ingress_fp_programmer (
      * There are no ingress FP function pointers for ACL logging, sflow,
      * unknown IP and unclassified packets. So return from this function.
      */
-    if ((packet_class == OPS_COPP_ACL_LOGGING_PACKET) ||
-        (packet_class == OPS_COPP_SFLOW_PACKET) ||
-        (packet_class == OPS_COPP_UNCLASSIFIED_PACKET) ||
-        (packet_class == OPS_COPP_UNKNOWN_IP_UNICAST_PACKET)) {
+    if ((packet_class == PLUGIN_COPP_ACL_LOGGING_PACKET) ||
+        (packet_class == PLUGIN_COPP_SFLOW_PACKET) ||
+        (packet_class == PLUGIN_COPP_UNCLASSIFIED_PACKET) ||
+        (packet_class == PLUGIN_COPP_UNKNOWN_IP_UNICAST_PACKET)) {
         return(OPS_COPP_SUCCESS_CODE);
     }
 
@@ -3227,7 +3264,7 @@ static int ops_copp_egress_fp_programmer (
      * return from this function.
      */
     if ((packet_class < 0) ||
-        (packet_class >= OPS_COPP_MAX_CLASSES)) {
+        (packet_class >= PLUGIN_COPP_MAX_CLASSES)) {
         VLOG_ERR("Not a valid packet class");
         return(OPS_COPP_FAILURE_CODE);
     }
@@ -3704,7 +3741,7 @@ static int ops_copp_program_fp_defaults ()
          * Iterate over all the FP rules for control packets and program
          * ingress and egress FP entries.
          */
-        for (fp_rule_iterator = 0; fp_rule_iterator < OPS_COPP_MAX_CLASSES;
+        for (fp_rule_iterator = 0; fp_rule_iterator < PLUGIN_COPP_MAX_CLASSES;
              ++fp_rule_iterator) {
 
             /*
@@ -3740,6 +3777,16 @@ static int ops_copp_program_fp_defaults ()
                 VLOG_ERR("Egress FP rule create failed");
                 return(OPS_COPP_FAILURE_CODE);
             }
+
+            /*
+             * Set the status in the fp rule structure as valid (true)
+             */
+            retval = ops_copp_packet_class_set_status(
+                       unit_iterator, fp_rule_iterator, true);
+            if (retval != OPS_COPP_SUCCESS_CODE) {
+                VLOG_ERR("Valid status set for  FP rule create failed");
+                return(OPS_COPP_FAILURE_CODE);
+            }
         }
     }
 
@@ -3771,7 +3818,7 @@ static int ops_copp_set_packet_class_config
      * return from this function.
      */
     if ((copp_config->ops_copp_packet_class < 0) ||
-        (copp_config->ops_copp_packet_class >= OPS_COPP_MAX_CLASSES)) {
+        (copp_config->ops_copp_packet_class >= PLUGIN_COPP_MAX_CLASSES)) {
         VLOG_ERR("Not a valid packet class");
         return(OPS_COPP_FAILURE_CODE);
     }
@@ -3878,7 +3925,7 @@ static int ops_copp_get_packet_class_stats
      * return from this function.
      */
     if ((copp_stats->ops_copp_packet_class < 0) ||
-        (copp_stats->ops_copp_packet_class >= OPS_COPP_MAX_CLASSES)) {
+        (copp_stats->ops_copp_packet_class >= PLUGIN_COPP_MAX_CLASSES)) {
         VLOG_ERR("Not a valid packet class");
         return(OPS_COPP_FAILURE_CODE);
     }
@@ -3997,6 +4044,133 @@ int get_copp_counts (uint32 num_packets_classes,
     }
 
     return(OPS_COPP_SUCCESS_CODE);
+}
+
+/* This function takes in the ops packet class as the input and converts it to
+ * the copp packet class enum
+ */
+static
+enum ops_copp_packet_class_code_t
+copp_packet_class_mapper(enum copp_protocol_class ops_class)
+{
+    switch(ops_class) {
+        case COPP_ACL_LOGGING:
+            return PLUGIN_COPP_ACL_LOGGING_PACKET;
+        case COPP_ARP_BROADCAST:
+            return PLUGIN_COPP_BROADCAST_ARP_PACKET;
+        case COPP_ARP_MY_UNICAST:
+            return PLUGIN_COPP_UNICAST_ARP_PACKET;
+        case COPP_BGP:
+            return PLUGIN_COPP_BGP_PACKET;
+        case COPP_DEFAULT_UNKNOWN:
+            return PLUGIN_COPP_UNCLASSIFIED_PACKET;
+        case COPP_DHCPv4:
+            return PLUGIN_COPP_DHCPV4_PACKET;
+        case COPP_DHCPv6:
+            return PLUGIN_COPP_DHCPV6_PACKET;
+        case COPP_ICMPv4_MULTIDEST:
+            return PLUGIN_COPP_ICMPV4_BMCAST_PACKET;
+        case COPP_ICMPv4_UNICAST:
+            return PLUGIN_COPP_ICMPV4_UCAST_PACKET;
+        case COPP_ICMPv6_MULTICAST:
+            return PLUGIN_COPP_ICMPV6_MCAST_PACKET;
+        case COPP_ICMPv6_UNICAST:
+            return PLUGIN_COPP_ICMPV6_UCAST_PACKET;
+        case COPP_LACP:
+            return PLUGIN_COPP_LACP_PACKET;
+        case COPP_LLDP:
+            return PLUGIN_COPP_LLDP_PACKET;
+        case COPP_OSPFv2_MULTICAST:
+            return PLUGIN_COPP_OSPFV2_MCAST_PACKET;
+        case COPP_OSPFv2_UNICAST:
+            return PLUGIN_COPP_OSPFV2_UCAST_PACKET;
+        case COPP_sFLOW_SAMPLES:
+            return PLUGIN_COPP_SFLOW_PACKET;
+        case COPP_STP_BPDU:
+            return PLUGIN_COPP_STP_PACKET;
+        case COPP_UNKNOWN_IP_UNICAST:
+            return PLUGIN_COPP_UNKNOWN_IP_UNICAST_PACKET;
+        default:
+            return PLUGIN_COPP_MAX_CLASSES;
+    }
+}
+
+/* This is the implementaion of the function interfacing with switchd,
+ * which is polled every 5000 ms by switchd. This function returns the
+ * statistics corresponding to a particular protocol.
+ */
+int copp_opennsl_stats_get(const unsigned int hw_asic_id,
+                   const enum copp_protocol_class class,
+                   struct copp_protocol_stats *const stats)
+{
+    int    retval;
+    enum   ops_copp_packet_class_code_t mapped_packet_class;
+    struct ops_copp_stats_t copp_stats_array;
+
+    /* Map the incoming enum to our copp class enum */
+    mapped_packet_class = copp_packet_class_mapper(class);
+    if (mapped_packet_class == PLUGIN_COPP_MAX_CLASSES) {
+        VLOG_ERR("CoPP packet class %d not supported.\n", mapped_packet_class);
+        return EOPNOTSUPP;
+    }
+
+    copp_stats_array.ops_copp_packet_class = mapped_packet_class;
+    copp_stats_array.ops_copp_hardware_unit_number = hw_asic_id;
+
+    /* After the above 2 fields are filled, pass it to the get_copp_counts.
+     * The number of copp classes passed is just one.
+     */
+    retval = get_copp_counts(1, &copp_stats_array);
+    if (retval != OPS_COPP_SUCCESS_CODE) {
+        VLOG_ERR("Error getting stats for hardware unit %u", hw_asic_id);
+        return EIO;
+    }
+
+    /* Fill in the 4 stats field in the stats pointer */
+    stats->packets_passed = copp_stats_array.ops_copp_packets_allowed;
+    stats->bytes_passed = copp_stats_array.ops_copp_bytes_allowed;
+    stats->packets_dropped = copp_stats_array.ops_copp_packets_dropped;
+    stats->bytes_dropped = copp_stats_array.ops_copp_bytes_dropped;
+
+    return 0;
+}
+
+/* This is the implementaion of the function interfacing with switchd,
+ * which is polled every 5000 ms by switchd. This function returns the
+ * hw_status info like rate,burst, local_priority corresponding to a particular
+ * protocol.
+ */
+int copp_opennsl_hw_status_get(const unsigned int hw_asic_id,
+                       const enum copp_protocol_class class,
+                       struct copp_hw_status *const hw_status)
+{
+    enum   ops_copp_packet_class_code_t mapped_packet_class;
+
+    /* Map the incoming enum to our copp class enum */
+    mapped_packet_class = copp_packet_class_mapper(class);
+    if (mapped_packet_class == PLUGIN_COPP_MAX_CLASSES) {
+        VLOG_ERR("CoPP packet class %d not supported.\n", mapped_packet_class);
+        return EOPNOTSUPP;
+    }
+
+    /* Check for error condition.
+     * if the packet_class struct has egress or ingress fp as NULL ptr,
+     * it means that, the configuration has not gone througgh fine.
+     */
+    if (ops_copp_packet_class_t[mapped_packet_class].ops_copp_egress_fp_entry[hw_asic_id]
+        == NULL) {
+        VLOG_ERR("Error getting hw status for hardware unit %u", hw_asic_id);
+        return EIO;
+    }
+
+    hw_status->rate =
+          ops_copp_packet_class_t[mapped_packet_class].ops_copp_egress_fp_rate;
+    hw_status->burst =
+          ops_copp_packet_class_t[mapped_packet_class].ops_copp_egress_fp_burst;
+    hw_status->local_priority =
+          ops_copp_packet_class_t[mapped_packet_class].ops_copp_ingress_fp_queue_number;
+
+    return 0;
 }
 
 /*
@@ -4135,10 +4309,10 @@ int ops_get_all_packet_stats ()
     int                         packet_class_stats_bytes_written;
     int                         maximum_bytes_available;
     int                         retval;
-    struct ops_copp_stats_t     copp_stats[OPS_COPP_MAX_CLASSES];
+    struct ops_copp_stats_t     copp_stats[PLUGIN_COPP_MAX_CLASSES];
 
     maximum_bytes_available = COPP_MAX_PACKET_STAT_BUFFER_SIZE
-                                            * OPS_COPP_MAX_CLASSES;
+                                            * PLUGIN_COPP_MAX_CLASSES;
 
     /*
      * Zero out the global buffer that will contain all the output for
@@ -4156,7 +4330,7 @@ int ops_get_all_packet_stats ()
         /*
          * Zero out copp_stats array
          */
-        memset(copp_stats, 0, OPS_COPP_MAX_CLASSES *
+        memset(copp_stats, 0, PLUGIN_COPP_MAX_CLASSES *
                                       sizeof(struct ops_copp_stats_t));
 
         /*
@@ -4172,7 +4346,7 @@ int ops_get_all_packet_stats ()
          * Populate the copp_stats array with the hardware unit and the
          * CoPP packet class rule to fetch the CoPP stats.
          */
-        for (fp_rule_iterator = 0; fp_rule_iterator < OPS_COPP_MAX_CLASSES;
+        for (fp_rule_iterator = 0; fp_rule_iterator < PLUGIN_COPP_MAX_CLASSES;
              ++fp_rule_iterator) {
             copp_stats[fp_rule_iterator].ops_copp_hardware_unit_number =
                                                                 unit_iterator;
@@ -4183,7 +4357,7 @@ int ops_get_all_packet_stats ()
         /*
          * Get CoPP stats for all CoPP control packet classes
          */
-        retval = get_copp_counts(OPS_COPP_MAX_CLASSES,
+        retval = get_copp_counts(PLUGIN_COPP_MAX_CLASSES,
                                  copp_stats);
         if (retval != OPS_COPP_SUCCESS_CODE) {
             VLOG_ERR("Error getting stats for hardware unit %u", unit_iterator);
@@ -4194,7 +4368,7 @@ int ops_get_all_packet_stats ()
          * Iterate over all the FP rules for control packets and printall
          * the configuration and statistics into the global buffer
          */
-        for (fp_rule_iterator = 0; fp_rule_iterator < OPS_COPP_MAX_CLASSES;
+        for (fp_rule_iterator = 0; fp_rule_iterator < PLUGIN_COPP_MAX_CLASSES;
              ++fp_rule_iterator) {
 
             /*
