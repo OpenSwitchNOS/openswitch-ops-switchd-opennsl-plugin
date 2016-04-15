@@ -44,7 +44,6 @@ VLOG_DEFINE_THIS_MODULE(ops_vport);
 
 /****** For terminal diag ******/
 bcmsdk_vxlan_logical_switch_t  lsw;
-bcmsdk_vxlan_multicast_t multi_group;
 /*******************************/
 
 /* To avoid compiler warning... */
@@ -52,6 +51,11 @@ OVS_UNUSED static void netdev_change_seq_changed(const struct netdev *);
 
 static  uint16_t tnl_udp_port = UDP_PORT_MIN;
 
+enum {
+    TUNNEL,
+    PORT_VNI,
+    PORT_VLAN
+};
 
 #define mac_format(mac) \
         "ETHR ADDR: %02x:%02x:%02x:%02x:%02x:%02x\n", \
@@ -63,8 +67,89 @@ static  uint16_t tnl_udp_port = UDP_PORT_MIN;
             return 1;\
         }
 
+typedef struct bcm_vport_t_{
+    int tunnel_id;      /* Tunnel's ID when successfully created */
+    int vxlan_port_id;  /* If bind successful, get id = 0x8000001 etc..*/
+    int egr_obj_id;     /* vxlan egress object */
+    int station_id;     /*   */
+}bcm_vport_t;
+
+typedef struct vport_node_ {
+    struct hmap_node node;     /* */
+    int vni;                   /* tunnel key of a logical network */
+    void * netdev;             /* unique identifier for a tunnel: */
+    bcm_vport_t vport;         /* Storing bcm-returned ID */
+}vport_node;
+
+/* Hash map for bcmsdk virtual vxlan port created when
+ * a tunnel is bound to a VNI
+ * Each tunnel-VNI pair creates a unique bcm vport with a unique
+ * id saved as vxlan_port_id
+ */
+struct hmap vport_hmap = HMAP_INITIALIZER(&vport_hmap);
+
 static void vxlan_tunnel_dump(bcmsdk_vxlan_tunnel_t *tunnel);
 static void opennsl_l2_addr_dump(opennsl_l2_addr_t *l2_addr);
+static void bcm_vport_dump(bcm_vport_t *vport);
+static void ops_vport_dump(bcmsdk_vxlan_port_t *vport);
+
+static uint32_t
+hash_vport(int vni, void* netdev)
+{
+    return hash_2words((uint32_t)vni, hash_pointer(netdev, 0));
+}
+
+/* vport_insert
+ * Caller has to validate dev */
+/* hash vni and tunnel pointer to index to the vport element
+ */
+static void
+vport_insert(struct netdev* dev, int vni, bcmsdk_vxlan_port_t  *vxlan_port)
+{
+    vport_node *vnode = xmalloc(sizeof *vnode);
+    if(vnode) {
+        uint32_t hash = hash_vport(vni, dev);
+        hmap_insert(&vport_hmap, &vnode->node, hash);
+        vnode->vni = vni;
+        vnode->netdev = dev;
+        vnode->vport.tunnel_id = vxlan_port->tunnel_id;
+        vnode->vport.vxlan_port_id = vxlan_port->vxlan_port_id;
+        vnode->vport.egr_obj_id = vxlan_port->egr_obj_id;
+        vnode->vport.station_id = vxlan_port->station_id;
+        VLOG_DBG("%s --------vni %d, tunnel_id 0x%x\n"
+                 "vxport 0x%x egress id 0x%x\n",
+                 __func__, vni, vnode->vport.tunnel_id,
+                 vnode->vport.vxlan_port_id, vnode->vport.egr_obj_id);
+    }
+}
+
+/* caller has to validate *dev */
+static vport_node *
+vport_lookup(struct netdev *dev, int vni)
+{
+    vport_node *node;
+    uint32_t hash = hash_vport(vni, dev);
+    HMAP_FOR_EACH_WITH_HASH(node, node, hash, &vport_hmap) {
+        if (node->vni == vni && node->netdev == dev) {
+            VLOG_DBG("%s FOUND vport: [tnl_id: 0x%x, vni %d]\n",
+                     __func__, node->vport.tunnel_id, vni);
+            return node;
+        }
+    }
+    return NULL;
+}
+
+static void
+vport_remove(struct netdev *dev, int vni)
+{
+    vport_node *node = vport_lookup(dev, vni);
+    if(node) {
+        hmap_remove(&vport_hmap, &node->node);
+        VLOG_DBG("%s successfully remove vport: [tnl_id: 0x%x, vni %d]\n",
+                 __func__, node->vport.tunnel_id, vni);
+        free(node);
+    }
+}
 
 static int
 get_src_udp(void)
@@ -74,27 +159,89 @@ get_src_udp(void)
         tnl_udp_port = UDP_PORT_MIN;
     return (int)next;
 }
-
+/* Caller checks for valid carrier */
 static inline bool
-is_ready_to_bind(const bcmsdk_vport_t  *vport, const carrier_t *carrier)
+is_ready_to_bind(const carrier_t *carrier)
 {
     return (VALID_PORT(carrier->port) &&
             !MAC_IS_ZERO(carrier->next_hop_mac));
 }
 
-static bool
-get_vport_id_from_name(char *port, int *vxport_id)
+OVS_UNUSED static bool
+is_tunnel(char *port)
 {
-    if(port && vxport_id) {
-        const char *type = netdev_get_type_from_name(port);
-        if(!strcmp(type, OVSREC_INTERFACE_TYPE_VXLAN)) {
-            return netdev_bcmsdk_vport_get_vport_id(port, vxport_id);
-        }
-        else {
-            return netdev_bcmsdk_get_vport_id(0, atoi(port), vxport_id);
-        }
+    const char *type = netdev_get_type_from_name(port);
+    if(type && (!strcmp(type, OVSREC_INTERFACE_TYPE_VXLAN))) {
+        return true;
     }
     return false;
+}
+/* Caller has to validate dev
+ * If a tunnel is not bound to a vni yet, bind it
+ */
+static int
+get_tnl_vport_id( struct netdev* dev, int vni, int *vport_id)
+{
+    vport_node * vnode;
+    vnode = vport_lookup(dev, vni);
+    if(vnode) {
+        *vport_id = vnode->vport.vxlan_port_id;
+        VLOG_DBG("%s Bound, Success getting tunnel vport id 0x%x",
+                             __func__, *vport_id);
+        return 0;
+    }
+    /*
+     * Come here when this VNI is not bind to this tunnel
+     * Take this as command to bind extra VNI to this
+     * tunnel for now.
+     * It's better to have separate command
+     * from PI to bind/unbind VNI to a tunnel
+     * TODO
+     */
+    if(!ops_vport_bind_net_port(dev, vni)) {
+        vnode = vport_lookup(dev, vni);
+        if(vnode) {
+            *vport_id = vnode->vport.vxlan_port_id;
+            VLOG_DBG("%s Newly Bound - Success getting tunnel vport id 0x%x",
+                     __func__, *vport_id);
+            return 0;
+        }
+    }
+    return 1;
+}
+/* Caller has to validate port, port_id */
+static int
+get_vport_id(char *port, int vni, int ptype, int *port_id)
+{
+    opennsl_gport_t gport;
+    struct netdev* dev;
+    int rc = 0;
+    VLOG_DBG("%s entered port %s vni %d ptype %d\n",
+             __func__, port, vni, ptype);
+    switch(ptype) {
+        case TUNNEL:
+            dev = netdev_bcmsdk_vport_tnl_from_name(port);
+            if(dev) {
+                return get_tnl_vport_id(dev, vni, port_id);
+            }
+        case PORT_VNI:
+            netdev_bcmsdk_get_vport_id(0, atoi(port), port_id);
+            VLOG_DBG("ptype == VNI vport_id 0x%x", *port_id);
+            break;
+        case PORT_VLAN:
+            rc = opennsl_port_gport_get(0, atoi(port), &gport);
+            if (rc) {
+                VLOG_ERR("%s, failed to get gport rc:%s port:%s\n",
+                          __func__, opennsl_errmsg(rc), port);
+                return rc;
+            }
+            *port_id = gport;
+            VLOG_DBG("ptype == VLAN port_id 0x%x", *port_id);
+            break;
+        default:
+            break;
+    }
+    return rc;
 }
 
 static inline int
@@ -113,14 +260,8 @@ ops_vport_lsw_create(int hw_unit, int vni)
 {
     int rc;
     bcmsdk_vxlan_opcode_t opcode = BCMSDK_VXLAN_OPCODE_CREATE;
-    if((rc = bcmsdk_vxlan_multicast_operation(hw_unit,
-        opcode, &multi_group)) != 0)
-        return rc;
-    lsw.unknown_multicast_group = multi_group.group_id;
-    lsw.unknown_unicast_group = multi_group.group_id;
-    lsw.broadcast_group = multi_group.group_id;
     lsw.vnid = vni;
-    VLOG_INFO("%s unit %d vni %d",__func__, hw_unit, vni);
+    VLOG_DBG("%s unit %d vni %d",__func__, hw_unit, vni);
     rc = bcmsdk_vxlan_logical_switch_operation(hw_unit, opcode, &lsw);
     if(rc) {
         VLOG_ERR("Fail creating logical switch\n");
@@ -134,7 +275,7 @@ ops_vport_lsw_create(int hw_unit, int vni)
  * Bind l2 MAC to the a vxlan port on the logical switch
  */
 int
-ops_vport_bind_mac(int hw_unit, char *port, int vni, uint8_t *mac_str)
+ops_vport_bind_mac(int hw_unit, char *port, int ptype, int vni, uint8_t *mac_str)
 {
     opennsl_mac_t host_mac;
     opennsl_l2_addr_t l2_addr;
@@ -168,9 +309,8 @@ ops_vport_bind_mac(int hw_unit, char *port, int vni, uint8_t *mac_str)
     opennsl_l2_addr_t_init(&l2_addr, host_mac, logical_sw_p.vpn_id);
     l2_addr.flags = OPENNSL_L2_STATIC;
     l2_addr.vid   = logical_sw_p.vpn_id;
-
-    if(!get_vport_id_from_name(port, &l2_addr.port)) {
-        VLOG_ERR("%s Invalid vxlan port", __func__);
+    if(get_vport_id(port, vni, ptype, &l2_addr.port)) {
+        VLOG_ERR("%s Invalid vxlan port 0x%x", __func__,l2_addr.port);
         return 1;
     }
     opennsl_l2_addr_dump(&l2_addr);
@@ -237,9 +377,9 @@ diag_vport_lsw_create(struct unixctl_conn *conn, int argc,
         VLOG_ERR("%s failed rc: %s", __func__, opennsl_errmsg(rc));
         ds_put_format(&ds, "fail bcmsdk_vxlan_logical_switch");
     } else {
-        ds_put_format(&ds, "Successful create lsw, multicast group %d,"
+        ds_put_format(&ds, "Successful create lsw,"
                            " vnid %d, vpnid 0x%x\n",
-                            multi_group.group_id, lsw.vnid,lsw.vpn_id);
+                            lsw.vnid,lsw.vpn_id);
     }
 
     unixctl_command_reply(conn, ds_cstr(&ds));
@@ -253,10 +393,14 @@ diag_vport_bind_mac(struct unixctl_conn *conn, int argc,
     int hw_unit = 0;
     char port[128];
     char mac[32];
+    int vni;
+    int ptype;
     snprintf(mac,32,argv[3]);
     snprintf(port,32,argv[1]);
-    int vni = atoi(argv[2]);
-    if(!ops_vport_bind_mac(hw_unit, port, vni, (uint8_t*)mac)) {
+    vni = atoi(argv[2]);
+    ptype = atoi(argv[4]);
+
+    if(!ops_vport_bind_mac(hw_unit, port, ptype, vni, (uint8_t*)mac)) {
        unixctl_command_reply(conn, "sucess bining mac");
     } else {
         VLOG_ERR("%s failed ", __func__);
@@ -292,7 +436,7 @@ ops_vport_init(int hw_unit)
 
     unixctl_command_register("lsw", "hw_unit vni", 2, 2,
                    diag_vport_lsw_create, NULL);
-    unixctl_command_register("bind/mac", "[port vni MAC]", 3, 3,
+    unixctl_command_register("bind/mac", "[port vni MAC port type]", 4, 4,
                    diag_vport_bind_mac, NULL);
     unixctl_command_register("unbind/mac", "[vni MAC]", 2, 2,
                    diag_vport_unbind_mac, NULL);
@@ -391,33 +535,37 @@ ops_vport_create_tunnel(struct netdev *netdev)
 }
 
 int
-ops_vport_bind_net_port(struct netdev *netdev)
+ops_vport_bind_net_port(struct netdev *netdev, int vni)
 {
     int unit, rc = 0;
     bcmsdk_vxlan_port_t  vxlan_port;
-    const bcmsdk_vport_t     *vport;
     const carrier_t *carrier;
-
+    vport_node * vnode;
     NULL_CHECK(netdev)
-    vxlan_port.vnid = get_vni(netdev);
+    vxlan_port.vnid = vni != -1? vni: get_vni(netdev);
     if(!VALID_TUNNEL_KEY(vxlan_port.vnid)) {
         VLOG_ERR("Not ready to bind: Invalid vni\n");
         return 1;
     }
-    vport = netdev_bcmsdk_vport_get_tunnel_vport(netdev);
+
+    vnode = vport_lookup(netdev, vxlan_port.vnid);
+    if(vnode) {
+        VLOG_ERR("Already bound\n");
+        return 1;
+    }
     carrier = netdev_bcmsdk_vport_get_carrier(netdev);
 
-    if (vport && carrier) {
-        if(!is_ready_to_bind(vport, carrier)) {
-            VLOG_ERR("Not ready to bind vxlan port, vxlan cfg invalid\n");
+    if (carrier) {
+        if(!is_ready_to_bind(carrier)) {
+            VLOG_ERR("Not ready to bind, carrier invalid\n");
             return 1;
         }
         vxlan_port.port = carrier->port;
         vxlan_port.port_type = BCMSDK_VXLAN_PORT_TYPE_NETWORK;
-        vxlan_port.tunnel_id = vport->tunnel_id;
+        netdev_bcmsdk_vport_get_tunnel_id(netdev, &vxlan_port.tunnel_id);
         vxlan_port.vrf  = carrier->vrf;
-        vxlan_port.vlan = vport->vlan;
-        vxlan_port.l3_intf_id = vport->l3_intf_id;
+        vxlan_port.vlan = carrier->vlan;
+        vxlan_port.l3_intf_id = carrier->l3_intf_id;
         memcpy(vxlan_port.next_hop_mac, carrier->next_hop_mac, ETH_ALEN);
         memcpy(vxlan_port.local_mac, carrier->local_mac, ETH_ALEN);
 
@@ -432,29 +580,33 @@ ops_vport_bind_net_port(struct netdev *netdev)
         VLOG_INFO("\n--- Successfully binding net port %d"
                   " to vpn with vxlan port id 0x%x ---\n",
                   vxlan_port.port, vxlan_port.vxlan_port_id);
-        netdev_bcmsdk_vport_set_tunnel_vport(netdev, &vxlan_port);
+        netdev_bcmsdk_vport_set_tunnel_state(netdev, TNL_BOUND);
+        vport_insert(netdev, vxlan_port.vnid, &vxlan_port);
         ops_vport_dump(&vxlan_port);
     }
     return rc;
 }
 
 int
-ops_vport_unbind_net_port(struct netdev *netdev)
+ops_vport_unbind_net_port(struct netdev *netdev, int vni)
 {
     int unit, rc = 0;
     bcmsdk_vxlan_port_t  vxlan_port;
-    const bcmsdk_vport_t     *vport;
+    vport_node * vnode;
     const carrier_t *carrier;
 
     NULL_CHECK(netdev)
-    vxlan_port.vnid = get_vni(netdev);
+    vxlan_port.vnid = vni != -1? vni: get_vni(netdev);
     if(!VALID_TUNNEL_KEY(vxlan_port.vnid)) {
         VLOG_ERR("Unable to unbind: Invalid vni\n");
         return 1;
     }
-    vport = netdev_bcmsdk_vport_get_tunnel_vport(netdev);
+
+    vnode = vport_lookup(netdev, vxlan_port.vnid);
     carrier = netdev_bcmsdk_vport_get_carrier(netdev);
-    if(vport && VALID_EGRESS_ID(vport->egr_obj_id) && carrier) {
+
+    if(vnode && carrier) {
+        bcm_vport_t *vport = &vnode->vport;
         vxlan_port.egr_obj_id = vport->egr_obj_id;
         vxlan_port.port_type = BCMSDK_VXLAN_PORT_TYPE_NETWORK;
         vxlan_port.station_id = vport->station_id;
@@ -471,8 +623,32 @@ ops_vport_unbind_net_port(struct netdev *netdev)
             VLOG_ERR("failed to unbind network port:%s\n", opennsl_errmsg(rc));
             return rc;
         }
-        netdev_bcmsdk_vport_reset_tunnel_vport(netdev);
+        netdev_bcmsdk_vport_set_tunnel_state(netdev, TNL_CREATED);
+        vport_remove(netdev, vxlan_port.vnid);
         VLOG_INFO("\n--- Successfully unbinding network port ---\n");
+    }
+    return rc;
+}
+
+/*
+ * Delete all the bcm vxlan ports using this tunnel
+ */
+int
+ops_vport_unbind_all(struct netdev *netdev)
+{
+    vport_node * vnode, *next;
+    int rc = 0;
+    VLOG_DBG("%s entered\n", __func__);
+    HMAP_FOR_EACH_SAFE(vnode, next, node, &vport_hmap) {
+        if(vnode->netdev == netdev) {
+            VLOG_DBG("tunnel id 0x%x - vni %d", vnode->vport.tunnel_id, vnode->vni);
+            rc = ops_vport_unbind_net_port(netdev, vnode->vni);
+            if(rc) {
+               VLOG_ERR("%s failed to unbind tunnel id 0x%x from vni %d",
+                         __func__, vnode->vport.tunnel_id, vnode->vni);
+               return rc;
+            }
+        }
     }
     return rc;
 }
@@ -504,7 +680,7 @@ ops_vport_bind_access_port(int hw_unit, opennsl_pbmp_t pbm, int vni, int vlan)
         }
         netdev_bcmsdk_set_vport_id(hw_unit, port.port, port.vxlan_port_id);
     }
-    VLOG_INFO("\n--- Successully bind access port, vxlan port id 0x%x ---\n",
+    VLOG_DBG("\n--- Successully bind access port, vxlan port id 0x%x ---\n",
               port.vxlan_port_id);
     return 0;
 }
@@ -626,10 +802,10 @@ ops_vport_update_tunnel(struct netdev *netdev, int flags)
             return 0;
         }
     } else {
-        if(!ops_vport_unbind_net_port(netdev)) {
+        if(!ops_vport_unbind_all(netdev)) {
             if(!ops_vport_delete_tunnel(netdev)) {
                 if(!ops_vport_create_tunnel(netdev)) {
-                    return ops_vport_bind_net_port(netdev);
+                    return ops_vport_bind_net_port(netdev, -1);
                 }
             }
         }
@@ -660,7 +836,7 @@ vxlan_vport_print(struct ds *ds, bcmsdk_vxlan_port_t *vport)
     ds_put_format(ds, mac_format(vport->next_hop_mac));
 }
 
-void
+static void
 ops_vport_dump(bcmsdk_vxlan_port_t *vport)
 {
     struct ds ds = DS_EMPTY_INITIALIZER;
@@ -695,6 +871,33 @@ vxlan_tunnel_dump(bcmsdk_vxlan_tunnel_t *tunnel)
     ds_destroy(&ds);
 }
 
+static void
+bcm_vport_print(struct ds *ds, bcm_vport_t *vport)
+{
+    if (!vport || !ds) {
+        ds_put_format(ds, "%s ERR: vport is NULL", __func__);
+        return;
+    }
+    ds_put_format(ds, "\nVXLAN PORT:\n");
+    ds_put_format(ds, "vxlan_port_id = 0x%x\n"
+                      "egr_obj_id    = 0x%x\n"
+                      "station_id    = %d\n"
+                      "tunnel_id     = 0x%x\n",
+                      vport->vxlan_port_id,
+                      vport->egr_obj_id,
+                      vport->station_id,
+                      vport->tunnel_id);
+}
+
+OVS_UNUSED static void
+bcm_vport_dump(bcm_vport_t *vport)
+{
+    struct ds ds = DS_EMPTY_INITIALIZER;
+    bcm_vport_print(&ds, vport);
+    VLOG_DBG("%s",ds_cstr(&ds));
+    ds_destroy(&ds);
+}
+
 OVS_UNUSED static void
 print_bitmap(opennsl_pbmp_t *temp_pbm)
 {
@@ -719,4 +922,20 @@ opennsl_l2_addr_dump(opennsl_l2_addr_t *l2_addr)
     opennsl_l2_addr_print(&ds, l2_addr);
     VLOG_DBG("%s",ds_cstr(&ds));
     ds_destroy(&ds);
+}
+
+void
+hmap_vnode_print(struct ds *ds)
+{
+    vport_node* vnode, *next;
+    int count = 0;
+    ds_put_format(ds, "VXLANP_HMAP:\n");
+    HMAP_FOR_EACH_SAFE(vnode, next, node, &vport_hmap) {
+        count++;
+        ds_put_format(ds,"tunnel_id 0x%x    vni %d\n"
+                 "vxlan id  0x%x  egress id 0x%x\n",
+                 vnode->vport.tunnel_id, vnode->vni,
+                 vnode->vport.vxlan_port_id, vnode->vport.egr_obj_id);
+    }
+    ds_put_format(ds, "Total %d vxlan ports:\n",count);
 }
