@@ -46,11 +46,11 @@ int   ops_vport_delete_tunnel(struct netdev *netdev);
 int   ops_vport_bind_access_port(int hw_unit, opennsl_pbmp_t pbm,
                                  int vni, int vlan);
 int   ops_vport_unbind_access_port(int hw_unit, opennsl_pbmp_t pbm, int vni);
-int   ops_vport_bind_net_port(struct netdev *netdev);
-int   ops_vport_unbind_net_port(struct netdev *netdev);
-int   ops_vport_bind_mac(int hw_unit, char *vport, int vni, uint8_t *mac_str);
+int   ops_vport_bind_net_port(struct netdev *netdev, int vni);
+int   ops_vport_unbind_net_port(struct netdev *netdev, int vni);
+int   ops_vport_bind_mac(int hw_unit, char *vport, int ptype, int vni,
+                         uint8_t *mac_str);
 int   ops_vport_unbind_mac(int hw_unit, int vni, uint8_t *mac_str);
-void  ops_vport_dump(bcmsdk_vxlan_port_t *vport);
-
+int   ops_vport_unbind_all(struct netdev *netdev);
 
 #endif /* __OPS_VPORT_H__ */

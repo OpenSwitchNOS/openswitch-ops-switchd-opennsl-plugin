@@ -1876,7 +1876,7 @@ vport_update_host(struct ofbundle *bundle, int event, bool is_ipv6_addr,
 static int
 vport_delete( struct ofbundle *bundle, struct netdev *netdev)
 {
-    ops_vport_unbind_net_port(netdev);
+    ops_vport_unbind_all(netdev);
     return ops_vport_delete_tunnel(netdev);
 }
 
@@ -1884,7 +1884,7 @@ static int
 vport_create(struct ofbundle *bundle, struct netdev *netdev)
 {
     if(!ops_vport_create_tunnel(netdev)) {
-        return ops_vport_bind_net_port(netdev);
+        return ops_vport_bind_net_port(netdev, -1);
     }
     return 1;
 }
