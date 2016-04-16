@@ -34,6 +34,7 @@
 #include "ops-vlan.h"
 #include "ops-debug.h"
 #include "ops-stg.h"
+#include "ops-qos.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
 
@@ -76,6 +77,13 @@ ops_bcm_appl_init(void)
 
     ops_debug_init();
 
+    /* Initialize QoS global data structures */
+    ops_qos_global_init();
+    if (rc) {
+        VLOG_ERR("QoS global subsytem init failed, rc %d", rc);
+        return 1;
+    }
+
     for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
 
         rc = ops_port_init(unit);
@@ -111,6 +119,14 @@ ops_bcm_appl_init(void)
         rc = ops_stg_init(unit);
         if (rc) {
             VLOG_ERR("STG subsystem init failed");
+            return 1;
+        }
+
+        /* Initialize QoS per hw unit data structures */
+        rc = ops_qos_hw_unit_init(unit);
+        if (rc) {
+            VLOG_ERR("QoS hw unit %d init failed, rc %d",
+                      unit, rc);
             return 1;
         }
     }
