@@ -2278,9 +2278,15 @@ static int
 ofproto_class_mirror_process_function (struct ofproto *ofproto_,
     void *aux, const struct ofproto_mirror_settings *s)
 {
-    struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
-    struct ofbundle **srcs, **dsts;
-    int error;
+    /* To allow bundles to be in any instance of a bridge/VRF,
+       both the ofproto pointer and aux values are given */
+    struct ofproto_mirror_bundle {
+        struct ofproto *ofproto;
+        void *aux;
+    } *msrcs, *mdsts, *mout;
+    struct bcmsdk_provider_node *ofproto;
+    struct ofbundle **srcs, **dsts, *out;
+    int error = 0;
     size_t i;
 
     DEBUG_MIRROR("ofproto_class_mirror_process_function called");
@@ -2297,23 +2303,49 @@ ofproto_class_mirror_process_function (struct ofproto *ofproto_,
         return 0;
     }
 
+    /* out_bundle is a pointer to a buffer containing a *ofproto,*aux tuple */
+    mout = (struct ofproto_mirror_bundle *)(s->out_bundle);
+    out = bundle_lookup(bcmsdk_provider_node_cast(mout->ofproto), mout->aux);
+    if (NULL == out) {
+        DEBUG_MIRROR("Mirror output port not found");
+        return EXTERNAL_ERROR;
+    }
+
     DEBUG_MIRROR("    n_srcs %d, n_dsts %d, out_vlan %u",
             s->n_srcs, s->n_dsts, s->out_vlan);
 
     srcs = xmalloc(s->n_srcs * sizeof *srcs);
     dsts = xmalloc(s->n_dsts * sizeof *dsts);
 
-    for (i = 0; i < s->n_srcs; i++) {
-        srcs[i] = bundle_lookup(ofproto, s->srcs[i]);
+    /* srcs is a pointer to an array of N *ofproto,*aux tuples */
+    msrcs = (struct ofproto_mirror_bundle *)(s->srcs);
+    for (i = 0; (!error && (i < s->n_srcs)); i++) {
+        ofproto = bcmsdk_provider_node_cast(msrcs[i].ofproto);
+        srcs[i] = bundle_lookup(ofproto, msrcs[i].aux);
+        if (NULL == srcs[i]) {
+            DEBUG_MIRROR("Mirror RX port %d of %d not found", i+1, s->n_srcs);
+            error = EXTERNAL_ERROR;
+            break;
+        }
     }
 
-    for (i = 0; i < s->n_dsts; i++) {
-        dsts[i] = bundle_lookup(ofproto, s->dsts[i]);
+    /* dsts is a pointer to an array of N *ofproto,*aux tuples */
+    mdsts = (struct ofproto_mirror_bundle *)(s->dsts);
+    for (i = 0; (!error && (i < s->n_dsts)); i++) {
+        ofproto = bcmsdk_provider_node_cast(mdsts[i].ofproto);
+        dsts[i] = bundle_lookup(ofproto, mdsts[i].aux);
+        if (NULL == dsts[i]) {
+            DEBUG_MIRROR("Mirror TX port %d of %d not found", i+1, s->n_dsts);
+            error = EXTERNAL_ERROR;
+            break;
+        }
     }
 
-    error = mirror_object_setup(ofproto->mbridge, aux, s->name,
-                srcs, s->n_srcs, dsts, s->n_dsts, s->src_vlans,
-                bundle_lookup(ofproto, s->out_bundle), s->out_vlan);
+    if (!error) {
+        error = mirror_object_setup(ofproto->mbridge, aux, s->name,
+                    srcs, s->n_srcs, dsts, s->n_dsts, s->src_vlans,
+                    out, s->out_vlan);
+    }
 
     free(srcs);
     free(dsts);
