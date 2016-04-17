@@ -27,6 +27,8 @@
 #include "asic-plugin.h"
 #include "ops-stg.h"
 #include "eventlog.h"
+#include "ops-copp.h"
+#include "copp-asic-provider.h"
 
 #define init libovs_bcm_plugin_LTX_init
 #define run libovs_bcm_plugin_LTX_run
@@ -47,6 +49,15 @@ struct asic_plugin_interface opennsl_interface ={
     .set_stg_port_state = &set_stg_port_state,
     .get_stg_port_state = &get_stg_port_state,
     .get_stg_default = &get_stg_default,
+};
+
+struct copp_asic_plugin_interface copp_opennsl_interface ={
+    /*
+     * The function pointers are set to the interfacing functions
+     * implemented by copp in the opennsl-plugin
+     */
+    .copp_stats_get = &copp_opennsl_stats_get,
+    .copp_hw_status_get = &copp_opennsl_hw_status_get,
 };
 
 /* To avoid compiler warning... */
@@ -71,6 +82,17 @@ init(void) {
     VLOG_INFO("The %s asic plugin interface was registered", ASIC_PLUGIN_INTERFACE_NAME);
 
     register_qos_extension();
+
+    struct plugin_extension_interface copp_opennsl_extension;
+    copp_opennsl_extension.plugin_name = COPP_ASIC_PLUGIN_INTERFACE_NAME;
+    copp_opennsl_extension.major = COPP_ASIC_PLUGIN_INTERFACE_MAJOR;
+    copp_opennsl_extension.minor = COPP_ASIC_PLUGIN_INTERFACE_MINOR;
+    copp_opennsl_extension.plugin_interface = (void *)&copp_opennsl_interface;
+
+    register_plugin_extension(&copp_opennsl_extension);
+    VLOG_INFO("The %s asic plugin interface was registered",
+                                              COPP_ASIC_PLUGIN_INTERFACE_NAME);
+
     ovs_bcm_init();
 }
 
