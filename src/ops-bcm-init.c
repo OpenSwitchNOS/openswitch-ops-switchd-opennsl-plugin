@@ -35,6 +35,7 @@
 #include "ops-vlan.h"
 #include "ops-classifier.h"
 #include "ops-debug.h"
+#include "ops-copp.h"
 #include "ops-stg.h"
 #include "ops-sflow.h"
 #include "netdev-bcmsdk.h"
@@ -182,6 +183,12 @@ ops_bcm_appl_init(void)
         rc = ops_sflow_init(unit);
         if (rc) {
             VLOG_ERR("sflow init failed");
+            return 1;
+        }
+
+        rc = ops_copp_init();
+        if (rc) {
+            VLOG_ERR("COPP subsystem init failed");
             return 1;
         }
 

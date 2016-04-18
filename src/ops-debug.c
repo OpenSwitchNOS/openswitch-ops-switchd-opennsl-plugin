@@ -40,6 +40,7 @@
 #include "ops-vlan.h"
 #include "ops-debug.h"
 #include "ops-routing.h"
+#include "ops-copp.h"
 #include "ops-knet.h"
 #include "ofproto-bcm-provider.h"
 #include "ops-port.h"
@@ -47,11 +48,22 @@
 
 VLOG_DEFINE_THIS_MODULE(ops_debug);
 
+#define MAX_PACKET_RES_STRING_LEN 50
 
 uint32 slog_level = 0x0;
 
 // OPS_TODO: for BPDU TX/RX debugging.
 int pkt_debug = 0;
+
+/*
+ * Extern declaration for dumping copp packet stats
+ */
+extern char ops_copp_all_packet_stat_buffer[];
+
+/*
+ * Extern declaration for dumping the copp CPU queue names
+ */
+extern char* ops_cpu_queue_name[];
 
 ops_debug_t ops_debug_list[] = {
 
@@ -64,9 +76,9 @@ ops_debug_t ops_debug_list[] = {
 };
 
 // Broadcom shell debug command.
-char cmd_hp_usage[] =
+char cmd_ops_usage[] =
 "Usage:\n\t"
-"ovs-appctl plugin/debug <cmds> - Run HP OpenSwitch BCM Plugin specific debug commands.\n"
+"ovs-appctl plugin/debug <cmds> - Run OpenSwitch BCM Plugin specific debug commands.\n"
 "\n"
 "   debug [[+/-]<option> ...] [all/none] - enable/disable debugging.\n"
 "   vlan <vid> - displays OpenSwitch VLAN info.\n"
@@ -79,8 +91,80 @@ char cmd_hp_usage[] =
 "   l3egress [<entry>] - display an egress object info.\n"
 "   l3ecmp [<entry>] - display an ecmp egress object info.\n"
 "   lag [<lagid>] - displays OpenSwitch LAG info.\n"
+"   stg [hw] <stgid> - displays Spanning Tree Group Info. \n"
+"   fp [<copp-ingress-group> | <copp-egress-group> | <ospf-group>]- displays programmed fp rules.\n"
+"   copp-stats - displays all the CoPP configuration and statistics.\n"
+"   copp-config <packet class name> <CPU queue class> <Rate> <Burst> - Modifies the CoPP rule for a control packet class \n"
+"   cpu-queue-stats - displays the per cpu queue statistics.\n"
 "   help - displays this help text.\n"
 ;
+
+/*the action list that needs to be defined for checking if defined per entry*/
+enum_to_str_t fp_action_list[] = {
+    {opennslFieldActionCopyToCpu, "Copy To CPU"},
+    {opennslFieldActionDrop, "DROP"},
+    {opennslFieldActionCosQCpuNew, "CosQ CPU New"},
+    {opennslFieldActionRpDrop, "Red Packets Drop"},
+};
+
+#define STAT_TYPE_STRINGS \
+{ \
+    "Bytes", \
+    "Packets", \
+    "Green Bytes", \
+    "Green Packets", \
+    "Red Bytes", \
+    "Red Packets", \
+    "Dropped Bytes", \
+    "Dropped Packets" \
+}
+
+static opennsl_field_stat_t stat_arr[MAX_STAT_TYPES] = {
+    opennslFieldStatBytes,
+    opennslFieldStatPackets,
+    opennslFieldStatGreenBytes,
+    opennslFieldStatGreenPackets,
+    opennslFieldStatRedBytes,
+    opennslFieldStatRedPackets,
+    opennslFieldStatDroppedBytes,
+    opennslFieldStatDroppedPackets,
+};
+
+void PacketRes_toString(int packetRes, char *packet_res_string )
+{
+    switch(packetRes)
+    {
+        case OPENNSL_FIELD_PKT_RES_L3MCUNKNOWN:
+            snprintf(packet_res_string, MAX_PACKET_RES_STRING_LEN,
+                     "Unknown L3 multicast");
+            break;
+        case OPENNSL_FIELD_PKT_RES_L3MCKNOWN:
+            snprintf(packet_res_string, MAX_PACKET_RES_STRING_LEN,
+                     "Known L3 multicast");
+            break;
+        case OPENNSL_FIELD_PKT_RES_L3UCKNOWN:
+            snprintf(packet_res_string, MAX_PACKET_RES_STRING_LEN,
+                     "Known L3 unicast");
+            break;
+       case OPENNSL_FIELD_PKT_RES_L3UCUNKNOWN:
+            snprintf(packet_res_string, MAX_PACKET_RES_STRING_LEN,
+                     "UnKnown L3 unicast");
+            break;
+       case OPENNSL_FIELD_PKT_RES_L2BC:
+            snprintf(packet_res_string, MAX_PACKET_RES_STRING_LEN,
+                     "Broadcast ARP");
+            break;
+       case OPENNSL_FIELD_PKT_RES_L2UC:
+            snprintf(packet_res_string, MAX_PACKET_RES_STRING_LEN,
+                     "Unicast ARP");
+            break;
+        default:
+            snprintf(packet_res_string, MAX_PACKET_RES_STRING_LEN,
+                     "Unknown");
+            break;
+    }
+
+}
 
 char *
 bcmsdk_datapath_version(void)
@@ -204,6 +288,560 @@ handle_ops_debug(struct ds *ds, int arg_idx, int argc, const char *argv[])
 } // handle_ops_debug
 
 static void
+fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
+{
+    int entry_size  = 0;
+    int entry_index = 0;
+    int entry_count = 0;
+    int ret         = 0;
+    enum_to_str_t *fp_action_iter = NULL;
+    opennsl_field_qset_t  qset;
+    opennsl_field_entry_t *entry_array = NULL;
+    uint64 data, mask, data_modid, mask_modid;
+    int stat_id, stat_index, action_index, fp_action_list_size;
+    uint64 stat_value;
+    uint32 p0, p1;
+    static char *stat_type_str[] = STAT_TYPE_STRINGS;
+    opennsl_ip6_t ip6_dest, ip6_mask;
+
+    ds_put_format(ds, "Group ID = %d\n", group);
+    /* First get th entry count for this group */
+    ret = opennsl_field_entry_multi_get(unit, group, 0, NULL, &entry_count);
+    if (entry_count <= 0 || OPENNSL_FAILURE(ret)) {
+        VLOG_ERR(" Error fetching the number of entries");
+        goto done;
+    }
+
+    /* Allocate memory for all entries */
+    entry_array = (opennsl_field_entry_t *) xzalloc(entry_count *
+                                            sizeof(opennsl_field_entry_t));
+    /* fetches the entries per group */
+    ret = opennsl_field_entry_multi_get(unit, group, entry_count, entry_array,
+                                        &entry_size);
+    if (OPENNSL_FAILURE(ret)) {
+        VLOG_ERR(" Error fetching the entries");
+        goto err;
+    }
+
+    OPENNSL_FIELD_QSET_INIT(qset);
+    ret = opennsl_field_group_get(unit, group, &qset);
+    if (OPENNSL_FAILURE(ret)) {
+        VLOG_ERR(" Error fetching the qualifier set");
+        goto err;
+    }
+
+    ds_put_format(ds, "=====\n");
+    for (entry_index = 0; entry_index < entry_count; ++entry_index)
+    {
+        stat_id = 0, stat_index =0;
+        stat_value = 0;
+        data = 0;
+        mask = 0;
+        data_modid = 0;
+        mask_modid = 0;
+        p0 = 0;
+        p1 = 0;
+        action_index = 0;
+        fp_action_list_size = (sizeof(fp_action_list)/sizeof(enum_to_str_t));
+
+        ds_put_format(ds, "entry ID = %d in group = %d\n",
+                           entry_array[entry_index], group);
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyStageIngress)) {
+            ds_put_format(ds, "\tQualifier Stage is Ingress\n");
+        } else if (OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyStageEgress)) {
+            ds_put_format(ds, "\tQualifier Stage is Egress\n");
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyInPort)) {
+            ret = opennsl_field_qualify_InPort_get(unit,
+                  entry_array[entry_index],(int *) &data,(int *) &mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is Inport - ");
+                ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
+                                  (int)mask);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyOutPort)) {
+            ret = opennsl_field_qualify_OutPort_get(unit,
+                  entry_array[entry_index],(int *) &data,(int *) &mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is Outport - ");
+                ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
+                                  (int)mask);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyL4DstPort)) {
+            ret = opennsl_field_qualify_L4DstPort_get(unit,
+                  entry_array[entry_index],(int *) &data,(int *) &mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is L4DstPort - ");
+                ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
+                                  (int)mask);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyEtherType)) {
+            ret = opennsl_field_qualify_EtherType_get(unit,
+                  entry_array[entry_index],(uint16 *) &data,(uint16 *) &mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is Ethertype - ");
+                ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
+                                  (int)mask);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyDstPort)) {
+            ret = opennsl_field_qualify_DstPort_get(unit,
+                  entry_array[entry_index], (int *) &data_modid,
+                  (int *) &mask_modid, (int *) &data, (int *) &mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is DstPort - ");
+                ds_put_format(ds, "0x%02x mask - 0x%02x data_modid - 0x%02x \
+                                    mask_modid - 0x%02x \n",
+                                   (int)data, (int)mask,
+                                   (int) data_modid, (int) mask_modid);
+            }
+            data = 0;
+            mask = 0;
+            data_modid = 0;
+            mask_modid = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyDstIpLocal)) {
+            ret = opennsl_field_qualify_DstIpLocal_get(unit,
+                          entry_array[entry_index],(uint8 *)&data,
+                          (uint8 *)&mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is DstIpLocal - ");
+                ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
+                                  (int)mask);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyDstIp)) {
+            char ip_str[IPV4_BUFFER_LEN];
+            char mask_str[IPV4_BUFFER_LEN];
+            ret = opennsl_field_qualify_DstIp_get(unit,
+                          entry_array[entry_index],(opennsl_ip_t *)&data,
+                          (opennsl_ip_t *)&mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is DstIp - ");
+                sprintf(ip_str, "%d.%d.%d.%d",
+                 ((int) data >> 24) & 0xff, ((int) data >> 16) & 0xff,
+                 ((int) data >> 8) & 0xff,(int) data & 0xff);
+                sprintf(mask_str, "%d.%d.%d.%d",
+                 ((int) mask >> 24) & 0xff, ((int) mask >> 16) & 0xff,
+                 ((int) mask >> 8) & 0xff,(int) mask & 0xff);
+                ds_put_format(ds,"data %-16s mask %-16s\n", ip_str, mask_str);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyL3Ingress)) {
+            ret = opennsl_field_qualify_L3Ingress_get(unit,
+                          entry_array[entry_index],(uint32 *)&data,
+                          (uint32 *)&mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is L3Ingress - ");
+                ds_put_format(ds, "0x%02x mask 0x%02x\n", (uint32) data,
+                                  (uint32)  mask);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyDstIp6)) {
+
+            char ip6_dest_str[INET6_ADDRSTRLEN];
+            char ip6_mask_str[INET6_ADDRSTRLEN];
+
+            memset(ip6_dest, 0, sizeof(opennsl_ip6_t));
+            memset(ip6_mask, 0, sizeof(opennsl_ip6_t));
+            memset(ip6_dest_str, 0, sizeof(ip6_dest_str));
+            memset(ip6_mask_str, 0, sizeof(ip6_mask_str));
+
+            ret = opennsl_field_qualify_DstIp6_get(unit,
+                          entry_array[entry_index], &ip6_dest,
+                          &ip6_mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                inet_ntop(AF_INET6, &ip6_dest, ip6_dest_str, INET6_ADDRSTRLEN);
+                inet_ntop(AF_INET6, &ip6_mask, ip6_mask_str, INET6_ADDRSTRLEN);
+                ds_put_format(ds, "\t    Qualifier is DstIp6 - ");
+                ds_put_format(ds, "data %s mask %s\n", ip6_dest_str,
+                              ip6_mask_str);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyIpType)) {
+            opennsl_field_IpType_t IpType = 0;
+            ret = opennsl_field_qualify_IpType_get(unit,
+                          entry_array[entry_index], &IpType);
+            if (!OPENNSL_FAILURE(ret)) {
+                if (IpType == opennslFieldIpTypeIpv6) {
+                         ds_put_format(ds, "\t    Qualifier is IpType - "\
+                                           "IPv6 packet\n");
+                } else if(IpType == opennslFieldIpTypeIpv4Any) {
+                         ds_put_format(ds, "\t    Qualifier is IpType - "\
+                                           "Any IPv4 packet\n");
+                } else if(IpType == opennslFieldIpTypeIpv4WithOpts) {
+                         ds_put_format(ds, "\t    Qualifier is IpType - "\
+                                           "IPv4 options\n");
+                } else if(IpType == opennslFieldIpTypeIpv6OneExtHdr) {
+                         ds_put_format(ds, "\t    Qualifier is IpType - "\
+                                           "IPv6 options\n");
+                }
+            }
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyPacketRes)) {
+            char packet_res_str[MAX_PACKET_RES_STRING_LEN];
+            ret = opennsl_field_qualify_PacketRes_get(unit,
+                          entry_array[entry_index],(uint32 *)&data,
+                          (uint32 *)&mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is PacketRes - ");
+                PacketRes_toString(data,packet_res_str);
+                ds_put_format(ds, "%s mask 0x%02x\n",
+                                packet_res_str, (uint32)  mask);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if (OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyDstMac)) {
+            char mac_str[SAL_MACADDR_STR_LEN];
+            char mask_str[SAL_MACADDR_STR_LEN];
+            ret = opennsl_field_qualify_DstMac_get(unit,
+                  entry_array[entry_index], (opennsl_mac_t *) &data,
+                  (opennsl_mac_t *) &mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                snprintf(mac_str, SAL_MACADDR_STR_LEN, "%s",
+                          ether_ntoa((struct ether_addr*)&data));
+                snprintf(mask_str, SAL_MACADDR_STR_LEN, "%s",
+                          ether_ntoa((struct ether_addr*)&mask));
+                ds_put_format(ds, "\t    Qualifier is DstMac - ");
+                ds_put_format(ds, "%-18s Mask %-18s\n",
+                                   mac_str, mask_str);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if (OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyIpProtocol)) {
+            ret = opennsl_field_qualify_IpProtocol_get(unit,
+                  entry_array[entry_index], (uint8 *)&data, (uint8 *)&mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is IpProtocol - ");
+                ds_put_format(ds, "0x%02x mask 0x%02x \n", (uint8) data,
+                                  (uint8)  mask);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if (OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyCpuQueue)) {
+            ret = opennsl_field_qualify_CpuQueue_get(unit,
+                  entry_array[entry_index], (uint8 *)&data, (uint8 *)&mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is CPUQueue - ");
+                ds_put_format(ds, "0x%02x mask 0x%02x \n", (uint8) data,
+                                  (uint8)  mask);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        /*Checking for the actions available in the entry*/
+        for(action_index = 0;action_index < fp_action_list_size;action_index++){
+            fp_action_iter = &fp_action_list[action_index];
+            ret = opennsl_field_action_get(0,entry_array[entry_index],
+                            fp_action_iter->action_type, &p0, &p1);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\tAction is %s\n",fp_action_iter->api_str);
+                if (fp_action_iter->action_type ==
+                                               opennslFieldActionCosQCpuNew) {
+                    ds_put_format(ds, "\t    CPUQueueNumber %u mask %u\n",
+                                  p0,p1);
+                } else if (fp_action_iter->action_type ==
+                                        opennslFieldActionRpDrop) {
+                    ds_put_format(ds, "\t   Value %u mask %u\n",
+                                  p0,p1);
+                }
+            }
+        }
+        /* retrieving the stats for the entry */
+        ret = opennsl_field_entry_stat_get(0, entry_array[entry_index],
+                                           &stat_id);
+        ds_put_format(ds, "\tStatistics: ");
+        if(stat_id > 0) {
+            ds_put_format(ds, "\n\t    Stat id = %d for entry %d\n", stat_id,
+                          entry_array[entry_index]);
+            for(stat_index=0; stat_index< MAX_STAT_TYPES;stat_index++){
+                ret = opennsl_field_stat_get(unit, stat_id,
+                                             stat_arr[stat_index],&stat_value);
+                if (!OPENNSL_FAILURE(ret)) {
+                    ds_put_format(ds, "\t    stat type :%s value is %llu\n",
+                                     stat_type_str[stat_index], stat_value);
+                }
+            }
+        } else {
+            ds_put_format(ds, "NULL\n");
+        }
+        ds_put_format(ds, "=====\n");
+    }
+
+err:
+    free(entry_array);
+done:
+    ds_put_format(ds, "Done traversing through group id = %d\n", group );
+} /* fp_entries_show */
+
+static int
+fp_field_group_traverse_cb (int unit, opennsl_field_group_t group, void *user_data)
+{
+    struct knet_user_data *params = (struct knet_user_data *)user_data;
+    struct ds *ds = params->ds;
+
+    /* To display the FP Group  and entry information */
+    fp_entries_show(unit, group, ds);
+    params->count++;
+
+    return OPENNSL_E_NONE;
+} /* fp_field_traverse_cb */
+
+static void
+ops_fp_show_dump(struct ds *ds)
+{
+    struct knet_user_data user_data;
+    int unit = 0;
+    int ret;
+
+    user_data.ds = ds;
+    user_data.count = 0;
+    /* the per fp group traversal function and this is for every hw unit*/
+    for(unit =0; unit < MAX_SWITCH_UNITS; unit++) {
+        ret = opennsl_field_group_traverse (unit, fp_field_group_traverse_cb,
+                                               &user_data);
+        if (OPENNSL_FAILURE(ret)) {
+            VLOG_ERR("FP show groups traversal failure");
+        }
+        if (user_data.count == 0) {
+            ds_put_format(ds, "No  fp groups \n");
+        }
+    }
+} /* ops_fp_show_dump */
+
+/*
+ * ops_fp_dump_ospf_rules
+ *
+ * This function dumps the "fp show" output for OSPF ingress rules
+ * for all hardware units.
+ */
+static void
+ops_fp_dump_ospf_rules (struct ds *ds)
+{
+    int                   unit = 0;
+    opennsl_field_group_t group_id;
+
+    /*
+     * If "ds" is not a valid pointer, then return
+     * from this function.
+     */
+    if (!ds) {
+        return;
+    }
+
+    /*
+     * Iterate over all the hardware units available.
+     */
+    for(unit =0; unit < MAX_SWITCH_UNITS; unit++) {
+
+        /*
+         * Get the group-id for OSPF FP ingress rules.
+         */
+        group_id = ops_routing_get_ospf_group_id_by_hw_unit(unit);
+
+        /*
+         * If the group-id is invalid, then do not dump the
+         * "fp show" for that hardware unit.
+         */
+        if (group_id == -1) {
+            continue;
+        }
+
+        /*
+         * Call the "fp show" function to dump the fp rules
+         * for the given group and hardware unit.
+         */
+        fp_entries_show(unit, group_id, ds);
+    }
+}
+
+/*
+ * ops_fp_dump_copp_ingress_rules
+ *
+ * This function dumps the "fp show" output for CoPP ingress rules
+ * for all hardware units.
+ */
+static void
+ops_fp_dump_copp_ingress_rules (struct ds *ds)
+{
+    int                   unit = 0;
+    opennsl_field_group_t group_id;
+
+    /*
+     * If "ds" is not a valid pointer, then return
+     * from this function.
+     */
+    if (!ds) {
+        return;
+    }
+
+    /*
+     * Iterate over all the hardware units available.
+     */
+    for(unit =0; unit < MAX_SWITCH_UNITS; unit++) {
+
+        /*
+         * Get the group-id for CoPP FP ingress rules.
+         */
+        group_id = ops_copp_get_ingress_group_id_for_hw_unit(unit);
+
+        /*
+         * If the group-id is invalid, then do not dump the
+         * "fp show" for that hardware unit.
+         */
+        if (group_id == -1) {
+            continue;
+        }
+
+        /*
+         * Call the "fp show" function to dump the fp rules
+         * for the given group and hardware unit.
+         */
+        fp_entries_show(unit, group_id, ds);
+    }
+}
+
+/*
+ * ops_fp_dump_copp_egress_rules
+ *
+ * This function dumps the "fp show" output for CoPP egress rules
+ * for all hardware units.
+ */
+static void
+ops_fp_dump_copp_egress_rules (struct ds *ds)
+{
+    int                   unit = 0;
+    opennsl_field_group_t group_id;
+
+    /*
+     * If "ds" is not a valid pointer, then return
+     * from this function.
+     */
+    if (!ds) {
+        return;
+    }
+
+    /*
+     * Iterate over all the hardware units available.
+     */
+    for(unit =0; unit < MAX_SWITCH_UNITS; unit++) {
+
+        /*
+         * Get the group-id for CoPP FP egress rules.
+         */
+        group_id = ops_copp_get_egress_group_id_for_hw_unit(unit);
+
+        /*
+         * If the group-id is invalid, then do not dump the
+         * "fp show" for that hardware unit.
+         */
+        if (group_id == -1) {
+            continue;
+        }
+
+        /*
+         * Call the "fp show" function to dump the fp rules
+         * for the given group and hardware unit.
+         */
+        fp_entries_show(unit, group_id, ds);
+    }
+}
+
+static void
+ops_get_cpu_queue_stats (struct ds *ds, opennsl_cos_queue_t queueid)
+{
+    int unit;
+    uint64 value;
+    int ret = 0;
+    opennsl_gport_t gport = OPENNSL_GPORT_LOCAL_CPU;
+    opennsl_cosq_stat_t stat;
+
+    for (unit = 0; unit < MAX_SWITCH_UNITS; unit++) {
+
+        ds_put_format(ds, "\n");
+        ds_put_format(ds, "Stats for h/w unit %d, for cpu queue %d\n", unit, queueid);
+        ds_put_format(ds, "----------------------------------\n");
+
+        /* Get transmitted packet count. */
+        stat = opennslCosqStatOutPackets;
+        ret = opennsl_cosq_stat_get(unit, gport, queueid, stat, &value);
+        if (OPENNSL_FAILURE(ret)) {
+            VLOG_ERR("Error getting transmitted packet stat for cosq %d\n", queueid);
+            continue; /* continue to get stats for the next hw unit */
+        }
+        ds_put_format(ds, "Transmitted Packets = \t%10llu\n", value);
+
+
+        /* Get transmitted byte count. */
+        stat = opennslCosqStatOutBytes;
+        ret = opennsl_cosq_stat_get(unit, gport, queueid, stat, &value);
+        if (OPENNSL_FAILURE(ret)) {
+            VLOG_ERR("Error getting transmitted byte stat for cosq %d\n", queueid);
+            continue; /* continue to get stats for the next hw unit */
+        }
+        ds_put_format(ds, "Transmitted Bytes = \t%10llu\n", value);
+
+
+        /* Get dropped packet count. */
+        stat = opennslCosqStatDroppedPackets;
+        ret = opennsl_cosq_stat_get(unit, gport, queueid, stat, &value);
+        if (OPENNSL_FAILURE(ret)) {
+            VLOG_ERR("Error getting dropped packet stat for cosq %d\n", queueid);
+            continue; /* continue to get stats for the next hw unit */
+        }
+        ds_put_format(ds, "Dropped Packets = \t%10llu\n", value);
+
+
+        /* Get dropped byte count. */
+        stat = opennslCosqStatDroppedBytes;
+        ret = opennsl_cosq_stat_get(unit, gport, queueid, stat, &value);
+        if (OPENNSL_FAILURE(ret)) {
+            VLOG_ERR("Error getting dropped byte stat for cosq %d\n", queueid);
+            continue; /* continue to get stats for the next hw unit */
+        }
+        ds_put_format(ds, "Dropped Bytes = \t%10llu\n", value);
+        ds_put_format(ds, "\n");
+    }
+}
+
+static void
 bcm_plugin_debug(struct unixctl_conn *conn, int argc,
                  const char *argv[], void *aux OVS_UNUSED)
 {
@@ -215,7 +853,7 @@ bcm_plugin_debug(struct unixctl_conn *conn, int argc,
     int arg_idx = 1;
 
     if (argc <= arg_idx) {
-        ds_put_format(&ds, "%s", cmd_hp_usage);
+        ds_put_format(&ds, "%s", cmd_ops_usage);
         goto done;
 
     } else {
@@ -223,6 +861,22 @@ bcm_plugin_debug(struct unixctl_conn *conn, int argc,
 
         if (0 == strcmp(ch, "debug")) {
             handle_ops_debug(&ds, arg_idx, argc, argv);
+            goto done;
+        } else if (!strcmp(ch, "fp")) {
+            const char* option = NEXT_ARG();
+
+            ds_put_format(&ds, "Programmed FP rules are \n");
+            if (option) {
+                if (!strcmp(option, "ospf-group")) {
+                    ops_fp_dump_ospf_rules(&ds);
+                } else if (!strcmp(option, "copp-ingress-group")) {
+                    ops_fp_dump_copp_ingress_rules(&ds);
+                } else if (!strcmp(option, "copp-egress-group")) {
+                    ops_fp_dump_copp_egress_rules(&ds);
+                }
+            } else {
+                ops_fp_show_dump(&ds);
+            }
             goto done;
         } else if (!strcmp(ch, "vlan")) {
             int vid = -1;
@@ -237,11 +891,24 @@ bcm_plugin_debug(struct unixctl_conn *conn, int argc,
             int stgid = -1;
 
             if (NULL != (ch = NEXT_ARG())) {
+                if (!strcmp(ch, "hw")) {
+                    if (NULL != (ch = NEXT_ARG())) {
+                        stgid = atoi(ch);
+                        ops_stg_hw_dump(&ds, stgid);
+                        goto done;
+                    } else {
+                        ds_put_format(&ds, "%s", cmd_ops_usage);
+                        goto done;
+                    }
+                }
                 stgid = atoi(ch);
+                ops_stg_dump(&ds, stgid);
+                goto done;
+            } else {
+                /* dump all stg */
+                ops_stg_dump(&ds, stgid);
+                goto done;
             }
-            ops_stg_dump(&ds, stgid);
-            goto done;
-
         } else if (!strcmp(ch, "knet")) {
             if (NULL != (ch = NEXT_ARG())) {
                 if (!strcmp(ch, "netif")) {
@@ -308,7 +975,124 @@ bcm_plugin_debug(struct unixctl_conn *conn, int argc,
             goto done;
 
         } else if (!strcmp(ch, "help")) {
-            ds_put_format(&ds, "%s", cmd_hp_usage);
+            ds_put_format(&ds, "%s", cmd_ops_usage);
+            goto done;
+
+        } else if (!strcmp(ch, "copp-stats")) {
+            if (ops_get_all_packet_stats() > 0) {
+                ds_put_format(&ds, "%s",
+                        ops_copp_all_packet_stat_buffer);
+            }
+            goto done;
+
+        } else if (!strcmp(ch, "copp-config")) {
+            const char* copp_packet_name;
+            const char* copp_cpu_queue_name;
+            const char* copp_rate;
+            const char* copp_burst;
+            int index;
+            uint32 cpu_queue_number;
+            uint32 rate;
+            uint32 burst;
+            enum ops_copp_packet_class_code_t copp_packet_class;
+            struct ops_copp_config_t copp_config_array[1];
+
+            copp_packet_name = NEXT_ARG();
+            copp_cpu_queue_name = NEXT_ARG();
+            copp_rate = NEXT_ARG();
+            copp_burst = NEXT_ARG();
+
+            ds_put_format(&ds, "copp_packet_name = %s\n",
+                          copp_packet_name ? copp_packet_name : "NULL");
+            ds_put_format(&ds, "copp_cpu_queue_name = %s\n",
+                          copp_cpu_queue_name ? copp_cpu_queue_name : "NULL");
+            ds_put_format(&ds, "copp_rate = %s\n",
+                          copp_rate ? copp_rate : "NULL");
+            ds_put_format(&ds, "copp_burst = %s\n",
+                          copp_burst ? copp_burst : "NULL");
+
+            if (!copp_packet_name || !copp_cpu_queue_name ||
+                !copp_rate || !copp_burst) {
+                ds_put_format(&ds, "%s", "Invalid command usage\n");
+                goto copp_config_help;
+            }
+
+            cpu_queue_number = ops_copp_get_cpu_queue_number_from_name(
+                                                    copp_cpu_queue_name);
+            rate = atoi(copp_rate);
+            burst = atoi(copp_burst);
+            copp_packet_class = ops_copp_get_packet_class_from_packet_name(
+                                                        (char*)copp_packet_name);
+
+            if (cpu_queue_number > OPS_COPP_QOS_QUEUE_MAX) {
+                ds_put_format(&ds, "%s", "Invalid CPU queue option\n");
+                goto copp_config_help;
+            }
+
+            if (rate < 0) {
+                ds_put_format(&ds, "%s", "Invalid rate option\n");
+                goto copp_config_help;
+            }
+
+            if (burst < 0) {
+                ds_put_format(&ds, "%s", "Invalid burst option\n");
+                goto copp_config_help;
+            }
+
+            if (copp_packet_class == ~0) {
+                ds_put_format(&ds, "%s", "Invalid packet name\n");
+                goto copp_config_help;
+            }
+
+            copp_config_array[0].ops_copp_packet_class = copp_packet_class;
+            copp_config_array[0].ops_copp_queue_number = cpu_queue_number;
+            copp_config_array[0].ops_copp_rate = rate;
+            copp_config_array[0].ops_copp_burst = burst;
+
+            if (set_copp_policy(1, copp_config_array) == OPS_COPP_SUCCESS_CODE) {
+                ds_put_format(&ds, "Packet configuration for packet %s with "
+                              "CPU queue %u and rate %u and burst %u successful\n",
+                              ops_copp_get_packet_name_from_packet_class(
+                                                                copp_packet_class),
+                              cpu_queue_number, rate, burst);
+            } else {
+                ds_put_format(&ds, "Packet configuration for packet %s with "
+                              "CPU queue %u and rate %u and burst %u failure\n",
+                              ops_copp_get_packet_name_from_packet_class(
+                                                                copp_packet_class),
+                              cpu_queue_number, rate, burst);
+            }
+            goto done;
+
+copp_config_help:
+            ds_put_format(&ds, "%s", "Usage: ovs-appctl plugin/debug copp-config "
+                          "<packet class name> <CPU queue class> <Rate> <Burst>\n\n");
+            ds_put_format(&ds, "%s", "<packet class name> : \n"
+                          "{acl-logging, \n"
+                          "broadcast-arp, unicast-arp,\n"
+                          "LCAP, LLDP, STP,\n"
+                          "BGP, DHCP, DHCPV6,\n"
+                          "ICMPV4-unicast, ICMPV4-broadcast,\n"
+                          "ICMPV6-unicast, ICMPV6-multicast,\n"
+                          "OSPFiV2-multicast, OSPFV2-unicast,\n"
+                          "IPV4-options, IPV6-options,\n"
+                          "Unknown-IP, Sflow, Acl-Logging,\n"
+                          "Unclassified}\n\n");
+            ds_put_format(&ds, "%s", "<CPU queue class> : \n{");
+            for (index = 0; index <= OPS_COPP_QOS_QUEUE_MAX; ++index) {
+                ds_put_format(&ds, "%s,\n", ops_cpu_queue_name[index]);
+            }
+            ds_put_format(&ds, "%s", "}\n\n");
+            ds_put_format(&ds, "%s", "<rate> : {Positive Number}\n\n");
+            ds_put_format(&ds, "%s", "<burst> : {Positive Number}\n\n");
+            goto done;
+
+        } else if (!strcmp(ch, "cpu-queue-stats")) {
+            int queueid = -1;
+            if (NULL != (ch = NEXT_ARG())) {
+                queueid = atoi(ch);
+                ops_get_cpu_queue_stats(&ds, queueid);
+            }
             goto done;
 
         } else {
