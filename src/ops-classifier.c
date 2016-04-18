@@ -429,7 +429,7 @@ ops_cls_set_action(int                          unit,
     if (cls_entry->act_flags & OPS_CLS_ACTION_LOG) {
         uint8_t entry_id;
 
-        entry_id = MIN(entry, (uint8_t)(-1));
+        entry_id = MIN(cls_entry->index, (uint8_t)(-1));
         rc = opennsl_field_action_add(unit, entry, opennslFieldActionCopyToCpu,
                                       1, entry_id);
         if (OPENNSL_FAILURE(rc)) {
