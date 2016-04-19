@@ -33,6 +33,7 @@
 #include <opennsl/pkt.h>
 #include <opennsl/rx.h>
 #include "ops-copp.h"
+#include "eventlog.h"
 
 /*
  * Logging module for CoPP.
@@ -231,7 +232,7 @@ ops_copp_get_packet_name_from_packet_class (
      */
     if ((packet_class < 0) ||
         (packet_class >= PLUGIN_COPP_MAX_CLASSES)) {
-        VLOG_ERR("Not a valid packet class");
+        VLOG_DBG("Not a valid packet class");
         return(NULL);
     }
 
@@ -3766,6 +3767,11 @@ static int ops_copp_program_fp_defaults ()
 
             if (retval != OPS_COPP_SUCCESS_CODE) {
                 VLOG_ERR("Packet class rule create failed");
+                log_event("COPP_CLASS_RULE_FAILURE",
+                           EV_KV("class", "%s",
+                           ((struct ops_copp_fp_rule_t)
+                           ops_copp_packet_class_t[fp_rule_iterator])
+                           .ops_copp_packet_name));
                 return(OPS_COPP_FAILURE_CODE);
             }
 
@@ -3777,6 +3783,11 @@ static int ops_copp_program_fp_defaults ()
 
             if (retval != OPS_COPP_SUCCESS_CODE) {
                 VLOG_ERR("Ingress FP rule create failed");
+                log_event("COPP_CLASS_INGRESS_FP_FAILURE",
+                           EV_KV("class", "%s",
+                           ((struct ops_copp_fp_rule_t)
+                           ops_copp_packet_class_t[fp_rule_iterator])
+                           .ops_copp_packet_name));
                 return(OPS_COPP_FAILURE_CODE);
             }
 
@@ -3788,6 +3799,11 @@ static int ops_copp_program_fp_defaults ()
 
             if (retval != OPS_COPP_SUCCESS_CODE) {
                 VLOG_ERR("Egress FP rule create failed");
+                log_event("COPP_CLASS_EGRESS_FP_FAILURE",
+                           EV_KV("class", "%s",
+                           ((struct ops_copp_fp_rule_t)
+                           ops_copp_packet_class_t[fp_rule_iterator])
+                           .ops_copp_packet_name));
                 return(OPS_COPP_FAILURE_CODE);
             }
 
@@ -4463,22 +4479,31 @@ int ops_copp_init ()
 {
     int retval = 0;
 
+    retval = event_log_init("COPP");
+    if(retval < 0) {
+        VLOG_ERR("Event log initialization failed for COPP");
+    }
+
     if (ops_copp_ingress_fp_group_create() != OPS_COPP_SUCCESS_CODE) {
         VLOG_ERR("Ingress: Group create failed");
+        log_event("COPP_INGRESS_FP_GROUP_FAILURE", NULL);
         return(OPS_COPP_FAILURE_CODE);
     }
 
     if (ops_copp_egress_fp_group_create() != OPS_COPP_SUCCESS_CODE) {
         VLOG_ERR("Egress: Group create failed");
+        log_event("COPP_EGRESS_FP_GROUP_FAILURE", NULL);
         return(OPS_COPP_FAILURE_CODE);
     }
 
     if (ops_copp_program_fp_defaults() != OPS_COPP_SUCCESS_CODE) {
         VLOG_ERR("Programming of FP rules failed");
+        log_event("COPP_INIT_DEFAULTS_FAILURE", NULL);
         return(OPS_COPP_FAILURE_CODE);
     }
 
-    VLOG_INFO("OPS CoPP init successfull");
+    VLOG_INFO("OPS CoPP init successful");
+    log_event("COPP_INIT_SUCCESS", NULL);
 
     return(retval);
 }
