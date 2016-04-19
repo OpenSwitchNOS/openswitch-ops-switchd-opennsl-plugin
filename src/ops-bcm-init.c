@@ -37,6 +37,7 @@
 #include "ops-stg.h"
 #include "ops-sflow.h"
 #include "netdev-bcmsdk.h"
+#include "eventlog.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
 
@@ -181,6 +182,7 @@ ops_bcm_appl_init(void)
         rc = ops_copp_init();
         if (rc) {
             VLOG_ERR("COPP subsystem init failed");
+            log_event("COPP_INITIALIZATION_FAILURE", NULL);
             return 1;
         }
     }
