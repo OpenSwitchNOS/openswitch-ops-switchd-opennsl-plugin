@@ -56,6 +56,7 @@ opennsl_rx_t opennsl_rx_callback(int unit, opennsl_pkt_t *pkt, void *cookie)
 {
     if (!pkt) {
         VLOG_ERR("Invalid pkt sent by ASIC");
+        log_event("SFLOW_CALLBACK_INVALID_PKT", NULL);
         return OPENNSL_RX_HANDLED;
     }
 
@@ -176,6 +177,7 @@ ops_bcm_appl_init(void)
         rc = ops_sflow_init(unit);
         if (rc) {
             VLOG_ERR("sflow init failed");
+            log_event("SFLOW_INIT_FAILURE", NULL);
             return 1;
         }
 
