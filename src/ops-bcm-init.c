@@ -135,6 +135,31 @@ ops_bcm_appl_init(void)
     int rc = 0;
 
     ops_debug_init();
+    VLOG_INFO("Init SUBINTERFACE");
+    rc = event_log_init("SUBINTERFACE");
+    if(rc < 0) {
+        VLOG_ERR("Event log initialization failed for SUBINTERFACE");
+    }
+    VLOG_INFO("Init LAG");
+    rc = event_log_init("LAG");
+    if(rc < 0) {
+        VLOG_ERR("Event log initialization failed for LAG");
+    }
+    VLOG_INFO("Init VLANINTERFACE");
+    rc = event_log_init("VLANINTERFACE");
+    if(rc < 0) {
+        VLOG_ERR("Event log initialization failed for VLANINTERFACE");
+    }
+    VLOG_INFO("Init L3INTERFACE");
+    rc = event_log_init("L3INTERFACE");
+    if(rc < 0) {
+        VLOG_ERR("Event log initialization failed for L3INTERFACE");
+    }
+    VLOG_INFO("Init ECMP");
+    rc = event_log_init("ECMP");
+    if(rc < 0) {
+        VLOG_ERR("Event log initialization failed for ECMP");
+    }
 
     for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
 

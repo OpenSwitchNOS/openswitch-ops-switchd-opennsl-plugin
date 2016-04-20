@@ -40,6 +40,8 @@
 #include "platform-defines.h"
 #include "openswitch-dflt.h"
 #include "netdev-bcmsdk.h"
+#include "netdev.h"
+#include "eventlog.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_routing);
 /* ecmp resiliency flag */
@@ -136,6 +138,10 @@ ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
         VLOG_ERR("Failed at %s opennsl_field_entry_create :: "
                  "unit=%d retval=%s ",
                  ospf_packet_rule, unit, opennsl_errmsg(retval));
+        log_event("OSPFv2_FP_ERR",
+                  EV_KV("action", "%s", "opennsl_field_entry_create"),
+                  EV_KV("rule", "%s", ospf_packet_rule),
+                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         return retval;
     }
 
@@ -148,6 +154,10 @@ ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
         VLOG_ERR("Failed at %s opennsl_field_qualify_DstMac :: "
                  "unit=%d retval=%s ",
                  ospf_packet_rule, unit, opennsl_errmsg(retval));
+        log_event("OSPFv2_FP_ERR",
+                  EV_KV("action", "%s", "opennsl_field_qualify_DstMac"),
+                  EV_KV("rule", "%s", ospf_packet_rule),
+                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         opennsl_field_entry_destroy(unit, fieldEntry);
         return retval;
     }
@@ -159,6 +169,10 @@ ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
         VLOG_ERR("Failed at %s opennsl_field_qualify_IpProtocol :: "
                  "unit=%d retval=%s ",
                  ospf_packet_rule, unit, opennsl_errmsg(retval));
+        log_event("OSPFv2_FP_ERR",
+                  EV_KV("action", "%s", "opennsl_field_qualify_IpProtocol"),
+                  EV_KV("rule", "%s", ospf_packet_rule),
+                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         opennsl_field_entry_destroy(unit, fieldEntry);
         return retval;
     }
@@ -178,6 +192,10 @@ ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
         VLOG_ERR("Failed at %s opennsl_field_qualify_DstIp :: "
                  "unit=%d retval=%s ",
                  ospf_packet_rule, unit, opennsl_errmsg(retval));
+        log_event("OSPFv2_FP_ERR",
+                  EV_KV("action", "%s", "opennsl_field_qualify_DstIp"),
+                  EV_KV("rule", "%s", ospf_packet_rule),
+                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         opennsl_field_entry_destroy(unit, fieldEntry);
         return retval;
     }
@@ -188,6 +206,10 @@ ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
         VLOG_ERR("Failed at %s opennslFieldActionCopyToCpu :: "
                  "unit=%d retval=%s ",
                  ospf_packet_rule, unit, opennsl_errmsg(retval));
+        log_event("OSPFv2_FP_ERR",
+                  EV_KV("action", "%s", "opennslFieldActionCopyToCpu"),
+                  EV_KV("rule", "%s", ospf_packet_rule),
+                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         opennsl_field_entry_destroy(unit, fieldEntry);
         return retval;
     }
@@ -206,6 +228,10 @@ ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
         VLOG_ERR("Failed at %s opennsl_field_entry_stat_attach :: "
                 "unit=%d retval=%s ",
                  ospf_packet_rule, unit, opennsl_errmsg(retval));
+        log_event("OSPFv2_FP_ERR",
+                  EV_KV("action", "%s", "opennsl_field_entry_stat_attach"),
+                  EV_KV("rule", "%s", ospf_packet_rule),
+                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         opennsl_field_stat_destroy(unit, stat_id);
         opennsl_field_entry_destroy(unit, fieldEntry);
         return retval;
@@ -215,6 +241,10 @@ ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
     if (OPENNSL_FAILURE(retval)) {
         VLOG_ERR("Failed to %s opennsl_field_entry_install : unit=%d retval=%s",
                  ospf_packet_rule, unit, opennsl_errmsg(retval));
+        log_event("OSPFv2_FP_ERR",
+                  EV_KV("action", "%s", "opennsl_field_entry_install"),
+                  EV_KV("rule", "%s", ospf_packet_rule),
+                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         opennsl_field_stat_destroy(unit, stat_id);
         opennsl_field_entry_destroy(unit, fieldEntry);
         return retval;
@@ -265,6 +295,10 @@ ops_routing_ospf_init(int unit)
     if (OPENNSL_FAILURE(retval)) {
         VLOG_ERR("Failed at OSPF opennsl_field_group_create :: "
                 "unit=%d retval=%s ", unit, opennsl_errmsg(retval));
+        log_event("OSPFv2_FP_ERR",
+                  EV_KV("action", "%s", "opennsl_field_group_create"),
+                  EV_KV("rule", "%s", ""),
+                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         free(ospf_data);
         return retval;
     }
@@ -276,6 +310,10 @@ ops_routing_ospf_init(int unit)
         VLOG_ERR("Failed at create field entry for OSPF:AllRouters :: "
                 "unit=%d retval=%s ", unit, opennsl_errmsg(retval));
         opennsl_field_group_destroy(unit, ospf_data->ospf_group_id);
+        log_event("OSPFv2_FP_ERR",
+                  EV_KV("action", "%s", "create field entry for OSPF:AllRouters"),
+                  EV_KV("rule", "%s", ""),
+                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         free(ospf_data);
         return retval;
     }
@@ -290,6 +328,10 @@ ops_routing_ospf_init(int unit)
     if (OPENNSL_FAILURE(retval)) {
         VLOG_ERR("Failed at create field entry for OSPF:DesignatedRouters :: "
                 "unit=%d retval=%s ", unit, opennsl_errmsg(retval));
+        log_event("OSPFv2_FP_ERR",
+                  EV_KV("action", "%s", "create field entry for OSPF:DesignatedRouters"),
+                  EV_KV("rule", "%s", ""),
+                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         opennsl_field_group_destroy(unit, ospf_data->ospf_group_id);
         free(ospf_data);
         return retval;
@@ -314,6 +356,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchL3IngressMode: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -321,6 +365,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchL3EgressMode: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -336,6 +382,8 @@ ops_l3_init(int unit)
 
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Error, create a local egress object, rc=%s", opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
 
@@ -344,6 +392,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchArpRequestToCpu: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -351,6 +401,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchArpReplyToCpu: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -359,6 +411,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchDhcpPktToCpu: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -367,6 +421,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchNdPktToCpu: unit=%d  rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -375,6 +431,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchUnknownL3DestToCpu: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -382,6 +440,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchV6L3DstMissToCpu: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -390,6 +450,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchL3UcastTtl1ToCpu: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -399,6 +461,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set OPENNSL_HASH_CONTROL_ECMP_ENHANCE: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -406,6 +470,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set Max ECMP  paths unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -420,6 +486,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashIP4TcpUdpPortsEqualField0: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit,
@@ -428,6 +496,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashIP4TcpUdpPortsEqualField0: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit,
@@ -436,6 +506,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashIP4Field0: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -450,6 +522,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashIP6TcpUdpPortsEqualField0: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit,
@@ -458,6 +532,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashIP6TcpUdpPortsEqualField0: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit,
@@ -466,6 +542,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashIP6Field0: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     /* Enabling the ecmp resiliency initially*/
@@ -476,6 +554,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashSeed0: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit, opennslSwitchHashField0PreProcessEnable,
@@ -483,6 +563,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashField0PreProcessEnable: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit, opennslSwitchHashField0Config,
@@ -490,6 +572,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashField0Config: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit, opennslSwitchHashField0Config1,
@@ -497,18 +581,24 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashField0Config1: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit, opennslSwitchECMPHashSet0Offset, 0);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchECMPHashSet0Offset: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit, opennslSwitchHashSelectControl, 0);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashSelectControl: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -520,6 +610,8 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
       VLOG_ERR("Failed to set opennslIntfIPOptionActionCopyCPUAndDrop: unit=%d rc=%s",
                 unit, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
       return 1;
     }
 
@@ -536,6 +628,8 @@ ops_l3_init(int unit)
     rc = opennsl_l2_addr_register(unit, ops_l3_mac_move_cb, NULL);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("L2 address registration failed");
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -543,6 +637,8 @@ ops_l3_init(int unit)
     rc = ops_routing_ospf_init(unit);
     if (rc) {
         VLOG_ERR("OSPF FP init failed");
+        log_event("L3INTERFACE_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1; /* Return error */
     }
 
@@ -692,6 +788,9 @@ ops_routing_enable_l3_interface(int hw_unit, opennsl_port_t hw_port,
     if (rc < 0) {
         VLOG_ERR("Failed at bcmsdk_create_vlan: unit=%d port=%d vlan=%d rc=%d",
                  hw_unit, hw_port, vlan_id, rc);
+        log_event("L3INTERFACE_VLAN_CREATE_ERR",
+                  EV_KV("interface", "%s", netdev_get_name(netdev)),
+                  EV_KV("vlanid", "%d", vlan_id));
         goto failed_vlan_creation;
     }
 
@@ -714,6 +813,8 @@ ops_routing_enable_l3_interface(int hw_unit, opennsl_port_t hw_port,
     /* Create l3 interface and add the mac to station tcam */
     rc = ops_routing_create_l3_intf(hw_unit, vrf_id, vlan_id, mac, l3_intf);
     if (OPENNSL_FAILURE(rc)) {
+        log_event("L3INTERFACE_L3INTF_CREATE_ERR",
+                  EV_KV("interface", "%s", netdev_get_name(netdev)));
         goto failed_l3_intf_create;
     }
 
@@ -735,6 +836,9 @@ failed_allocating_l3_intf:
     if (rc < 0) {
         VLOG_ERR("Failed at bcmsdk_destroy_vlan: unit=%d port=%d vlan=%d rc=%d",
                  hw_unit, hw_port, vlan_id, rc);
+        log_event("L3INTERFACE_VLAN_DESTROY_ERR",
+                  EV_KV("interface", "%s", netdev_get_name(netdev)),
+                  EV_KV("vlanid", "%d", vlan_id));
     }
 
 failed_vlan_creation:
@@ -753,6 +857,9 @@ ops_routing_enable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
     /* VLAN config */
     rc = bcmsdk_create_vlan(vlan_id, false);
     if (rc < 0) {
+        log_event("SUBINTERFACE_VLAN_CREATE_ERR",
+                  EV_KV("interface", "%s", netdev_get_name(netdev)),
+                  EV_KV("vlanid", "%d", vlan_id));
         VLOG_ERR("Failed at bcmsdk_create_vlan: unit=%d port=%d vlan=%d rc=%d",
                  hw_unit, hw_port, vlan_id, rc);
         goto failed_vlan_creation;
@@ -779,6 +886,8 @@ ops_routing_enable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
     /* Create l3 interface and add the mac to station tcam */
     rc = ops_routing_create_l3_intf(hw_unit, vrf_id, vlan_id, mac, l3_intf);
     if (OPENNSL_FAILURE(rc)) {
+        log_event("SUBINTERFACE_L3INTF_CREATE_ERR",
+                  EV_KV("interface", "%s", netdev_get_name(netdev)));
         goto failed_l3_intf_create;
     }
 
@@ -801,6 +910,9 @@ failed_allocating_l3_intf:
 
     rc = bcmsdk_destroy_vlan(vlan_id, false);
     if (rc < 0) {
+        log_event("SUBINTERFACE_VLAN_DESTROY_ERR",
+                  EV_KV("interface", "%s", netdev_get_name(netdev)),
+                  EV_KV("vlanid", "%d", vlan_id));
         VLOG_ERR("Failed at bcmsdk_destroy_vlan: unit=%d port=%d vlan=%d rc=%d",
                  hw_unit, hw_port, vlan_id, rc);
     }
@@ -819,6 +931,9 @@ ops_routing_disable_l3_interface(int hw_unit, opennsl_port_t hw_port,
     VLOG_DBG("%s unit=%d vlan=%d",__FUNCTION__, hw_unit, vlan_id);
     rc = opennsl_l3_intf_delete(hw_unit, l3_intf);
     if (OPENNSL_FAILURE(rc)) {
+        log_event("L3INTERFACE_DELETE_ERR",
+                  EV_KV("interface", "%s", netdev_get_name(netdev)),
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         VLOG_ERR("Failed at opennsl_l3_intf_delete: unit=%d vlan=%d"
                  " rc=%s",
                  hw_unit, vlan_id, opennsl_errmsg(rc));
@@ -828,6 +943,10 @@ ops_routing_disable_l3_interface(int hw_unit, opennsl_port_t hw_port,
     if (rc < 0) {
         VLOG_ERR("Failed at bcmsdk_destroy_vlan: unit=%d vlan=%d rc=%d",
                 hw_unit, vlan_id, rc);
+        log_event("L3INTERFACE_VLAN_DESTROY_ERR",
+                EV_KV("interface", "%s", netdev_get_name(netdev)),
+                EV_KV("vlanid", "%d", vlan_id),
+                EV_KV("err", "%s", opennsl_errmsg(rc)));
     }
 
     SW_L3_DBG("Disabled L3 on unit=%d", hw_unit);
@@ -845,6 +964,8 @@ ops_routing_disable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
 
     rc = opennsl_l3_intf_delete(hw_unit, l3_intf);
     if (OPENNSL_FAILURE(rc)) {
+        log_event("SUBINTERFACE_L3INTF_DELETE_ERR",
+                  EV_KV("interface", "%s", netdev_get_name(netdev)));
         VLOG_ERR("Failed at opennsl_l3_intf_delete: unit=%d port=%d vlan=%d"
                  " vrf=%d rc=%s",
                  hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
@@ -861,6 +982,9 @@ ops_routing_disable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
         VLOG_DBG("Vlan %d is empty\n", vlan_id);
         rc = bcmsdk_destroy_vlan(vlan_id, false);
         if (rc < 0) {
+            log_event("SUBINTERFACE_VLAN_DESTROY_ERR",
+                      EV_KV("interface", "%s", netdev_get_name(netdev)),
+                      EV_KV("vlanid", "%d", vlan_id));
             VLOG_ERR("Failed at bcmsdk_destroy_vlan: unit=%d port=%d vlan=%d"
                      " rc=%d",
                      hw_unit, hw_port, vlan_id, rc);
@@ -892,6 +1016,9 @@ ops_routing_enable_l3_vlan_interface(int hw_unit, opennsl_vrf_t vrf_id,
     /* Create l3 interface and add the mac to station tcam */
     rc = ops_routing_create_l3_intf(hw_unit, vrf_id, vlan_id, mac, l3_intf);
     if (OPENNSL_FAILURE(rc)) {
+        log_event("VLANINTERFACE_L3INTF_CREATE_ERR",
+                  EV_KV("vlan", "%d", vlan_id),
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         free(l3_intf);
         return NULL;
     }
@@ -928,7 +1055,11 @@ ops_nexthop_add(struct ops_route *route,  struct ofproto_route_nexthop *of_nh)
     route->n_nexthops++;
 
     VLOG_DBG("Add NH %s, egress_id %d, for route %s",
-              nh->id, nh->l3_egress_id, route->prefix);
+            nh->id, nh->l3_egress_id, route->prefix);
+    log_event("L3INTERFACE_NEXTHOP_ADD",
+            EV_KV("nexthop", "%s", nh->id),
+            EV_KV("egress_id", "%d", nh->l3_egress_id),
+            EV_KV("prefix", "%s", route->prefix));
 } /* ops_nexthop_add */
 
 /* Delete nexthop into route entry */
@@ -940,6 +1071,9 @@ ops_nexthop_delete(struct ops_route *route, struct ops_nexthop *nh)
     }
 
     VLOG_DBG("Delete NH %s in route %s", nh->id, route->prefix);
+    log_event("L3INTERFACE_NEXTHOP_DELETE",
+            EV_KV("nexthop", "%d", nh->id),
+            EV_KV("prefix", "%s", route->prefix));
 
     hmap_remove(&route->nexthops, &nh->node);
     if (nh->id) {
@@ -1020,6 +1154,8 @@ ops_route_add(int vrf, struct ofproto_route *of_routep)
     ops_route_hash(vrf, of_routep->prefix, hashstr, sizeof(hashstr));
     hmap_insert(&ops_rtable.routes, &routep->node, hash_string(hashstr, 0));
     VLOG_DBG("Add route %s", of_routep->prefix);
+    log_event("L3INTERFACE_ROUTE_ADD",
+            EV_KV("prefix", "%s", of_routep->prefix));
     return routep;
 } /* ops_route_add */
 
@@ -1045,7 +1181,11 @@ ops_route_update(int vrf, struct ops_route *routep,
             } else {
                 /* update is currently resolved on unreoslved */
                 nh->l3_egress_id = (of_nh->state == OFPROTO_NH_RESOLVED) ?
-                                    of_nh->l3_egress_id : local_nhid ;
+                    of_nh->l3_egress_id : local_nhid ;
+                log_event("L3INTERFACE_ROUTE_UPDATE",
+                        EV_KV("state", "%s",
+                              (of_nh->state == OFPROTO_NH_RESOLVED) ?
+                              "Resoled with egress id" : "not resolved go to CPU"));
             }
         }
     }
@@ -1062,6 +1202,8 @@ ops_route_delete(struct ops_route *routep)
     }
 
     VLOG_DBG("delete route %s", routep->prefix);
+    log_event("L3INTERFACE_ROUTE_DELETE",
+            EV_KV("prefix", "%s", routep->prefix));
 
     hmap_remove(&ops_rtable.routes, &routep->node);
 
@@ -1143,8 +1285,15 @@ ops_routing_add_host_entry(int hw_unit, opennsl_port_t hw_port,
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Error, create egress object, out_port=%d, rc=%s", hw_port,
                  opennsl_errmsg(rc));
+        log_event("L3INTERFACE_CREATE_EGRESS_OBJ_ERR",
+                  EV_KV("port", "%d", hw_port),
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
+    log_event("L3INTERFACE_CREATE_EGRESS_OBJ",
+            EV_KV("egress_id", "%d", *l3_egress_id),
+            EV_KV("port", "%d", hw_port),
+            EV_KV("intf", "%d", l3_intf_id));
 
     VLOG_DBG("Created L3 egress ID %d for out_port: %d intf_id: %d ",
           *l3_egress_id, port, l3_intf_id);
@@ -1180,8 +1329,15 @@ ops_routing_add_host_entry(int hw_unit, opennsl_port_t hw_port,
     rc = opennsl_l3_host_add(hw_unit, &l3host);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR ("opennsl_l3_host_add failed: rc=%s", opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ADD_HOST_ERR",
+                  EV_KV("ipaddr", "%s", ip_addr),
+                  EV_KV("egressid", "%d", *l3_egress_id),
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
+    log_event("L3INTERFACE_ADD_HOST",
+              EV_KV("ipaddr", "%s", ip_addr),
+              EV_KV("egressid", "%d", *l3_egress_id));
 
     return rc;
 } /* ops_routing_add_host_entry */
@@ -1232,16 +1388,29 @@ ops_routing_delete_host_entry(int hw_unit, opennsl_port_t hw_port,
     rc = opennsl_l3_host_delete(hw_unit, &l3host);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR ("opennsl_l3_host_delete failed: %s", opennsl_errmsg(rc));
+        log_event("L3INTERFACE_DEL_HOST_ERR",
+                  EV_KV("ipaddr", "%s", ip_addr),
+                  EV_KV("egressid", "%d", *l3_egress_id),
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
+    log_event("L3INTERFACE_DEL_HOST",
+            EV_KV("ipaddr", "%s", ip_addr),
+            EV_KV("egressid", "%d", *l3_egress_id));
 
     /* Delete the egress object */
     VLOG_DBG("Deleting egress object for egress-id %d", *l3_egress_id);
     rc = opennsl_l3_egress_destroy(hw_unit, *l3_egress_id);
     if (OPENNSL_FAILURE(rc)) {
        VLOG_ERR ("opennsl_egress_destroy failed: %s", opennsl_errmsg(rc));
+        log_event("L3INTERFACE_DESTROY_EGRESS_OBJ_ERR",
+                  EV_KV("port", "%d", hw_port),
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
+    log_event("L3INTERFACE_DESTROY_EGRESS_OBJ",
+            EV_KV("egress_id", "%d", *l3_egress_id),
+            EV_KV("port", "%d", hw_port));
 
     *l3_egress_id = -1;
     return rc;
@@ -1390,7 +1559,13 @@ ops_create_or_update_ecmp_object(int hw_unit, struct ops_route *routep,
         if (OPENNSL_FAILURE(rc)) {
             VLOG_ERR("Failed to update ecmp object for route %s: rc=%s",
                      routep->prefix, opennsl_errmsg(rc));
+            log_event("ECMP_CREATE_ERR",
+                      EV_KV("route", "%s", routep->prefix),
+                      EV_KV("err", "%s", opennsl_errmsg(rc)));
             return rc;
+        } else {
+            log_event("ECMP_CREATE",
+                      EV_KV("route", "%s", routep->prefix));
         }
     } else {
         opennsl_l3_egress_ecmp_t_init(&ecmp_grp);
@@ -1400,7 +1575,13 @@ ops_create_or_update_ecmp_object(int hw_unit, struct ops_route *routep,
         if (OPENNSL_FAILURE(rc)) {
             VLOG_ERR("Failed to create ecmp object for route %s: rc=%s",
                      routep->prefix, opennsl_errmsg(rc));
+            log_event("ECMP_CREATE_ERR",
+                      EV_KV("route", "%s", routep->prefix),
+                      EV_KV("err", "%s", opennsl_errmsg(rc)));
             return rc;
+        } else {
+            log_event("ECMP_CREATE",
+                      EV_KV("route", "%s", routep->prefix));
         }
         *ecmp_intfp = ecmp_grp.ecmp_intf;
     }
@@ -1420,9 +1601,15 @@ ops_delete_ecmp_object(int hw_unit, opennsl_if_t ecmp_intf)
     rc = opennsl_l3_egress_ecmp_destroy(hw_unit, &ecmp_grp);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to delete ecmp egress object %d: %s",
-                  ecmp_intf, opennsl_errmsg(rc));
+                ecmp_intf, opennsl_errmsg(rc));
+        log_event("ECMP_DELETE_ERR",
+                EV_KV("egressid", "%d", ecmp_intf),
+                EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
+    log_event("ECMP_DELETE",
+            EV_KV("egressid", "%s", ecmp_intf));
+
     return rc;
 } /* ops_delete_ecmp_object */
 
@@ -1526,12 +1713,24 @@ ops_add_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
     rc = opennsl_l3_route_add(hw_unit, routep);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to %s route %s: %s",
-                  add_route ? "add" : "update", of_routep->prefix,
-                  opennsl_errmsg(rc));
+                add_route ? "add" : "update", of_routep->prefix,
+                opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ROUTE_ADD_ERR",
+                  EV_KV("prefix", "%s", of_routep->prefix),
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
     } else {
         VLOG_DBG("Success to %s route %s: %s",
-                  add_route ? "add" : "update", of_routep->prefix,
-                  opennsl_errmsg(rc));
+                add_route ? "add" : "update", of_routep->prefix,
+                opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ROUTE_UPDATE",
+                EV_KV("state", "%s",
+                    ((add_route == true) ?
+                     ((ops_routep->n_nexthops > 1) ?
+                                   "add route state as ECMP" :
+                                   "add route state as NON ECMP") :
+                     ((ops_routep->n_nexthops > 1) ?
+                                   "update route state as ECMP" :
+                                   "update route state as NON ECMP"))));
     }
     return rc;
 } /* ops_add_route_entry */
@@ -1574,13 +1773,20 @@ ops_delete_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to delete route %s: %s", of_routep->prefix,
                   opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ROUTE_DELETE_ERR",
+                  EV_KV("prefix", "%s", of_routep->prefix),
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
     } else {
         VLOG_DBG("Success to delete route %s: %s", of_routep->prefix,
-                 opennsl_errmsg(rc));
+                opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ROUTE_DELETE",
+                EV_KV("prefix", "%s", of_routep->prefix));
     }
 
     if (is_delete_ecmp) {
         rc = ops_delete_ecmp_object(hw_unit, l3_intf);
+        log_event("ECMP_DELETE",
+                EV_KV("route", "%s", of_routep->prefix));
     }
     return rc;
 } /* ops_delete_route_entry */
@@ -1664,10 +1870,18 @@ ops_delete_nh_entry(int hw_unit, opennsl_vrf_t vrf_id,
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to (delete NH) update route %s: %s",
                   of_routep->prefix, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ROUTE_ADD_ERR",
+                  EV_KV("prefix", "%s", of_routep->prefix),
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     } else {
         VLOG_DBG("Success to (delete NH) update route %s: %s",
                   of_routep->prefix, opennsl_errmsg(rc));
+        log_event("L3INTERFACE_ROUTE_UPDATE",
+                EV_KV("state", "%s",
+                    ((ops_routep->n_nexthops > 1) ?
+                                   "add route state as ECMP" :
+                                   "add route state as NON ECMP")));
     }
 
     if (is_delete_ecmp) {
@@ -1789,6 +2003,8 @@ ops_routing_ecmp_set(int hw_unit, bool enable)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to get opennslSwitchHashMultipath : unit=%d, rc=%s",
                  hw_unit, opennsl_errmsg(rc));
+        log_event("ECMP_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
 
@@ -1805,6 +2021,8 @@ ops_routing_ecmp_set(int hw_unit, bool enable)
         if (OPENNSL_FAILURE(rc)) {
             VLOG_ERR("Failed to set opennslSwitchHashMultipath : unit=%d, rc=%s",
                      hw_unit, opennsl_errmsg(rc));
+        log_event("ECMP_ERR",
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
             return rc;
         }
     } else { /* Disable ECMP */
@@ -1814,7 +2032,9 @@ ops_routing_ecmp_set(int hw_unit, bool enable)
                                         OPENNSL_HASH_ZERO);
         if (OPENNSL_FAILURE(rc)) {
             VLOG_ERR("Failed to clear opennslSwitchHashMultipath : unit=%d, rc=%s",
-                     hw_unit, opennsl_errmsg(rc));
+                    hw_unit, opennsl_errmsg(rc));
+            log_event("ECMP_ERR",
+                    EV_KV("err", "%s", opennsl_errmsg(rc)));
             return rc;
         }
     }
@@ -1832,7 +2052,9 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
                                     &cur_hash_ip4);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to get opennslSwitchHashIP4Field0 : unit=%d, rc=%s",
-                 hw_unit, opennsl_errmsg(rc));
+                hw_unit, opennsl_errmsg(rc));
+        log_event("ECMP_ERR",
+                EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
     rc = opennsl_switch_control_get(hw_unit, opennslSwitchHashIP6Field0,
@@ -1840,6 +2062,8 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to get opennslSwitchHashIP6Field0 : unit=%d, rc=%s",
                  hw_unit, opennsl_errmsg(rc));
+        log_event("ECMP_ERR",
+                EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
 
@@ -1867,7 +2091,9 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
                                       ops_update_l3ecmp_egress_resilient, NULL);
             if (OPENNSL_FAILURE(rc)) {
                 VLOG_ERR("Failed to traverse ECMP groups rc=%s",
-                                                  opennsl_errmsg(rc));
+                        opennsl_errmsg(rc));
+                log_event("ECMP_ERR",
+                        EV_KV("err", "%s", opennsl_errmsg(rc)));
             }
         }
     }
@@ -1888,6 +2114,8 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
         VLOG_ERR("Failed to set opennslSwitchHashIP4TcpUdpPortsEqualField0:"
                  "unit=%d, hash=%x, rc=%s",
                  hw_unit, cur_hash_ip4, opennsl_errmsg(rc));
+        log_event("ECMP_ERR",
+                EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(hw_unit,
@@ -1897,6 +2125,8 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
         VLOG_ERR("Failed to set opennslSwitchHashIP4TcpUdpPortsEqualField0:"
                  "unit=%d, hash=%x, rc=%s",
                  hw_unit, cur_hash_ip4, opennsl_errmsg(rc));
+        log_event("ECMP_ERR",
+                EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(hw_unit, opennslSwitchHashIP4Field0,
@@ -1904,6 +2134,8 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashIP4Field0 : unit=%d, hash=%x, rc=%s",
                  hw_unit, cur_hash_ip4, opennsl_errmsg(rc));
+        log_event("ECMP_ERR",
+                EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
 
@@ -1914,6 +2146,8 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
         VLOG_ERR("Failed to set opennslSwitchHashIP6TcpUdpPortsEqualField0:"
                  "unit=%d, hash=%x, rc=%s",
                  hw_unit, cur_hash_ip6, opennsl_errmsg(rc));
+        log_event("ECMP_ERR",
+                EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(hw_unit,
@@ -1923,6 +2157,8 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
         VLOG_ERR("Failed to set opennslSwitchHashIP6TcpUdpPortsEqualField0:"
                  "unit=%d, hash=%x, rc=%s",
                  hw_unit, cur_hash_ip6, opennsl_errmsg(rc));
+        log_event("ECMP_ERR",
+                EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(hw_unit, opennslSwitchHashIP6Field0,
@@ -1930,6 +2166,8 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashIP6Field0 : unit=%d, hash=%x, rc=%s",
                  hw_unit, cur_hash_ip6, opennsl_errmsg(rc));
+        log_event("ECMP_ERR",
+                EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
 
@@ -1995,6 +2233,8 @@ ops_routing_host_entry_action(int hw_unit, opennsl_vrf_t vrf_id,
             rc = opennsl_l3_host_add(hw_unit, &l3host);
             if (OPENNSL_FAILURE(rc)) {
                 VLOG_ERR ("opennsl_l3_host_add failed: %s", opennsl_errmsg(rc));
+                log_event("L3INTERFACE_ERR",
+                        EV_KV("err", "%s", opennsl_errmsg(rc)));
             }
         } else {
             VLOG_DBG ("Host entry exists: 0x%x", rc);
@@ -2007,6 +2247,8 @@ ops_routing_host_entry_action(int hw_unit, opennsl_vrf_t vrf_id,
             rc = opennsl_l3_host_delete(hw_unit, &l3host);
             if (OPENNSL_FAILURE(rc)) {
                 VLOG_ERR ("opennsl_l3_host_delete failed: %s", opennsl_errmsg(rc));
+                log_event("L3INTERFACE_ERR",
+                        EV_KV("err", "%s", opennsl_errmsg(rc)));
             }
         } else {
             VLOG_DBG ("Host entry doesn't exists: 0x%x", rc);
@@ -2095,9 +2337,11 @@ ops_l3_mac_move_add(int   unit,
 
    if (OPENNSL_FAILURE(rc)) {
        VLOG_ERR("Egress object not found in ASIC for given vlan/mac. rc=%s "
-                 "unit=%d, key=%s, vlan=%d, mac=" ETH_ADDR_FMT ", egr-id: %d",
-                 opennsl_errmsg(rc), unit, egress_id_key, l2addr->vid,
-                 ETH_ADDR_BYTES_ARGS(l2addr->mac), egress_id_node->egress_object_id);
+               "unit=%d, key=%s, vlan=%d, mac=" ETH_ADDR_FMT ", egr-id: %d",
+               opennsl_errmsg(rc), unit, egress_id_key, l2addr->vid,
+               ETH_ADDR_BYTES_ARGS(l2addr->mac), egress_id_node->egress_object_id);
+       log_event("L3INTERFACE_ERR",
+               EV_KV("err", "%s", opennsl_errmsg(rc)));
 
        goto done;
    }
@@ -2115,8 +2359,15 @@ ops_l3_mac_move_add(int   unit,
                                    &(egress_id_node->egress_object_id));
    if (OPENNSL_FAILURE(rc)) {
        VLOG_ERR("Failed creation of egress object: rc=%s, unit=%d", opennsl_errmsg(rc), unit);
+        log_event("L3INTERFACE_CREATE_EGRESS_OBJ_ERR",
+                  EV_KV("port", "%d", egress_object.port),
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
        goto done;
    }
+   log_event("L3INTERFACE_CREATE_EGRESS_OBJ",
+           EV_KV("egress_id", "%d", egress_id_node->egress_object_id),
+           EV_KV("port", "%d", egress_object.port),
+           EV_KV("intf", "%d", egress_object.intf));
 
 done:
    /* remove hmap entry for given mac/vlan */

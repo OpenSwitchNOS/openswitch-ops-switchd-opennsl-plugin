@@ -45,6 +45,7 @@
 #include "ofproto-bcm-provider.h"
 #include "ops-port.h"
 #include "ops-stg.h"
+#include "diag_dump.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_debug);
 
@@ -1382,11 +1383,67 @@ done:
     ds_destroy(&ds);
 } // bcm_mac_debug
 
+#define DIAGNOSTIC_BUFFER_LEN 64000
+/**
+ * callback handler function for diagnostic dump basic
+ * it allocates memory as per requirement and populates data.
+ * INIT_DIAG_DUMP_BASIC will free allocated memory.
+ *
+ * @param feature name of the feature.
+ * @param buf pointer to the buffer.
+ **/
+static void switchd_plugin_diag_dump_basic_cb(const char *feature , char **buf)
+{
+    struct ds ds = DS_EMPTY_INITIALIZER;
+
+    if (!buf)
+        return;
+    *buf =  xcalloc(1,DIAGNOSTIC_BUFFER_LEN);
+    if (*buf) {
+        /* populate basic diagnostic data to buffer  */
+        ds_put_format(&ds, "L3 interface info: \n");
+        ops_l3intf_dump(&ds, -1);
+        sprintf(*buf, "%s", ds_cstr(&ds));
+
+        ds_put_format(&ds, "L3 ipv4 host info: \n");
+        ops_l3host_dump(&ds, FALSE);
+        sprintf(*buf, "%s", ds_cstr(&ds));
+
+        ds_put_format(&ds, "L3 ipv6 host info: \n");
+        ops_l3host_dump(&ds, TRUE);
+        sprintf(*buf, "%s", ds_cstr(&ds));
+
+        ds_put_format(&ds, "L3 ipv4 route info: \n");
+        ops_l3route_dump(&ds, FALSE);
+        sprintf(*buf, "%s", ds_cstr(&ds));
+
+        ds_put_format(&ds, "L3 ipv6 route info: \n");
+        ops_l3route_dump(&ds, TRUE);
+        sprintf(*buf, "%s", ds_cstr(&ds));
+
+        ds_put_format(&ds, "L3 egress info: \n");
+        ops_l3egress_dump(&ds, -1);
+        sprintf(*buf, "%s", ds_cstr(&ds));
+
+        ds_put_format(&ds, "FP info: \n");
+        ops_fp_show_dump(&ds);
+        sprintf(*buf, "%s", ds_cstr(&ds));
+
+        VLOG_INFO("basic diag-dump data populated for feature %s",
+                feature);
+    } else {
+        VLOG_ERR("Memory allocation failed for feature %s , %d bytes",
+                feature , DIAGNOSTIC_BUFFER_LEN);
+    }
+    return ;
+} /* switchd_plugin_diag_dump_basic_cb */
 ///////////////////////////////// INIT /////////////////////////////////
 
 int
 ops_debug_init(void)
 {
+    /* Register diagnostic callback function */
+    INIT_DIAG_DUMP_BASIC(switchd_plugin_diag_dump_basic_cb);
     unixctl_command_register("plugin/debug", "[cmds]", 0, INT_MAX,
                              bcm_plugin_debug, NULL);
     unixctl_command_register("plugin/dump-mac-table", "[port|vlan <id list>]",
