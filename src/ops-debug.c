@@ -44,6 +44,7 @@
 #include "ops-knet.h"
 #include "ofproto-bcm-provider.h"
 #include "ops-port.h"
+#include "ops-qos.h"
 #include "ops-stg.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_debug);
@@ -96,6 +97,8 @@ char cmd_ops_usage[] =
 "   copp-stats - displays all the CoPP configuration and statistics.\n"
 "   copp-config <packet class name> <CPU queue class> <Rate> <Burst> - Modifies the CoPP rule for a control packet class \n"
 "   cpu-queue-stats - displays the per cpu queue statistics.\n"
+"   qos [cos-map | dscp-map | trust | dscp-override | queuing | scheduling | "
+        "statistics] - displays QoS information programmed in hardware.\n"
 "   help - displays this help text.\n"
 ;
 
@@ -1094,7 +1097,36 @@ copp_config_help:
                 ops_get_cpu_queue_stats(&ds, queueid);
             }
             goto done;
+        } else if (!strcmp(ch, "qos")) {
+            const char* option = NEXT_ARG();
 
+            if (option) {
+                if (!strcmp(option, "cos-map")) {
+                    ops_qos_dump_cos_map(&ds);
+                } else if (!strcmp(option, "dscp-map")) {
+                    ops_qos_dump_dscp_map(&ds);
+                } else if (!strcmp(option, "trust")) {
+                    ops_qos_dump_trust(&ds);
+                } else if (!strcmp(option, "dscp-override")) {
+                    ops_qos_dump_dscp_override(&ds);
+                } else if (!strcmp(option, "queuing")) {
+                    ops_qos_dump_queuing(&ds);
+                } else if (!strcmp(option, "scheduling")) {
+                    ops_qos_dump_scheduling(&ds);
+                } else if (!strcmp(option, "statistics")) {
+                    ops_qos_dump_statistics(&ds);
+                } else {
+                    ds_put_format(&ds, "Unsupported qos command - %s.\n\n",
+                                  option);
+                    ds_put_format(&ds, "%s", "Usage: ovs-appctl plugin/debug "
+                                       "qos [cos-map | dscp-map | trust | "
+                                       "dscp-override | queuing | scheduling "
+                                       "| statistics]\n\n");
+                }
+            } else {
+                ops_qos_dump_all(&ds);
+            }
+            goto done;
         } else {
             ds_put_format(&ds, "Unknown or unsupported command - %s.\n", ch);
             goto done;
