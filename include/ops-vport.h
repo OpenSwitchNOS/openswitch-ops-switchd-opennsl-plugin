@@ -40,6 +40,11 @@ enum {
     TUNNEL_KEY_UNBIND,
 };
 
+enum {
+    TUNNEL,          /* tunnel  */
+    PORT_VNI,        /* port bound to VNI network  */
+    PORT_VLAN        /* normal port with VLAN */
+};
 int   ops_vport_init(int hw_unit);
 int   ops_vport_create_tunnel(struct netdev *netdev);
 int   ops_vport_delete_tunnel(struct netdev *netdev);
@@ -49,8 +54,8 @@ int   ops_vport_unbind_access_port(int hw_unit, opennsl_pbmp_t pbm, int vni);
 int   ops_vport_bind_net_port(struct netdev *netdev, int vni);
 int   ops_vport_unbind_net_port(struct netdev *netdev, int vni);
 int   ops_vport_bind_mac(int hw_unit, char *vport, int ptype, int vni,
-                         uint8_t *mac_str);
-int   ops_vport_unbind_mac(int hw_unit, int vni, uint8_t *mac_str);
+                         struct eth_addr *ether_mac);
+int   ops_vport_unbind_mac(int hw_unit, int vni, struct eth_addr *ether_mac);
 int   ops_vport_unbind_all(struct netdev *netdev);
 
 #endif /* __OPS_VPORT_H__ */
