@@ -48,6 +48,7 @@
 #include "ops-stg.h"
 #include "diag_dump.h"
 #include "ops-sflow.h"
+#include "ops-classifier.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_debug);
 
@@ -95,7 +96,7 @@ char cmd_ops_usage[] =
 "   l3ecmp [<entry>] - display an ecmp egress object info.\n"
 "   lag [<lagid>] - displays OpenSwitch LAG info.\n"
 "   stg [hw] <stgid> - displays Spanning Tree Group Info. \n"
-"   fp [<copp-ingress-group> | <copp-egress-group> | <ospf-group>]- displays programmed fp rules.\n"
+"   fp [<copp-ingress-group> | <copp-egress-group> | <ospf-group> | <acl-ingress-group>]- displays programmed fp rules.\n"
 "   copp-stats - displays all the CoPP configuration and statistics.\n"
 "   copp-config <packet class name> <CPU queue class> <Rate> <Burst> - Modifies the CoPP rule for a control packet class \n"
 "   cpu-queue-stats - displays the per cpu queue statistics.\n"
@@ -308,6 +309,8 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
     uint32 p0, p1;
     static char *stat_type_str[] = STAT_TYPE_STRINGS;
     opennsl_ip6_t ip6_dest, ip6_mask;
+    opennsl_pbmp_t pbmp, pbmp_mask;
+    char pfmt[_SHR_PBMP_FMT_LEN];
 
     ds_put_format(ds, "Group ID = %d\n", group);
     /* First get th entry count for this group */
@@ -357,6 +360,27 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
             ds_put_format(ds, "\tQualifier Stage is Egress\n");
         }
 
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyL3Routable)) {
+            ret = opennsl_field_qualify_L3Routable_get(unit,
+                    entry_array[entry_index],(uint8 *) &data,(uint8 *) &mask);
+             if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is L3Routable - ");
+                ds_put_format(ds, "0x%x mask 0x%x\n", (int)data, (int)mask);
+             }
+             data = 0;
+             mask = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyInPorts)) {
+            ret = opennsl_field_qualify_InPorts_get(unit,
+                  entry_array[entry_index], &pbmp, &pbmp_mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is Inports -\n");
+                ds_put_format(ds, "\t       Data=%s\n", _SHR_PBMP_FMT(pbmp, pfmt));
+                ds_put_format(ds, "\t       Mask=%s\n", _SHR_PBMP_FMT(pbmp_mask, pfmt));
+            }
+        }
+
         if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyInPort)) {
             ret = opennsl_field_qualify_InPort_get(unit,
                   entry_array[entry_index],(int *) &data,(int *) &mask);
@@ -374,18 +398,6 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
                   entry_array[entry_index],(int *) &data,(int *) &mask);
             if (!OPENNSL_FAILURE(ret)) {
                 ds_put_format(ds, "\t    Qualifier is Outport - ");
-                ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
-                                  (int)mask);
-            }
-            data = 0;
-            mask = 0;
-        }
-
-        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyL4DstPort)) {
-            ret = opennsl_field_qualify_L4DstPort_get(unit,
-                  entry_array[entry_index],(int *) &data,(int *) &mask);
-            if (!OPENNSL_FAILURE(ret)) {
-                ds_put_format(ds, "\t    Qualifier is L4DstPort - ");
                 ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
                                   (int)mask);
             }
@@ -450,6 +462,30 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
                  ((int) mask >> 24) & 0xff, ((int) mask >> 16) & 0xff,
                  ((int) mask >> 8) & 0xff,(int) mask & 0xff);
                 ds_put_format(ds,"data %-16s mask %-16s\n", ip_str, mask_str);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyL4SrcPort)) {
+            ret = opennsl_field_qualify_L4SrcPort_get(unit,
+                  entry_array[entry_index],(int *) &data,(int *) &mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is L4SrcPort - ");
+                ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
+                                  (int)mask);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyL4DstPort)) {
+            ret = opennsl_field_qualify_L4DstPort_get(unit,
+                  entry_array[entry_index],(int *) &data,(int *) &mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is L4DstPort - ");
+                ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
+                                  (int)mask);
             }
             data = 0;
             mask = 0;
