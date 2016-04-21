@@ -1732,6 +1732,9 @@ struct mirror_object_s {
     int n_mirrored;
     mirrored_port_t mirrored_ports [MAX_MIRROR_SOURCES];
 
+    /* base numbers when stats begin */
+    uint64_t tx_base_packets, tx_base_bytes;
+
 };
 
 /*
@@ -1828,10 +1831,12 @@ mirror_object_allocate (void)
         if (mirror_slot_is_free(m)) {
             DEBUG_MIRROR("created a new empty mirror object at index %d", i);
             m->n_mirrored = 0;
+            m->tx_base_packets = 0;
+            m->tx_base_bytes = 0;
             return m;
         }
     }
-    DEBUG_MIRROR("could NOT create a new mirror object, out of memory");
+    ERROR_MIRROR("could NOT create a new mirror object, out of memory");
     return NULL;
 }
 
@@ -1978,7 +1983,7 @@ mirror_object_disassociate_port (mirror_object_t *mirror, mirrored_port_t *port)
 }
 
 static void
-mirror_disassociate_all_ports (mirror_object_t *mirror)
+mirror_disassociate_all_source_ports (mirror_object_t *mirror)
 {
     int i, port_count;
 
@@ -2050,7 +2055,7 @@ mirror_object_destroy (mirror_object_t *mirror,
      * Disassociate all mirrored ports from mtp first.
      * BCM requires this before a mirror can be deleted
      */
-    mirror_disassociate_all_ports(mirror);
+    mirror_disassociate_all_source_ports(mirror);
 
     DEBUG_MIRROR("now destroying mtp HW %s for mirror %s",
             mtp->name, mirror->name);
@@ -2060,7 +2065,7 @@ mirror_object_destroy (mirror_object_t *mirror,
         DEBUG_MIRROR("mirror %s hw endpoint %s also destroyed successfully",
                 mirror->name, mtp->name);
     } else {
-        DEBUG_MIRROR("mirror %s HW endpoint %s destroy FAILURE <%s (%d)>",
+        ERROR_MIRROR("mirror %s HW endpoint %s destroy FAILURE <%s (%d)>",
                 mirror->name, mtp->name, opennsl_errmsg(rc), rc);
     }
 
@@ -2095,11 +2100,33 @@ mirror_object_destroy_with_mtp (struct ofbundle *mtp)
 }
 
 static int
+mirror_get_stats (struct ofbundle *mtp, uint64_t *packets, uint64_t *bytes)
+{
+    int hw_unit, hw_port;
+    struct netdev_stats stats;
+
+    bundle_get_hw_info(mtp, &hw_unit, &hw_port);
+    if (bcmsdk_get_port_stats(hw_unit, hw_port, &stats))
+        return INTERNAL_ERROR;
+
+    *packets = stats.tx_packets;
+    *bytes = stats.tx_bytes;
+
+    DEBUG_MIRROR("base stats for mtp %s set: packets %"PRIu64", "
+            "bytes %"PRIu64"", mtp->name, *packets, *bytes);
+
+    return 0;
+}
+
+static int
 mirror_object_create (const char *name,
         void *aux, struct ofbundle *mtp,
         mirror_object_t **mirror_created)
 {
     int rc, hw_unit, hw_port;
+    mirror_object_t *mirror_from_name,
+                    *mirror_from_aux,
+                    *mirror_from_mtp;
     mirror_object_t *mirror;
 
     ovs_assert(mtp);
@@ -2107,33 +2134,66 @@ mirror_object_create (const char *name,
     DEBUG_MIRROR("started creating mirror %s with aux 0x%p mtp %s",
             name, aux, mtp->name);
 
-    *mirror_created = NULL;
+    mirror = *mirror_created = NULL;
+
+    mirror_from_name = find_mirror_with_name(name);
+    mirror_from_aux = find_mirror_with_aux(aux);
+    mirror_from_mtp = find_mirror_with_mtp(mtp);
 
     /*
-     * If mirror already exists from any one of these searches,
-     * it means a 'modification' is being made to it.  Rather
-     * than trying to finesse and find out what the mods are,
-     * clean out its ports and re-establish with new ones.
-     * Here we COULD have deleted the entire mirror and
-     * recreate it but that may have cleared the statistics.
-     * We want to preserve the stats and that is why we just
-     * delete the ports.
+     * do same sanity checking of the parameters.
+     * if either 'mirror_from_name' or 'mirror_from_aux' is
+     * available, they MUST imply the same mirror.
      */
-    mirror = find_mirror_with_name(name);
-    if (mirror) mirror_disassociate_all_ports(mirror);
+    if (mirror_from_name || mirror_from_aux) {
 
-    mirror = find_mirror_with_aux(aux);
-    if (mirror) mirror_disassociate_all_ports(mirror);
+        /* these must match up */
+        if (mirror_from_name != mirror_from_aux) {
+            ERROR_MIRROR("mirror name %s and mirror 'aux' 0x%p mismatch",
+                name, aux);
+            return EXTERNAL_ERROR;
+        }
 
-    mirror = find_mirror_with_mtp(mtp);
-    if (mirror) mirror_disassociate_all_ports(mirror);
+        /* pick either one */
+        mirror = mirror_from_name;
+
+        /*
+         * if these dont match, it means the destination port (mtp)
+         * of an existing mirror is being changed.  If so, blow
+         * the whole thing apart and re-construct from scratch
+         */
+        if (mirror->mtp != mtp) {
+            DEBUG_MIRROR("mtp for mirror %s being changed from %s to %s",
+                mirror->name, mirror->mtp->name, mtp->name);
+            mirror_object_direct_destroy(mirror);
+            mirror = NULL;
+        }
+
+    } else {
+
+        /* this cannot be around without a matching name and aux */
+        if (mirror_from_mtp) {
+            ERROR_MIRROR("mirror mtp 0x%p (%s) exists without a name or aux",
+                mtp, mtp->name);
+            return EXTERNAL_ERROR;
+        }
+    }
+
+    if (mirror) {
+        DEBUG_MIRROR("reconfiguring mirror %s", mirror->name);
+        mirror_disassociate_all_source_ports(mirror);
+        DEBUG_MIRROR("mirror %s already exists", name);
+        *mirror_created = mirror;
+        return 0;
+    }
 
     ovs_assert(NULL == mtp->mirror_data);
 
     /* get new space and check for 'too many mirrors' */
+    DEBUG_MIRROR("creating a new fresh mirror with name %s", name);
     mirror = mirror_object_allocate();
     if (NULL == mirror) {
-        DEBUG_MIRROR("no more space left to create mirror %s", name);
+        ERROR_MIRROR("no more space left to create mirror %s", name);
         return RESOURCE_ERROR;
     }
 
@@ -2156,7 +2216,7 @@ mirror_object_create (const char *name,
     }
 
     if (rc) {
-        DEBUG_MIRROR("creating the hw endpoint for mirror %s mtp %s FAILED",
+        ERROR_MIRROR("creating the hw endpoint for mirror %s mtp %s FAILED",
                 mirror->name, mtp->name);
         mirror_object_free(mirror);
         return INTERNAL_ERROR;
@@ -2164,6 +2224,11 @@ mirror_object_create (const char *name,
 
     /* if we are here, mirror endpoint has successfully been created */
     *mirror_created = mirror;
+
+    /* set the base stats of the mirror output port */
+    mirror_get_stats(mtp, &mirror->tx_base_packets, &mirror->tx_base_bytes);
+    DEBUG_MIRROR("mirror %s base stats set to packets %"PRIu64" bytes %"PRIu64"",
+        mirror->name, mirror->tx_base_packets, mirror->tx_base_bytes);
 
     DEBUG_MIRROR("succesfully created mirror %s with mirror_dest_id %d",
             name, mtp->mirror_data->mirror_dest_id);
@@ -2188,14 +2253,14 @@ mirror_object_associate_port (mirror_object_t *mirror,
 
     /* is the specified MTP a fully functional mirror endpoint ? */
     if (NULL == mtp->mirror_data) {
-        DEBUG_MIRROR("bundle %s (0x%p) is not a valid mirror destination",
+        ERROR_MIRROR("bundle %s (0x%p) is not a valid mirror destination",
                 mtp->name, mtp);
         return INTERNAL_ERROR;
     }
 
     /* source port cannot be a lag */
     if (bundle_is_a_lag(source)) {
-        DEBUG_MIRROR("port %s is a lag.  It cannot be a source for an MTP",
+        ERROR_MIRROR("port %s is a lag.  It cannot be a source for an MTP",
                 source->name);
         return EXTERNAL_ERROR;
     }
@@ -2215,7 +2280,7 @@ mirror_object_associate_port (mirror_object_t *mirror,
         return 0;
     }
 
-    DEBUG_MIRROR("could NOT add port %s mirror %s mtp %s mdestid %d: %s (%d)",
+    ERROR_MIRROR("could NOT add port %s mirror %s mtp %s mdestid %d: %s (%d)",
             source->name, mirror->name, mtp->name,
             mtp->mirror_data->mirror_dest_id,
             opennsl_errmsg(rc), rc);
@@ -2235,7 +2300,7 @@ mirror_object_setup (struct mbridge *mbridge, void *aux, const char *name,
     mirror_object_t *mirror;
 
     DEBUG_MIRROR("mirror_object_setup name %s n_srcs %d n_dsts %d mtp %s",
-            name, n_srcs, n_dsts, mtp->name);
+            name, (int) n_srcs, (int) n_dsts, mtp->name);
 
     rc = mirror_object_create(name, aux, mtp, &mirror);
     if (OPENNSL_FAILURE(rc))
@@ -2253,7 +2318,7 @@ mirror_object_setup (struct mbridge *mbridge, void *aux, const char *name,
 
         /* a mirrored port cannot also be a mirror endpoint */
         if (srcs[i]->mirror_data) {
-            DEBUG_MIRROR("src %s is also an MTP", srcs[i]->name);
+            ERROR_MIRROR("src %s is also an MTP", srcs[i]->name);
             continue;
         }
 
@@ -2278,7 +2343,7 @@ mirror_object_setup (struct mbridge *mbridge, void *aux, const char *name,
 
         /* a mirrored port cannot also be a mirror endpoint */
         if (dsts[i]->mirror_data) {
-            DEBUG_MIRROR("src %s is also an MTP", dsts[i]->name);
+            ERROR_MIRROR("src %s is also an MTP", dsts[i]->name);
             continue;
         }
 
@@ -2313,13 +2378,13 @@ ofproto_class_mirror_process_function (struct ofproto *ofproto_,
     struct bcmsdk_provider_node *ofproto;
     struct ofbundle **srcs, **dsts, *out;
     int error = 0;
-    size_t i;
+    int i;
 
     DEBUG_MIRROR("ofproto_class_mirror_process_function called");
 
     /* aux MUST always be available */
     if (NULL == aux) {
-        DEBUG_MIRROR("something wrong, aux is NULL");
+        ERROR_MIRROR("something wrong, aux is NULL");
         return EXTERNAL_ERROR;
     }
 
@@ -2333,12 +2398,12 @@ ofproto_class_mirror_process_function (struct ofproto *ofproto_,
     mout = (struct ofproto_mirror_bundle *)(s->out_bundle);
     out = bundle_lookup(bcmsdk_provider_node_cast(mout->ofproto), mout->aux);
     if (NULL == out) {
-        DEBUG_MIRROR("Mirror output port not found");
+        ERROR_MIRROR("Mirror output port not found");
         return EXTERNAL_ERROR;
     }
 
     DEBUG_MIRROR("    n_srcs %d, n_dsts %d, out_vlan %u",
-            s->n_srcs, s->n_dsts, s->out_vlan);
+            (int) s->n_srcs, (int) s->n_dsts, s->out_vlan);
 
     srcs = xmalloc(s->n_srcs * sizeof *srcs);
     dsts = xmalloc(s->n_dsts * sizeof *dsts);
@@ -2349,7 +2414,8 @@ ofproto_class_mirror_process_function (struct ofproto *ofproto_,
         ofproto = bcmsdk_provider_node_cast(msrcs[i].ofproto);
         srcs[i] = bundle_lookup(ofproto, msrcs[i].aux);
         if (NULL == srcs[i]) {
-            DEBUG_MIRROR("Mirror RX port %d of %d not found", i+1, s->n_srcs);
+            ERROR_MIRROR("Mirror RX port %d of %d not found",
+                i+1, (int) s->n_srcs);
             error = EXTERNAL_ERROR;
             break;
         }
@@ -2361,7 +2427,8 @@ ofproto_class_mirror_process_function (struct ofproto *ofproto_,
         ofproto = bcmsdk_provider_node_cast(mdsts[i].ofproto);
         dsts[i] = bundle_lookup(ofproto, mdsts[i].aux);
         if (NULL == dsts[i]) {
-            DEBUG_MIRROR("Mirror TX port %d of %d not found", i+1, s->n_dsts);
+            ERROR_MIRROR("Mirror TX port %d of %d not found",
+                i+1, (int) s->n_dsts);
             error = EXTERNAL_ERROR;
             break;
         }
@@ -2384,8 +2451,6 @@ ofproto_class_mirror_get_stats_function (struct ofproto *ofproto_,
     void *aux, uint64_t *packets, uint64_t *bytes)
 {
     mirror_object_t *mirror;
-    struct netdev_stats stats;
-    int hw_unit, hw_port;
 
     DEBUG_MIRROR("getting stats for mirror aux 0x%p", aux);
 
@@ -2394,13 +2459,14 @@ ofproto_class_mirror_get_stats_function (struct ofproto *ofproto_,
 
     DEBUG_MIRROR("getting stats for mirror %s", mirror->name);
 
-    bundle_get_hw_info(mirror->mtp, &hw_unit, &hw_port);
-    if (bcmsdk_get_port_stats(hw_unit, hw_port, &stats)) return INTERNAL_ERROR;
+    if (mirror_get_stats(mirror->mtp, packets, bytes))
+        return INTERNAL_ERROR;
 
-    *packets = stats.tx_packets;
-    *bytes = stats.tx_bytes;
+    *packets -= mirror->tx_base_packets;
+    *bytes -= mirror->tx_base_bytes;
 
-    DEBUG_MIRROR("returning stats for mirror %s mtp %s; tx packets %lu, bytes %lu",
+    DEBUG_MIRROR("returning stats for mirror %s mtp %s; "
+            "tx packets %"PRIu64", bytes %"PRIu64"",
             mirror->name, mirror->mtp->name, *packets, *bytes);
 
     return 0;

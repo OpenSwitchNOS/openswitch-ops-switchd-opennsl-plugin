@@ -48,6 +48,18 @@ debug_module(char *filename, char *source_file, const char *function_name,
 #define DEBUG_MIRROR(fmt, args...) \
     DEBUG_MODULE(mirror_debug_on, mirror_debug_file, fmt, ## args)
 
+#define ERROR_MIRROR    DEBUG_MIRROR
+
+/*
+ * these turn off private mirror debugging and error logging
+ * and turns on the 'standard' vlogging mechanism.  For final
+ * release, leave them intact.
+ */
+#undef DEBUG_MIRROR
+#undef ERROR_MIRROR
+#define DEBUG_MIRROR    VLOG_DBG
+#define ERROR_MIRROR    VLOG_ERR
+
 extern int
 bcmsdk_mirrors_init(int unit);
 
