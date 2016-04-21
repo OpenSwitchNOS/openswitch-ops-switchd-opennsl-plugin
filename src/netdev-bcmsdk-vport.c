@@ -436,25 +436,60 @@ set_tunnel_nexthop( struct netdev_vport *netdev, int egr_id)
     return false;
 }
 
-/* Called upon tunnel configuration
- * Find out route, next hop and update the carrier config
+/* Caller check for valid l3_egress_id pointer
+ * Find the host egress id from Ip address
+ * Successful if return is 0
+ */
+static int
+is_neighbor(int hw_unit, int vrf_id, in_addr_t ipv4_addr, int *l3_egress_id)
+{
+    opennsl_error_t rc = OPENNSL_E_NONE;
+    opennsl_l3_host_t l3host;
+    int flags = 0;
+
+    opennsl_l3_host_t_init(&l3host);
+    l3host.l3a_ip_addr = ipv4_addr;
+    l3host.l3a_vrf = vrf_id;
+    l3host.l3a_flags = flags;
+    rc = opennsl_l3_host_find(hw_unit, &l3host);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR ("opennsl_l3_host_find failed: %s", opennsl_errmsg(rc));
+        return rc;
+    }
+    *l3_egress_id = l3host.l3a_intf;
+    VLOG_DBG("**** %s Found host egr id %d for IP 0x%x *** \n",
+               __func__, *l3_egress_id, ipv4_addr);
+    return rc;
+}
+
+/*
+ * Called upon tunnel configuration
+ * Find out route, next hop information using destination IP
+ * Check if this dst IP is a neighbor else
+ * search in the cached route table for next hop info
  */
 static void
 check_route(struct netdev_vport *netdev)
 {
-    ovs_be32 route;
+    ovs_be32 ipv4;
     int l3_egress_id;
-    /* TODO with ipv6 */
-    route = in6_addr_get_mapped_ipv4(&netdev->tnl_cfg.ipv6_dst);
-    if (route && ops_egress_lookup_from_dst_ip(netdev->carrier.vrf,
-        route, &l3_egress_id)) {
+    ipv4 = in6_addr_get_mapped_ipv4(&netdev->tnl_cfg.ipv6_dst);
+    if(!ipv4) {
+         /* TODO: support IPV6 */
+         VLOG_ERR("Invalid destination IP\n");
+         return;
+    }
+    if(!is_neighbor(netdev->hw_unit, netdev->carrier.vrf,
+                      ntohl(ipv4), &l3_egress_id) ||
+        ops_egress_lookup_from_dst_ip(netdev->carrier.vrf, ipv4,
+                                      &l3_egress_id)) {
         if(set_tunnel_nexthop(netdev, l3_egress_id)) {
             tunnel_check_status_change__(netdev);
         }
         else {
             VLOG_DBG("Route unresolved. To be resolved by arpmgr "
                      " intd id %d", l3_egress_id);
-            /* do_ping(&route); */
+            /* do_ping(&ipv4); */
         }
     }
 }

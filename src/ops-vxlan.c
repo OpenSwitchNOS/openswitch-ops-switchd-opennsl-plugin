@@ -42,6 +42,13 @@
 #include "ops-vxlan.h"
 #include "bcm-common.h"
 
+/*
+ * BCM issues are commented out using
+ * #ifdef PORT_GET
+ * #ifdef L2_STATION
+ * When the issues are resoved, remove those #ifdef
+ */
+
 /**************************************************************************/
 /*                              DECLARATIONS                              */
 /**************************************************************************/
@@ -2134,8 +2141,10 @@ vxlan_bind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
     opennsl_vxlan_port_t vxlan_port;
     opennsl_gport_t gport;
     opennsl_l3_egress_t l3_egr;
-    //opennsl_l2_station_t l2_station;
-    //int i;
+#ifdef L2_STATION
+    opennsl_l2_station_t l2_station;
+    int i;
+#endif
     vxlan_logical_sw_element_t *logical_sw_element_p;
     vxlan_egr_obj_element_t *egr_obj_element_p;
     bcmsdk_vxlan_egr_obj_t egr_obj;
@@ -2236,7 +2245,7 @@ vxlan_bind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
     // jin, the opennsl 3.1.0.7 does not support opennsl_l2_station_t
     // with vlan and vlan_mask fields. We will need to communicate
     // with Broadcom about this issue.
-#if 0
+#ifdef L2_STATION
     opennsl_l2_station_t_init(&l2_station);
     memcpy(l2_station.dst_mac, net_port_p->local_mac, ETH_ALEN);
     for (i = 0; i < ETH_ALEN; i++) {
@@ -2254,7 +2263,7 @@ vxlan_bind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
                  net_port_p->local_mac[4], net_port_p->local_mac[5]);
         goto CLEANUP_VXLAN_VPORT;
     }
-#endif  //0
+#endif
 
     VLOG_DBG("[%s, %d], exit rc:%d unit:%d port:0x%x l3_intf_id:0x%x egr_obj_id:0x%x vlan:%d vnid:%d vpn_id:0x%x local_mac:%02x%02x%02x%02x%02x%02x next_hop_mac:%02x%02x%02x%02x%02x%02x station_id:0x%x vxlan_port_id:0x%x\n",
              __FUNCTION__, __LINE__, rc, unit,
@@ -2281,7 +2290,7 @@ vxlan_bind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
     // only defined in above block, without that block of codes
     // enable, it will have compilation error saying that
     // CLEANUP_VXLAN_VPORT is defined but not used
-#if 0
+#ifdef L2_STATION
  CLEANUP_VXLAN_VPORT:
 #endif
     rc = opennsl_vxlan_port_delete(unit, logical_sw_element_p->vpn_id,
@@ -2347,14 +2356,15 @@ vxlan_unbind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
                  __FUNCTION__, __LINE__, unit);
         return BCMSDK_E_PARAM;
     }
-
+    // opennsl 3.1.0.7 does not support opennsl_l2_station_t
+#ifdef L2_STATION
     rc = opennsl_l2_station_delete(unit, net_port_p->station_id);
     if (rc) {
         VLOG_ERR("Error [%s, %d], opennsl_l2_station_delete rc:%d unit:%d station_id:0x%x\n",
                  __FUNCTION__, __LINE__, rc, unit, net_port_p->station_id);
         return rc;
     }
-
+#endif
     logical_sw_element_p = vxlan_find_logical_switch_hash_element(unit, net_port_p->vnid);
     if (logical_sw_element_p == NULL) {
         VLOG_ERR("Error [%s, %d], invalid vnid unit:%d vnid:%d\n",
@@ -2375,6 +2385,14 @@ vxlan_unbind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
 
     net_port_p->egr_obj_id = vxlan_port.egress_if;
 
+    /*
+     * BCM issue: opennsl_vxlan_port_get() above returns
+     * vxlan_port.match_port = 0 causing failure in
+     * opennsl_port_local_get().
+     * Work around: upper layer passes correct port in
+     * net_port_p->port
+     */
+#ifdef PORT_GET
     rc = opennsl_port_local_get(unit, vxlan_port.match_port,
                                 &net_port_p->port);
     if (rc) {
@@ -2384,7 +2402,7 @@ vxlan_unbind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
                  net_port_p->vxlan_port_id);
         return rc;
     }
-
+#endif
     rc = vxlan_network_port_unconfigure(unit, net_port_p->port);
     if (rc) {
         VLOG_ERR("Error [%s, %d], vxlan_network_port_unconfigure rc:%d unit:%d port:0x%x\n",
