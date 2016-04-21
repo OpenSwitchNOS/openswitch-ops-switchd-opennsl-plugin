@@ -35,11 +35,16 @@ struct netdev;
 #define  UPDATE_FULL        0xF
 
 
-enum {
-    TUNNEL_KEY_BIND,
-    TUNNEL_KEY_UNBIND,
+enum tnl_key_action_ {
+    TUNNEL_KEY_BIND,    /* bind access port to a logical switch */
+    TUNNEL_KEY_UNBIND,  /* unbind access port from a logical switch */
 };
 
+enum port_type_ {
+    TUNNEL,          /* tunnel  */
+    PORT_VNI,        /* port with tunnel key (VNI) configured */
+    PORT_VLAN        /* port with VLAN */
+};
 int   ops_vport_init(int hw_unit);
 int   ops_vport_create_tunnel(struct netdev *netdev);
 int   ops_vport_delete_tunnel(struct netdev *netdev);
@@ -49,8 +54,8 @@ int   ops_vport_unbind_access_port(int hw_unit, opennsl_pbmp_t pbm, int vni);
 int   ops_vport_bind_net_port(struct netdev *netdev, int vni);
 int   ops_vport_unbind_net_port(struct netdev *netdev, int vni);
 int   ops_vport_bind_mac(int hw_unit, char *vport, int ptype, int vni,
-                         uint8_t *mac_str);
-int   ops_vport_unbind_mac(int hw_unit, int vni, uint8_t *mac_str);
+                         struct eth_addr *ether_mac);
+int   ops_vport_unbind_mac(int hw_unit, int vni, struct eth_addr *ether_mac);
 int   ops_vport_unbind_all(struct netdev *netdev);
 
 #endif /* __OPS_VPORT_H__ */
