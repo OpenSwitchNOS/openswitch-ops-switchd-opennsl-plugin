@@ -436,25 +436,100 @@ set_tunnel_nexthop( struct netdev_vport *netdev, int egr_id)
     return false;
 }
 
-/* Called upon tunnel configuration
+OVS_UNUSED static int
+find_l3_host(int hw_unit, int vrf_id, char *ip, bool is_ipv6,
+             opennsl_l3_host_t *l3host)
+{
+    opennsl_error_t rc = OPENNSL_E_NONE;
+
+    in_addr_t ipv4_addr;
+    char ipv6_addr[sizeof(struct in6_addr)];
+    int flags;
+    opennsl_l3_host_t_init(l3host);
+    if( is_ipv6 ) {
+        VLOG_DBG("ipv6 addr type");
+        flags |= OPENNSL_L3_IP6;
+
+        /* convert string ip into host format */
+        rc = inet_pton(AF_INET6, ip, ipv6_addr);
+        if ( rc != 1 ) {
+            VLOG_ERR("invalid ipv6-%s", ip);
+            return 1;
+        }
+        memcpy(l3host->l3a_ip6_addr, ipv6_addr, sizeof(struct in6_addr));
+    } else {
+        /* convert string ip into host format */
+        ipv4_addr = inet_network(ip);
+        if ( ipv4_addr == -1 ) {
+            VLOG_ERR("Invalid ip-%s", ip);
+            return 1;
+        }
+
+        VLOG_DBG("ipv4 addr converted =0x%x", ipv4_addr);
+        l3host->l3a_ip_addr = ipv4_addr;
+    }
+    /* Get Host Entry */
+    l3host->l3a_vrf = vrf_id;
+    l3host->l3a_flags = flags;
+    rc = opennsl_l3_host_find(hw_unit, l3host);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR ("opennsl_l3_host_find failed: %s", opennsl_errmsg(rc));
+        return rc;
+    }
+    VLOG_INFO("Found host for ip %s, egress ID: 0x%x", ip, l3host->l3a_intf);
+    return rc;
+}
+
+/* Caller check for valid l3_egress_id pointer */
+static int
+find_neighbor(int hw_unit, int vrf_id, in_addr_t ipv4_addr, int *l3_egress_id)
+{
+    opennsl_error_t rc = OPENNSL_E_NONE;
+    opennsl_l3_host_t l3host;
+    int flags = 0;
+
+    opennsl_l3_host_t_init(&l3host);
+    l3host.l3a_ip_addr = ipv4_addr;
+    l3host.l3a_vrf = vrf_id;
+    l3host.l3a_flags = flags;
+    rc = opennsl_l3_host_find(hw_unit, &l3host);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR ("opennsl_l3_host_find failed: %s", opennsl_errmsg(rc));
+        return rc;
+    }
+    *l3_egress_id = l3host.l3a_intf;
+    VLOG_DBG("**** %s Found host egr id %d for IP 0x%x *** \n",
+               __func__, *l3_egress_id, ipv4_addr);
+    return rc;
+}
+
+/*
+ * Caller checks for valid netdev
+ * Called upon tunnel configuration
  * Find out route, next hop and update the carrier config
  */
 static void
 check_route(struct netdev_vport *netdev)
 {
-    ovs_be32 route;
+    ovs_be32 ipv4;
     int l3_egress_id;
-    /* TODO with ipv6 */
-    route = in6_addr_get_mapped_ipv4(&netdev->tnl_cfg.ipv6_dst);
-    if (route && ops_egress_lookup_from_dst_ip(netdev->carrier.vrf,
-        route, &l3_egress_id)) {
+    ipv4 = in6_addr_get_mapped_ipv4(&netdev->tnl_cfg.ipv6_dst);
+    if(!ipv4) {
+         /* TODO: support IPV6 */
+         VLOG_ERR("Invalid destination IP\n");
+         return;
+    }
+    if(!find_neighbor(netdev->hw_unit, netdev->carrier.vrf,
+                      ntohl(ipv4), &l3_egress_id) ||
+        ops_egress_lookup_from_dst_ip(netdev->carrier.vrf, ipv4,
+                                      &l3_egress_id)) {
         if(set_tunnel_nexthop(netdev, l3_egress_id)) {
             tunnel_check_status_change__(netdev);
         }
         else {
             VLOG_DBG("Route unresolved. To be resolved by arpmgr "
                      " intd id %d", l3_egress_id);
-            /* do_ping(&route); */
+            /* do_ping(&ipv4); */
         }
     }
 }

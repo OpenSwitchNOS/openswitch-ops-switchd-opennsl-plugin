@@ -1785,7 +1785,7 @@ port_query_by_name(const struct ofproto *ofproto_, const char *devname,
 
 }
 /*
- * Prefix string to ip address
+ * Prefix string to binary IP address
  * a.a.a.a/y ----> 0x0a0a0a0a
  */
 static bool
@@ -2312,6 +2312,61 @@ set_logical_switch(const struct ofproto *ofproto_,  void *aux,
     return rc;
 }
 
+int
+update_l2_mac_table(const struct ofproto *ofproto_,
+                        struct ovs_list *mac_entry_list)
+{
+    struct ofproto_l2_mac_tbl_update_entry *entry, *next_entry;
+    struct bcmsdk_provider_ofport_node *port;
+    struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
+    struct ofbundle *bundle;
+    int port_type, rc = 0, rc1 = 0;
+
+    if(list_is_empty(mac_entry_list)) {
+        VLOG_ERR("%s empty mac_entry_list\n", __func__);
+        return 1;
+    }
+    LIST_FOR_EACH_SAFE (entry, next_entry, node, mac_entry_list) {
+        port = get_ofp_port(ofproto, entry->port);
+        if (!port) {
+            VLOG_ERR("%s, invalid ofp_port %d\n", __func__, entry->port);
+            continue;
+        }
+        bundle = port->bundle;
+        switch(entry->action) {
+            case OFP_MAC_TBL_ADD:
+                if(port->is_tunnel) {
+                    port_type = TUNNEL;
+                } else if(bundle->tunnel_key != -1) {
+                    port_type = PORT_VNI;  /* Port using VNI */
+                } else {
+                    port_type = PORT_VLAN; /* Port using VLAN */
+                }
+                rc1 = ops_vport_bind_mac(bundle->hw_unit, bundle->name, port_type,
+                                   entry->vlan, &entry->mac);
+                break;
+            case OFP_MAC_TBL_DELETE:
+                rc1 = ops_vport_unbind_mac(bundle->hw_unit, entry->vlan, &entry->mac);
+                break;
+            case OFP_MAC_TBL_UPDATE:
+                /* TODO, there is no update in bcm - unbind then bind again? */
+            default:
+                VLOG_ERR("%s, not supported action %d"
+                         "MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
+                         __func__, entry->action,
+                         entry->mac.ea[0], entry->mac.ea[1], entry->mac.ea[2],
+                         entry->mac.ea[3], entry->mac.ea[4], entry->mac.ea[5]);
+                rc1 = 1;
+                break;
+        }
+        /* Save error if any but not quitting the loop
+         * What happen if return is error?
+         */
+        rc |= rc1;
+    }
+    return rc;
+}
+
 const struct ofproto_class ofproto_bcm_provider_class = {
     init,
     enumerate_types,
@@ -2418,4 +2473,5 @@ const struct ofproto_class ofproto_bcm_provider_class = {
     l3_ecmp_hash_set,           /* enable/disable ECMP hash configs */
     get_mac_learning_hmap,      /* get mac learnt */
     set_logical_switch,         /* set logical switch */
+    update_l2_mac_table,        /* bind/unbind/update l2 MAC + VLAN/VNI to ports */
 };

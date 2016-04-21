@@ -51,15 +51,9 @@ OVS_UNUSED static void netdev_change_seq_changed(const struct netdev *);
 
 static  uint16_t tnl_udp_port = UDP_PORT_MIN;
 
-enum {
-    TUNNEL,     /* tunnel_type  */
-    PORT_VNI,   /* port bound to VNI network  */
-    PORT_VLAN   /* normal port with VLAN */
-};
-
 #define mac_format(mac) \
         "ETHR ADDR: %02x:%02x:%02x:%02x:%02x:%02x\n", \
-         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5] \
+         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
 
 #define NULL_CHECK(p) \
         if(!p) {      \
@@ -278,27 +272,20 @@ ops_vport_lsw_create(int hw_unit, int vni)
  * Bind l2 MAC to the a vxlan port on the logical switch
  */
 int
-ops_vport_bind_mac(int hw_unit, char *port, int ptype, int vni, uint8_t *mac_str)
+ops_vport_bind_mac(int hw_unit, char *port, int ptype,
+                   int vni, struct eth_addr *ether_mac)
 {
     opennsl_mac_t host_mac;
     opennsl_l2_addr_t l2_addr;
-    struct ether_addr *ether_mac;
+
     int rc;
     bcmsdk_vxlan_logical_switch_t logical_sw_p;
 
-    if(!mac_str || !port) {
+    if(!ether_mac || !port) {
         VLOG_ERR("%s Invalid ethernet address or port name\n", __func__);
         return 1;
     }
-    VLOG_DBG("Port %s, vni %d, MAC entered %s",port, vni, mac_str);
-
-    ether_mac = ether_aton((char*)mac_str);
-    if(ether_mac) {
-        memcpy(host_mac, ether_mac, ETH_ALEN);
-    } else {
-        VLOG_ERR("%s Invalid ethernet address\n", __func__);
-        return 1;
-    }
+    memcpy(host_mac, ether_mac->ea, ETH_ALEN);
 
     logical_sw_p.vnid = vni;
     rc = bcmsdk_vxlan_logical_switch_operation(hw_unit,
@@ -326,28 +313,18 @@ ops_vport_bind_mac(int hw_unit, char *port, int ptype, int vni, uint8_t *mac_str
              __func__, l2_addr.port, l2_addr.vid);
     return 0;
 }
-
 int
-ops_vport_unbind_mac(int hw_unit, int vni, uint8_t *mac_str)
+ops_vport_unbind_mac(int hw_unit, int vni, struct eth_addr *ether_mac)
 {
     opennsl_mac_t host_mac;
-    struct ether_addr *ether_mac;
     int rc;
     bcmsdk_vxlan_logical_switch_t logical_sw_p;
 
-    if(!mac_str) {
+    if(!ether_mac) {
         VLOG_ERR("%s Null pointer for MAC\n", __func__);
         return 1;
     }
-    VLOG_DBG("vni %d, MAC entered %s", vni, mac_str);
-    ether_mac = ether_aton((char*)mac_str);
-    if(ether_mac) {
-        memcpy(host_mac, ether_mac, ETH_ALEN);
-    } else {
-        VLOG_ERR("%s Invalid ethernet address\n", __func__);
-        return 1;
-    }
-
+     memcpy(host_mac, ether_mac->ea, ETH_ALEN);
     logical_sw_p.vnid = vni;
     rc = bcmsdk_vxlan_logical_switch_operation(hw_unit,
                           BCMSDK_VXLAN_OPCODE_GET, &logical_sw_p);
@@ -361,8 +338,8 @@ ops_vport_unbind_mac(int hw_unit, int vni, uint8_t *mac_str)
         VLOG_ERR("%s failed, rc: %s", __func__, opennsl_errmsg(rc));
         return rc;
     }
-    VLOG_DBG("%s exit successfully, vpn_id 0x%x, mac %s\n", __func__,
-             logical_sw_p.vpn_id, mac_str);
+    VLOG_DBG("%s exit successfully, vpn_id 0x%x\n", __func__,
+             logical_sw_p.vpn_id);
     return 0;
 }
 static void
@@ -402,21 +379,21 @@ static void
 diag_vport_bind_mac(struct unixctl_conn *conn, int argc,
         const char *argv[], void *aux OVS_UNUSED)
 {
-    int hw_unit = 0;
+    int vni, ptype, hw_unit = 0;
     char port[128];
     char mac[32];
-    int vni;
-    int ptype;
+    struct eth_addr ether_mac;
     snprintf(mac,32,argv[3]);
     snprintf(port,32,argv[1]);
     vni = atoi(argv[2]);
     ptype = atoi(argv[4]);
 
-    if(!ops_vport_bind_mac(hw_unit, port, ptype, vni, (uint8_t*)mac)) {
-       unixctl_command_reply(conn, "sucess bining mac");
+    if(eth_addr_from_string(mac, &ether_mac) &&
+       !ops_vport_bind_mac(hw_unit, port, ptype, vni, &ether_mac)) {
+        unixctl_command_reply(conn, "Sucess bining MAC");
     } else {
         VLOG_ERR("%s failed ", __func__);
-        unixctl_command_reply(conn, "fail bining mac");
+        unixctl_command_reply(conn, "Fail bining MAC");
     }
 }
 
@@ -424,15 +401,17 @@ static void
 diag_vport_unbind_mac(struct unixctl_conn *conn, int argc,
         const char *argv[], void *aux OVS_UNUSED)
 {
-    int hw_unit = 0;
+    int vni, hw_unit = 0;
     char mac[32];
+    struct eth_addr ether_mac;
+    vni = atoi(argv[1]);
     snprintf(mac,32,argv[2]);
-    int vni = atoi(argv[1]);
-    if(!ops_vport_unbind_mac(hw_unit, vni, (uint8_t*)mac)) {
-       unixctl_command_reply(conn, "sucess unbining mac");
+    if(eth_addr_from_string(mac, &ether_mac) &&
+        !ops_vport_unbind_mac(hw_unit, vni, &ether_mac)) {
+        unixctl_command_reply(conn, "Sucess unbining mac");
     } else {
         VLOG_ERR("%s failed ", __func__);
-        unixctl_command_reply(conn, "fail bining mac");
+        unixctl_command_reply(conn, "Fail bining mac");
     }
 }
 
