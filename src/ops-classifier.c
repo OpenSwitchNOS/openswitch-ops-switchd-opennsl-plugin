@@ -427,11 +427,8 @@ ops_cls_set_action(int                          unit,
     }
 
     if (cls_entry->act_flags & OPS_CLS_ACTION_LOG) {
-        uint8_t entry_id;
-
-        entry_id = MIN(cls_entry->index, (uint8_t)(-1));
         rc = opennsl_field_action_add(unit, entry, opennslFieldActionCopyToCpu,
-                                      1, entry_id);
+                                      1, ACL_LOG_RULE_ID);
         if (OPENNSL_FAILURE(rc)) {
             VLOG_ERR("Failed to set copy action at entry %d: rc=%s", entry,
                      opennsl_errmsg(rc));
@@ -1439,12 +1436,6 @@ acl_log_handle_rx_event(opennsl_pkt_t *pkt)
         pkt_info.valid_fields |= ACL_LOG_NODE;
         pkt_info.in_cos        = pkt->cos;
         pkt_info.valid_fields |= ACL_LOG_IN_COS;
-
-        /* provide any available info on which ACE this packet matched */
-        if (pkt->reserved29 < (uint8_t)(-1)) {
-            pkt_info.entry_num = pkt->reserved29;
-            pkt_info.valid_fields |= ACL_LOG_ENTRY_NUM;
-        }
 
         /* fill in fields related to packet data */
         pkt_info.total_pkt_len = pkt->tot_len;
