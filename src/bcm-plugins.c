@@ -19,6 +19,7 @@
 
 #include <openvswitch/vlog.h>
 #include <netdev-provider.h>
+
 #include "bcm.h"
 #include "bufmon-bcm-provider.h"
 #include "netdev-bcmsdk.h"
@@ -29,6 +30,7 @@
 #include "eventlog.h"
 #include "ops-copp.h"
 #include "copp-asic-provider.h"
+#include "diag_dump.h"
 
 #define init libovs_bcm_plugin_LTX_init
 #define run libovs_bcm_plugin_LTX_run
@@ -37,6 +39,7 @@
 #define netdev_register libovs_bcm_plugin_LTX_netdev_register
 #define ofproto_register libovs_bcm_plugin_LTX_ofproto_register
 #define bufmon_register libovs_bcm_plugin_LTX_bufmon_register
+extern void lag_diag_dump_basic_cb(const char *feature , char **buf);
 
 VLOG_DEFINE_THIS_MODULE(bcm_plugin);
 
@@ -81,6 +84,9 @@ init(void) {
     if (retval < 0) {
         VLOG_ERR("Event log initialization failed for LAG");
     }
+
+    /* Register diagnostic callback function for LAG*/
+    INIT_DIAG_DUMP_BASIC(lag_diag_dump_basic_cb);
 
     opennsl_extension.plugin_name = ASIC_PLUGIN_INTERFACE_NAME;
     opennsl_extension.major = ASIC_PLUGIN_INTERFACE_MAJOR;

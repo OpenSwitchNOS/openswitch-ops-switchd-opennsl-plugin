@@ -32,6 +32,7 @@
 #include "ops-debug.h"
 #include "ops-lag.h"
 #include "eventlog.h"
+#include "diag_dump.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_lag);
 
@@ -49,6 +50,8 @@ typedef struct ops_lag_data {
 
 static int lags_data_initialized = 0;
 TAILQ_HEAD(ops_lag_data_head, ops_lag_data) ops_lags;
+
+#define DIAGNOSTIC_BUFFER_LEN 16000
 
 /* Broadcom switch chip module ID.
    OPS_TODO: Support multiple switch chips. */
@@ -122,6 +125,34 @@ ops_lag_dump(struct ds *ds, opennsl_trunk_t lagid)
     }
 
 } // ops_vlan_dump
+
+/**
+ * callback handler function for diagnostic dump basic
+ * it allocates memory as per requirement and populates data.
+ * INIT_DIAG_DUMP_BASIC will free allocated memory.
+ *
+ * @param feature name of the feature.
+ * @param buf pointer to the buffer.
+ */
+void lag_diag_dump_basic_cb(const char *feature , char **buf)
+{
+    struct ds ds = DS_EMPTY_INITIALIZER;
+    opennsl_trunk_t lagid = -1;
+
+    if (!buf)
+        return;
+    *buf =  xcalloc(1, DIAGNOSTIC_BUFFER_LEN);
+    if (*buf) {
+        /* populate basic diagnostic data to buffer  */
+        ops_lag_dump(&ds, lagid);
+        sprintf(*buf, "%s", ds_cstr(&ds));
+        VLOG_INFO("basic diag-dump data populated for feature %s",feature);
+    } else{
+        VLOG_ERR("Memory allocation failed for feature %s , %d bytes",
+                 feature , DIAGNOSTIC_BUFFER_LEN);
+    }
+    return ;
+} /* lag_diag_dump_basic_cb */
 
 ////////////////////////////////// HW API //////////////////////////////////
 
