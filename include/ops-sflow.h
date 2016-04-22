@@ -129,4 +129,6 @@ ops_sflow_set_per_interface (const int unit, const int port, bool set);
 extern void
 ops_sflow_set_collectors(struct sset *ops_targets);
 
+extern void
+sflow_diag_dump_basic_cb(char *buf);
 #endif /* __OPS_SFLOW_H__ */
