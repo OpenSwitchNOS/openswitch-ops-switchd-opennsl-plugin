@@ -43,6 +43,7 @@
 #include "netdev-bcmsdk.h"
 /* Broadcom provider */
 #include "ofproto-bcm-provider.h"
+#include "ops-copp.h"
 #include "ops-knet.h"
 #include "ops-cls-asic-plugin.h"
 #include "platform-defines.h"
@@ -437,7 +438,16 @@ ops_cls_set_action(int                          unit,
                      opennsl_errmsg(rc));
             return rc;
         } else {
-            VLOG_DBG("Log action added at entry %d", entry);
+            rc = opennsl_field_action_add(unit, entry,
+                                          opennslFieldActionCosQCpuNew,
+                                          OPS_COPP_QOS_QUEUE_ACL_LOGGING, 0);
+            if (OPENNSL_FAILURE(rc)) {
+                VLOG_ERR("Failed to set queue for copy action at entry %d: "
+                         "rc=%s", entry, opennsl_errmsg(rc));
+                return rc;
+            } else {
+                VLOG_DBG("Log action added at entry %d", entry);
+            }
         }
     }
 
@@ -1411,12 +1421,14 @@ acl_log_handle_rx_event(opennsl_pkt_t *pkt)
 {
     static long long int last_pkt_rxd_time = 0;
     long long int cur_time;
+    static uint64_t pkt_counter = 0;
 
     if (!pkt) {
         VLOG_ERR("Acl logging received invalid pkt from the ASIC");
         return;
     }
 
+    pkt_counter++;
     cur_time = time_msec();
     /* ignore packets received within a small time window after the last ACL
      * logging packet
@@ -1424,7 +1436,8 @@ acl_log_handle_rx_event(opennsl_pkt_t *pkt)
     if (cur_time >= (last_pkt_rxd_time + ACL_LOGGING_MIN_MS_BETWEEN_PKTS)) {
         struct acl_log_info pkt_info = { .valid_fields = 0 };
 
-        VLOG_DBG("ACL logging packet of length %d received", pkt->pkt_len);
+        VLOG_DBG("ACL logging packet of length %d received; "
+                "total packets received so far %lu", pkt->pkt_len, pkt_counter);
         last_pkt_rxd_time = cur_time;
 
         /* fill in the acl_log_info struct */
