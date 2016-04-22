@@ -401,9 +401,11 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
         }
 
         if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyDstPort)) {
-            ret = opennsl_field_qualify_DstPort_get(unit,
-                  entry_array[entry_index], (int *) &data_modid,
-                  (int *) &mask_modid, (int *) &data, (int *) &mask);
+            //ret = opennsl_field_qualify_DstPort_get(unit,
+            //      entry_array[entry_index], (int *) &data_modid,
+            //      (int *) &mask_modid, (int *) &data, (int *) &mask);
+                  //entry_array[entry_index], (int *) &data_modid,
+                  //(int *) &mask_modid, (int *) &data, (int *) &mask);
             if (!OPENNSL_FAILURE(ret)) {
                 ds_put_format(ds, "\t    Qualifier is DstPort - ");
                 ds_put_format(ds, "0x%02x mask - 0x%02x data_modid - 0x%02x \
@@ -411,6 +413,8 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
                                    (int)data, (int)mask,
                                    (int) data_modid, (int) mask_modid);
             }
+            data = data_modid;
+            mask = mask_modid;
             data = 0;
             mask = 0;
             data_modid = 0;
@@ -790,7 +794,7 @@ ops_get_cpu_queue_stats (struct ds *ds, opennsl_cos_queue_t queueid)
     int unit;
     uint64 value;
     int ret = 0;
-    opennsl_gport_t gport = OPENNSL_GPORT_LOCAL_CPU;
+    opennsl_gport_t gport = 0 /*OPENNSL_GPORT_LOCAL_CPU*/;
     opennsl_cosq_stat_t stat;
 
     for (unit = 0; unit < MAX_SWITCH_UNITS; unit++) {
