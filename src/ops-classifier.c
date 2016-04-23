@@ -120,6 +120,7 @@ ops_classifier_init(int unit)
     OPENNSL_FIELD_QSET_ADD(qset, opennslFieldQualifyIpProtocol);
     OPENNSL_FIELD_QSET_ADD(qset, opennslFieldQualifyL4SrcPort);
     OPENNSL_FIELD_QSET_ADD(qset, opennslFieldQualifyL4DstPort);
+    OPENNSL_FIELD_QSET_ADD(qset, opennslFieldQualifyRangeCheck);
 
     rc = opennsl_field_group_create(unit, qset, OPS_GROUP_PRI_IPv4, &ip_group);
     if (OPENNSL_FAILURE(rc)) {
@@ -478,18 +479,66 @@ ops_cls_set_pd_status(int                        rc,
 
     VLOG_DBG("ops classifier error: %d ", rc);
 
+    pd_status->entry_id = rule_index;
+
     switch (rc) {
-    case OPS_FAIL:
     case OPENNSL_E_INTERNAL:
+        pd_status->status_code = OPS_CLS_STATUS_HW_INTERNAL_ERR;
+        break;
     case OPENNSL_E_MEMORY:
+        pd_status->status_code = OPS_CLS_STATUS_HW_MEMORY_ERR;
+        break;
+    case OPENNSL_E_UNIT:
+        pd_status->status_code = OPS_CLS_STATUS_HW_UNIT_ERR;
+        break;
     case OPENNSL_E_PARAM:
+        pd_status->status_code = OPS_CLS_STATUS_HW_PARAM_ERR;
+        break;
+    case OPENNSL_E_EMPTY:
+        pd_status->status_code = OPS_CLS_STATUS_HW_EMPTY_ERR;
+        break;
     case OPENNSL_E_FULL:
+        pd_status->status_code = OPS_CLS_STATUS_HW_FULL_ERR;
+        break;
+    case OPENNSL_E_NOT_FOUND:
+        pd_status->status_code = OPS_CLS_STATUS_HW_NOT_FOUND_ERR;
+        break;
+    case OPENNSL_E_EXISTS:
+        pd_status->status_code = OPS_CLS_STATUS_HW_EXISTS_ERR;
+        break;
+    case OPENNSL_E_TIMEOUT:
+        pd_status->status_code = OPS_CLS_STATUS_HW_TIMEOUT_ERR;
+        break;
+    case OPENNSL_E_BUSY:
+        pd_status->status_code = OPS_CLS_STATUS_HW_BUSY_ERR;
+        break;
+    case OPS_FAIL:
     case OPENNSL_E_FAIL:
+        pd_status->status_code = OPS_CLS_STATUS_HW_FAIL_ERR;
+        break;
+    case OPENNSL_E_DISABLED:
+        pd_status->status_code = OPS_CLS_STATUS_HW_DISABLED_ERR;
+        break;
+    case OPENNSL_E_BADID:
+        pd_status->status_code = OPS_CLS_STATUS_HW_BADID_ERR;
+        break;
     case OPENNSL_E_RESOURCE:
         pd_status->status_code = OPS_CLS_STATUS_HW_RESOURCE_ERR;
-        pd_status->entry_id = rule_index;
+        break;
+    case OPENNSL_E_CONFIG:
+        pd_status->status_code = OPS_CLS_STATUS_HW_CONFIG_ERR;
+        break;
+    case OPENNSL_E_UNAVAIL:
+        pd_status->status_code = OPS_CLS_STATUS_HW_UNAVAIL_ERR;
+        break;
+    case OPENNSL_E_INIT:
+        pd_status->status_code = OPS_CLS_STATUS_HW_INIT_ERR;
+        break;
+    case OPENNSL_E_PORT:
+        pd_status->status_code = OPS_CLS_STATUS_HW_PORT_ERR;
         break;
     default:
+        pd_status->status_code = OPS_CLS_STATUS_HW_UNKNOWN_ERR;
         VLOG_DBG("Unsupported (%d) error type", rc);
         break;
     }
@@ -505,23 +554,69 @@ ops_cls_set_pd_list_status(int                             rc,
 {
 
     VLOG_DBG("ops list error: %d ", rc);
+    status->entry_id = rule_index;
 
     switch (rc) {
-    case OPS_FAIL:
     case OPENNSL_E_INTERNAL:
+        status->status_code = OPS_CLS_STATUS_HW_INTERNAL_ERR;
+        break;
     case OPENNSL_E_MEMORY:
+        status->status_code = OPS_CLS_STATUS_HW_MEMORY_ERR;
+        break;
+    case OPENNSL_E_UNIT:
+        status->status_code = OPS_CLS_STATUS_HW_UNIT_ERR;
+        break;
     case OPENNSL_E_PARAM:
+        status->status_code = OPS_CLS_STATUS_HW_PARAM_ERR;
+        break;
+    case OPENNSL_E_EMPTY:
+        status->status_code = OPS_CLS_STATUS_HW_EMPTY_ERR;
+        break;
     case OPENNSL_E_FULL:
+        status->status_code = OPS_CLS_STATUS_HW_FULL_ERR;
+        break;
+    case OPENNSL_E_NOT_FOUND:
+        status->status_code = OPS_CLS_STATUS_HW_NOT_FOUND_ERR;
+        break;
+    case OPENNSL_E_EXISTS:
+        status->status_code = OPS_CLS_STATUS_HW_EXISTS_ERR;
+        break;
+    case OPENNSL_E_TIMEOUT:
+        status->status_code = OPS_CLS_STATUS_HW_TIMEOUT_ERR;
+        break;
+    case OPENNSL_E_BUSY:
+        status->status_code = OPS_CLS_STATUS_HW_BUSY_ERR;
+        break;
+    case OPS_FAIL:
     case OPENNSL_E_FAIL:
+        status->status_code = OPS_CLS_STATUS_HW_FAIL_ERR;
+        break;
+    case OPENNSL_E_DISABLED:
+        status->status_code = OPS_CLS_STATUS_HW_DISABLED_ERR;
+        break;
+    case OPENNSL_E_BADID:
+        status->status_code = OPS_CLS_STATUS_HW_BADID_ERR;
+        break;
     case OPENNSL_E_RESOURCE:
         status->status_code = OPS_CLS_STATUS_HW_RESOURCE_ERR;
-        status->entry_id = rule_index;
+        break;
+    case OPENNSL_E_CONFIG:
+        status->status_code = OPS_CLS_STATUS_HW_CONFIG_ERR;
+        break;
+    case OPENNSL_E_UNAVAIL:
+        status->status_code = OPS_CLS_STATUS_HW_UNAVAIL_ERR;
+        break;
+    case OPENNSL_E_INIT:
+        status->status_code = OPS_CLS_STATUS_HW_INIT_ERR;
+        break;
+    case OPENNSL_E_PORT:
+        status->status_code = OPS_CLS_STATUS_HW_PORT_ERR;
         break;
     default:
-        VLOG_DBG("Unsupported (%d) list error type", rc);
+        status->status_code = OPS_CLS_STATUS_HW_UNKNOWN_ERR;
+        VLOG_DBG("Unsupported (%d) error type", rc);
         break;
     }
-
 }
 
 /*
@@ -653,7 +748,7 @@ ops_cls_install_rule_in_asic(int                           unit,
                                                  match->L4_src_port_min,
                                                  port_mask);
             if (OPENNSL_FAILURE(rc)) {
-                VLOG_ERR("Failed add entry L4 src port 0x%x and mask 0x%x: "
+                VLOG_ERR("Failed to add entry L4 src port 0x%x and mask 0x%x: "
                          "rc=%s", match->L4_src_port_min, port_mask,
                          opennsl_errmsg(rc));
                 goto cleanup;
@@ -668,7 +763,7 @@ ops_cls_install_rule_in_asic(int                           unit,
             rc = opennsl_field_range_create(unit, &range, OPENNSL_FIELD_RANGE_SRCPORT,
                                             min_port, max_port);
             if (OPENNSL_FAILURE(rc)) {
-                VLOG_ERR("Failed create L4 src port range min %d, max %d rc=%s",
+                VLOG_ERR("Failed to create L4 src port range min %d, max %d rc=%s",
                          min_port, max_port,
                          opennsl_errmsg(rc));
                 goto cleanup;
@@ -676,7 +771,7 @@ ops_cls_install_rule_in_asic(int                           unit,
 
             rc = opennsl_field_qualify_RangeCheck(unit, entry, range, 0);
             if (OPENNSL_FAILURE(rc)) {
-                VLOG_ERR("Failed add L4 src port range min %d, max %d rc=%s",
+                VLOG_ERR("Failed to add L4 src port range min %d, max %d rc=%s",
                          min_port, max_port, opennsl_errmsg(rc));
                 rc = opennsl_field_range_destroy(unit, range);
                 if (OPENNSL_FAILURE(rc)) {
@@ -691,7 +786,7 @@ ops_cls_install_rule_in_asic(int                           unit,
         case OPS_CLS_L4_PORT_OP_NONE:
         case OPS_CLS_L4_PORT_OP_NEQ:
         default:
-            VLOG_DBG("L4 port operation %d not supported",
+            VLOG_DBG("L4 src port operation %d not supported",
                       match->L4_src_port_op);
             break;
         }
@@ -707,7 +802,7 @@ ops_cls_install_rule_in_asic(int                           unit,
                                                  match->L4_dst_port_min,
                                                  port_mask);
             if (OPENNSL_FAILURE(rc)) {
-                VLOG_ERR("Failed add entry L4 dst port 0x%x and mask 0x%x: "
+                VLOG_ERR("Failed to add entry L4 dst port 0x%x and mask 0x%x: "
                          "rc=%s", match->L4_dst_port_min, port_mask,
                          opennsl_errmsg(rc));
                 goto cleanup;
@@ -722,7 +817,7 @@ ops_cls_install_rule_in_asic(int                           unit,
             rc = opennsl_field_range_create(unit, &range, OPENNSL_FIELD_RANGE_DSTPORT,
                                             min_port, max_port);
             if (OPENNSL_FAILURE(rc)) {
-                VLOG_ERR("Failed create L4 dst port range min %d, max %d rc=%s",
+                VLOG_ERR("Failed to create L4 dst port range min %d, max %d rc=%s",
                          min_port, max_port,
                          opennsl_errmsg(rc));
                 goto cleanup;
@@ -730,7 +825,7 @@ ops_cls_install_rule_in_asic(int                           unit,
 
             rc = opennsl_field_qualify_RangeCheck(unit, entry, range, 0);
             if (OPENNSL_FAILURE(rc)) {
-                VLOG_ERR("Failed add L4 dst port range min %d, max %d rc=%s",
+                VLOG_ERR("Failed to add L4 dst port range min %d, max %d rc=%s",
                          min_port, max_port, opennsl_errmsg(rc));
                 rc = opennsl_field_range_destroy(unit, range);
                 if (OPENNSL_FAILURE(rc)) {
@@ -745,7 +840,7 @@ ops_cls_install_rule_in_asic(int                           unit,
         case OPS_CLS_L4_PORT_OP_NONE:
         case OPS_CLS_L4_PORT_OP_NEQ:
         default:
-            VLOG_DBG("L4 port operation %d not supported",
+            VLOG_DBG("L4 dst port operation %d not supported",
                       match->L4_dst_port_op);
             break;
         }
