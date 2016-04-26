@@ -39,8 +39,11 @@
 #include "ops-classifier.h"
 #include "netdev-bcmsdk.h"
 #include "platform-defines.h"
+#include "plugin-extensions.h"
 #include "ofproto-bcm-provider.h"
 #include "ops-stg.h"
+#include "ops-qos.h"
+#include "qos-asic-provider.h"
 
 VLOG_DEFINE_THIS_MODULE(ofproto_bcm_provider);
 
@@ -595,6 +598,8 @@ bundle_destroy(struct ofbundle *bundle)
                             hw_port,
                             bundle->l3_intf,
                             port->up.netdev);
+                    /* Destroy L3 stats */
+                    netdev_bcmsdk_l3intf_fp_stats_destroy(bundle->hw_port, bundle->hw_unit);
                     bundle->l3_intf = NULL;
                 }
             }
@@ -619,6 +624,7 @@ bundle_destroy(struct ofbundle *bundle)
                 bundle->l3_intf = NULL;
             }
         }
+        netdev_bcmsdk_l3_global_stats_destroy(port->up.netdev);
         bundle_del_port(port);
     }
 
@@ -981,6 +987,51 @@ port_ip_reconfigure(struct ofproto *ofproto, struct ofbundle *bundle,
 }
 
 static int
+init_l3_ingress_stats(struct bcmsdk_provider_ofport_node *port, opennsl_vlan_t vlan_id)
+{
+    int rc = 0;
+    uint32_t ing_stat_id = 0;
+    uint32_t ing_num_id = 0;
+
+    /* Create Ingress stat object using the vlan id */
+    rc = opennsl_stat_group_create(0, opennslStatObjectIngL3Intf,
+            opennslStatGroupModeTrafficType, &ing_stat_id,
+            &ing_num_id);
+    if (rc) {
+        VLOG_ERR("Failed to create bcm stat group for ingress id %d",
+                vlan_id);
+        return 1; /* Return error */
+    }
+
+    /* Attach stat to customized group mode */
+    rc = opennsl_stat_custom_group_create(0, l3_stats_mode_id,
+            opennslStatObjectIngL3Intf, &ing_stat_id, &ing_num_id);
+    if (rc) {
+        VLOG_ERR("Failed to create custom stat group for ing id %d",
+                vlan_id);
+        return 1; /* Return error */
+    }
+
+    rc = opennsl_l3_ingress_stat_attach(0, vlan_id, ing_stat_id);
+    if (rc) {
+        VLOG_ERR("Failed to attach stat obj, for ingress id %d, %s",
+                vlan_id, opennsl_errmsg(rc));
+        return 1; /* Return error */
+    }
+
+    rc = netdev_bcmsdk_set_l3_ingress_stat_obj(port->up.netdev,
+            vlan_id,
+            ing_stat_id,
+            ing_num_id);
+    if (rc) {
+        VLOG_ERR("Failed to set l3 ingress stats obj for vlanid %d",
+                vlan_id);
+        return 1; /* Return error */
+    }
+    return 0;
+}
+
+static int
 bundle_set(struct ofproto *ofproto_, void *aux,
            const struct ofproto_bundle_settings *s)
 {
@@ -1024,7 +1075,6 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         bundle->l3_intf = NULL;
         bundle->hw_unit = 0;
         bundle->hw_port = -1;
-
         list_init(&bundle->ports);
         bundle->vlan_mode = PORT_VLAN_ACCESS;
         bundle->vlan = -1;
@@ -1136,9 +1186,13 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                     ops_routing_disable_l3_interface(hw_unit, hw_port,
                                                      bundle->l3_intf,
                                                      port->up.netdev);
+                    /* Destroy L3 stats */
+                    netdev_bcmsdk_l3intf_fp_stats_destroy(hw_port, hw_unit);
+
                 } else if (strcmp(type, OVSREC_INTERFACE_TYPE_INTERNAL) == 0) {
                     opennsl_l3_intf_delete(hw_unit, bundle->l3_intf);
                 }
+                netdev_bcmsdk_l3_global_stats_destroy(port->up.netdev);
                 bundle->l3_intf = NULL;
                 bundle->hw_unit = 0;
                 bundle->hw_port = -1;
@@ -1154,10 +1208,14 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                 bundle->l3_intf = ops_routing_enable_l3_interface(
                             hw_unit, hw_port, ofproto->vrf_id, vlan_id,
                             mac, port->up.netdev);
+
                 if (bundle->l3_intf) {
                     bundle->hw_unit = hw_unit;
                     bundle->hw_port = hw_port;
+                    /* Initilize FP entries for l3 interface stats */
+                    netdev_bcmsdk_l3intf_fp_stats_init(vlan_id, hw_port, hw_unit);
                 }
+
             } else if (strcmp(type, OVSREC_INTERFACE_TYPE_VLANSUBINT) == 0) {
                 VLOG_DBG("%s enable subinterface l3", __FUNCTION__);
                 int unit = 0;
@@ -1168,6 +1226,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                     bundle->hw_unit = hw_unit;
                     bundle->hw_port = hw_port;
                 }
+
             } else if (strcmp(type, OVSREC_INTERFACE_TYPE_INTERNAL) == 0) {
                 int unit = 0;
                 for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
@@ -1176,6 +1235,9 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                             mac);
                 }
             }
+            /* Initialize L3 ingress flex counters. The L3 egress flex counters are
+             * installed dynamically per egress object at creation time. */
+            init_l3_ingress_stats(port, vlan_id);
         }
     }
 
@@ -1985,6 +2047,7 @@ add_l3_host_entry(const struct ofproto *ofproto_, void *aux,
 {
     struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
     struct ofbundle *port_bundle;
+    struct bcmsdk_provider_ofport_node *port = NULL, *next_port;
     int rc = 0;
 
     port_bundle = bundle_lookup(ofproto, aux);
@@ -2003,8 +2066,28 @@ add_l3_host_entry(const struct ofproto *ofproto_, void *aux,
                                    port_bundle->bond_hw_handle);
     if (rc) {
         VLOG_ERR("Failed to add L3 host entry for ip %s", ip_addr);
+        return rc;
     }
 
+    LIST_FOR_EACH_SAFE (port, next_port, bundle_node, &port_bundle->ports) {
+        /* Break because we are looking for the first slave */
+        VLOG_DBG("port_t->up.ofp_port = %d\n", port->up.ofp_port);
+        VLOG_DBG(" add numslaves = %zu", list_size(&port_bundle->ports));
+        break;
+    }
+
+    if (!port) {
+        VLOG_ERR("Failed to get port while adding l3 host entry");
+        return 1; /* Return error */
+    }
+
+    if (list_size(&port_bundle->ports) == 1) {
+        rc = netdev_bcmsdk_set_l3_egress_id(port->up.netdev, *l3_egress_id);
+        if (rc) {
+            VLOG_ERR("Failed to set l3 egress data in netdev bcmsdk for egress"
+                     " object, %d", *l3_egress_id);
+        }
+    }
 
     return rc;
 } /* add_l3_host_entry */
@@ -2017,12 +2100,33 @@ delete_l3_host_entry(const struct ofproto *ofproto_, void *aux,
 {
     struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
     struct ofbundle *port_bundle;
+    struct bcmsdk_provider_ofport_node *port = NULL, *next_port;
     int rc = 0;
 
     port_bundle = bundle_lookup(ofproto, aux);
     if (port_bundle == NULL) {
         VLOG_ERR("Failed to get port bundle");
         return 1; /* Return error */
+    }
+
+    LIST_FOR_EACH_SAFE (port, next_port, bundle_node, &port_bundle->ports) {
+        /* Break because we are looking for the first slave */
+        VLOG_DBG("port_t->up.ofp_port = %d\n", port->up.ofp_port);
+        VLOG_DBG(" delete numslaves = %zu", list_size(&port_bundle->ports));
+        break;
+    }
+
+    if (!port) {
+        VLOG_ERR("Failed to get port while deleting l3 host entry");
+        return 1; /* Return error */
+    }
+
+    if ((list_size(&port_bundle->ports) == 1)) {
+        rc = netdev_bcmsdk_remove_l3_egress_id(port->up.netdev, *l3_egress_id);
+        if (rc) {
+            VLOG_ERR("Failed to remove l3 egress data in netdev bcmsdk for "
+                     " egress object, %d", *l3_egress_id);
+        }
     }
 
     rc = ops_routing_delete_host_entry(port_bundle->hw_unit,
@@ -2175,6 +2279,214 @@ l3_ecmp_hash_set(const struct ofproto *ofprotop, unsigned int hash, bool enable)
     return ops_routing_ecmp_hash_set(0, hash, enable);
 }
 
+/* QoS */
+int
+set_port_qos_cfg(struct ofproto *ofproto_,
+                 void *aux,  /* struct port *port */
+                 const struct  qos_port_settings *cfg)
+{
+    struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
+    struct bcmsdk_provider_ofport_node *port, *next_port;
+    int hw_unit, hw_port;
+    uint8_t mac[ETH_ADDR_LEN];
+    int rc = OPS_QOS_SUCCESS_CODE;
+
+    struct ofbundle *bundle = bundle_lookup(ofproto, aux);
+    if (bundle) {
+        VLOG_DBG("set port qos cfg: name %s ofproto@ %p port %s, "
+                 "settings->qos_trust %d, cfg@ %p",
+                  ofproto_->name, ofproto, bundle->name,
+                  cfg->qos_trust, cfg->other_config);
+
+        VLOG_DBG("bundle hw_unit %d, hw_port %d, bond_hw_handle %d bond %p",
+                  bundle->hw_unit, bundle->hw_port, bundle->bond_hw_handle,
+                  bundle->bond);
+
+        /*
+         * Set port qos cfg could be for individual port or LAGs. The following
+         * code should take care of both cases.
+         */
+        LIST_FOR_EACH_SAFE (port, next_port, bundle_node, &bundle->ports) {
+            netdev_bcmsdk_get_hw_info(port->up.netdev, &hw_unit, &hw_port,
+                                      mac);
+
+            VLOG_DBG("port hw_unit %d, hw_port %d, bond_hw_handle %d bond %p",
+                       hw_unit, hw_port, bundle->bond_hw_handle, bundle->bond);
+
+            if (VALID_HW_UNIT(hw_unit) && VALID_HW_UNIT_PORT(hw_unit,
+                hw_port)) {
+                rc = ops_qos_set_port_cfg(bundle, hw_unit, hw_port,
+                                          cfg);
+            } else {
+                /* Log an ERR msg and return error code */
+                VLOG_ERR("Invalid hw unit %d or port %d in "
+                         "set port qos cfg for %s",
+                          hw_unit, hw_port, bundle->name);
+
+                return OPS_QOS_FAILURE_CODE;
+            }
+
+        }
+    } else {
+        VLOG_ERR("set port qos trust: NO BUNDLE aux@%p, "
+                  "settings->qos_trust %d, cfg@ %p",
+                   aux, cfg->qos_trust, cfg->other_config);
+        return OPS_QOS_FAILURE_CODE;
+    }
+
+    return rc;
+}
+
+int
+set_cos_map(struct ofproto *ofproto_,
+            void *aux,
+            const struct cos_map_settings *settings)
+{
+    int rc;
+
+    VLOG_DBG("QoS: set COS map");
+    rc = ops_qos_set_cos_map(settings);
+
+    return rc;
+}
+
+int
+set_dscp_map(struct ofproto *ofproto_,
+             void *aux,
+             const struct dscp_map_settings *settings)
+{
+    int rc;
+
+    VLOG_DBG("QoS: set DSCP map");
+    rc = ops_qos_set_dscp_map(settings);
+
+    return rc;
+}
+
+int
+apply_qos_profile(struct ofproto *ofproto_,
+                  void *aux,
+                  const struct schedule_profile_settings *s_settings,
+                  const struct queue_profile_settings *q_settings)
+{
+    struct bcmsdk_provider_node *ofproto;
+
+    int index;
+    struct queue_profile_entry *qp_entry;
+    struct schedule_profile_entry *sp_entry;
+    uint8_t mac[ETH_ADDR_LEN];
+    struct bcmsdk_provider_ofport_node *port, *next_port;
+    int hw_unit, hw_port;
+    int rc = OPS_QOS_SUCCESS_CODE;
+    struct ofbundle *bundle;
+
+    if (ofproto_) {
+        ofproto = bcmsdk_provider_node_cast(ofproto_);
+
+        bundle = bundle_lookup(ofproto, aux);
+
+        VLOG_DBG("apply_qos_profile: %s ofproto@ %p port %s aux=%p "
+                 "q_settings=%p s_settings=%p",
+                  ofproto_->name, ofproto, bundle->name, aux,
+                  s_settings, q_settings);
+    } else {
+        /* This is global defaults case */
+        ofproto = NULL;
+        bundle = NULL;
+
+        VLOG_DBG("apply_qos_profile: global defaults config "
+                 "q_settings=%p s_settings=%p",
+                  s_settings, q_settings);
+    }
+
+    for (index = 0; index < q_settings->n_entries; index++) {
+        qp_entry = q_settings->entries[index];
+        VLOG_DBG("... %d q=%d #lp=%d", index,
+                  qp_entry->queue, qp_entry->n_local_priorities);
+
+    }
+
+    for (index = 0; index < s_settings->n_entries; index++) {
+        sp_entry = s_settings->entries[index];
+        VLOG_DBG("... %d alg=%d wt=%d", index,
+                  sp_entry->algorithm, sp_entry->weight);
+
+    }
+
+    if (aux == NULL) {
+        /* If aux is NULL, apply queue profile and return */
+        VLOG_DBG("apply qos profile: applying queue profile...");
+
+        rc = ops_qos_apply_queue_profile(s_settings, q_settings);
+
+        return rc;
+    }
+
+    /* Apply the schedule profile now */
+    if (bundle) {
+        VLOG_DBG("apply qos profile: name %s ofproto@ %p port %s",
+                  ofproto_->name, ofproto, bundle->name);
+
+        VLOG_DBG("bundle hw_unit %d, hw_port %d, bond_hw_handle %d bond %p",
+                  bundle->hw_unit, bundle->hw_port, bundle->bond_hw_handle,
+                  bundle->bond);
+
+        /*
+         * Apply qos profile could be for individual port or LAGs.
+         * The following code should take care of both cases.
+         */
+        LIST_FOR_EACH_SAFE (port, next_port, bundle_node, &bundle->ports) {
+            netdev_bcmsdk_get_hw_info(port->up.netdev, &hw_unit, &hw_port,
+                                      mac);
+
+            VLOG_DBG("port hw_unit %d, hw_port %d, bond_hw_handle %d bond %p",
+                       hw_unit, hw_port, bundle->bond_hw_handle, bundle->bond);
+
+            if (VALID_HW_UNIT(hw_unit) && VALID_HW_UNIT_PORT(hw_unit,
+                hw_port)) {
+                rc = ops_qos_apply_schedule_profile(bundle,
+                                        hw_unit, hw_port,
+                                        s_settings, q_settings);;
+            } else {
+                /* Log an ERR msg and return error code */
+                VLOG_ERR("Invalid hw unit %d or port %d in "
+                         "apply qos profile for %s",
+                          hw_unit, hw_port, bundle->name);
+
+                return OPS_QOS_FAILURE_CODE;
+            }
+
+        }
+    } else {
+        VLOG_ERR("apply qos profile: NO BUNDLE aux@ %p, "
+                 "ofproto_ name %s, ofproto@ %p ",
+                  aux, ofproto_->name, ofproto);
+        return OPS_QOS_FAILURE_CODE;
+    }
+
+    return rc;
+}
+
+static struct qos_asic_plugin_interface qos_asic_plugin = {
+    set_port_qos_cfg,
+    set_cos_map,
+    set_dscp_map,
+    apply_qos_profile
+};
+
+static struct plugin_extension_interface qos_extension = {
+    QOS_ASIC_PLUGIN_INTERFACE_NAME,
+    QOS_ASIC_PLUGIN_INTERFACE_MAJOR,
+    QOS_ASIC_PLUGIN_INTERFACE_MINOR,
+    (void *)&qos_asic_plugin
+};
+
+int
+register_qos_extension(void)
+{
+    return(register_plugin_extension(&qos_extension));
+}
+
 int
 register_asic_plugins()
 {
@@ -2185,7 +2497,6 @@ register_asic_plugins()
 
     return rc;
 }
-
 
 const struct ofproto_class ofproto_bcm_provider_class = {
     init,

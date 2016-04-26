@@ -23,10 +23,12 @@
 #include "bufmon-bcm-provider.h"
 #include "netdev-bcmsdk.h"
 #include "ofproto-bcm-provider.h"
-#include "qos.h"
 #include "plugin-extensions.h"
 #include "asic-plugin.h"
 #include "ops-stg.h"
+#include "eventlog.h"
+#include "ops-copp.h"
+#include "copp-asic-provider.h"
 
 #define init libovs_bcm_plugin_LTX_init
 #define run libovs_bcm_plugin_LTX_run
@@ -49,15 +51,57 @@ struct asic_plugin_interface opennsl_interface ={
     .get_stg_default = &get_stg_default,
 };
 
+struct copp_asic_plugin_interface copp_opennsl_interface ={
+    /*
+     * The function pointers are set to the interfacing functions
+     * implemented by copp in the opennsl-plugin
+     */
+    .copp_stats_get = &copp_opennsl_stats_get,
+    .copp_hw_status_get = &copp_opennsl_hw_status_get,
+};
+
 /* To avoid compiler warning... */
 static void netdev_change_seq_changed(const struct netdev *) __attribute__((__unused__));
 
 void
 init(void) {
+    int retval;
+    struct plugin_extension_interface opennsl_extension;
+    struct plugin_extension_interface copp_opennsl_extension;
+
+    /* Event log initialization for sFlow */
+    retval = event_log_init("SFLOW");
+    if (retval < 0) {
+        VLOG_ERR("Event log initialization failed for SFLOW");
+    }
+
+    /* Event log initialization for LAG */
+    retval = event_log_init("LAG");
+    if (retval < 0) {
+        VLOG_ERR("Event log initialization failed for LAG");
+    }
+
+    opennsl_extension.plugin_name = ASIC_PLUGIN_INTERFACE_NAME;
+    opennsl_extension.major = ASIC_PLUGIN_INTERFACE_MAJOR;
+    opennsl_extension.minor = ASIC_PLUGIN_INTERFACE_MINOR;
+    opennsl_extension.plugin_interface = (void *)&opennsl_interface;
+
+    register_plugin_extension(&opennsl_extension);
+    VLOG_INFO("The %s asic plugin interface was registered", ASIC_PLUGIN_INTERFACE_NAME);
 
     /* Register plugins */
     register_asic_plugins();
 
+    copp_opennsl_extension.plugin_name = COPP_ASIC_PLUGIN_INTERFACE_NAME;
+    copp_opennsl_extension.major = COPP_ASIC_PLUGIN_INTERFACE_MAJOR;
+    copp_opennsl_extension.minor = COPP_ASIC_PLUGIN_INTERFACE_MINOR;
+    copp_opennsl_extension.plugin_interface = (void *)&copp_opennsl_interface;
+
+    register_plugin_extension(&copp_opennsl_extension);
+    VLOG_INFO("The %s asic plugin interface was registered",
+                                              COPP_ASIC_PLUGIN_INTERFACE_NAME);
+
+    register_qos_extension();
     ovs_bcm_init();
 }
 

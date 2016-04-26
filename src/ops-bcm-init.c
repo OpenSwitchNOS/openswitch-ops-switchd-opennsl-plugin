@@ -38,7 +38,9 @@
 #include "ops-copp.h"
 #include "ops-stg.h"
 #include "ops-sflow.h"
+#include "ops-qos.h"
 #include "netdev-bcmsdk.h"
+#include "eventlog.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
 
@@ -56,6 +58,7 @@ opennsl_rx_t opennsl_rx_callback(int unit, opennsl_pkt_t *pkt, void *cookie)
 {
     if (!pkt) {
         VLOG_ERR("Invalid pkt sent by ASIC");
+        log_event("SFLOW_CALLBACK_INVALID_PKT", NULL);
         return OPENNSL_RX_HANDLED;
     }
 
@@ -142,6 +145,13 @@ ops_bcm_appl_init(void)
 
     ops_debug_init();
 
+    /* Initialize QoS global data structures */
+    rc = ops_qos_global_init();
+    if (rc) {
+        VLOG_ERR("QoS global subsytem init failed, rc %d", rc);
+        return 1;
+    }
+
     for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
 
         rc = ops_port_init(unit);
@@ -183,12 +193,22 @@ ops_bcm_appl_init(void)
         rc = ops_sflow_init(unit);
         if (rc) {
             VLOG_ERR("sflow init failed");
+            log_event("SFLOW_INIT_FAILURE", NULL);
             return 1;
         }
 
         rc = ops_copp_init();
         if (rc) {
             VLOG_ERR("COPP subsystem init failed");
+            log_event("COPP_INITIALIZATION_FAILURE", NULL);
+            return 1;
+        }
+
+        /* Initialize QoS per hw unit data structures */
+        rc = ops_qos_hw_unit_init(unit);
+        if (rc) {
+            VLOG_ERR("QoS hw unit %d init failed, rc %d",
+                      unit, rc);
             return 1;
         }
 
