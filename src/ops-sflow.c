@@ -558,6 +558,46 @@ ops_sflow_set_header_size(const int size)
     }
 }
 
+void
+ops_sflow_set_max_datagram_size(const int size)
+{
+    SFLReceiver *receiver;
+
+    /* set max datagram size on Receiver corresponding to 'port' */
+    if (ops_sflow_agent) {
+        receiver = sfl_agent_getReceiver(ops_sflow_agent, 1);
+        if (receiver == NULL) {
+             VLOG_ERR("Got NULL Receiver from sflow agent. Something is "
+                      "incorrectly configured.");
+             log_event("SFLOW_RECEIVER_MISSING_FAILURE", NULL);
+             return;
+        }
+        sfl_receiver_set_sFlowRcvrMaximumDatagramSize(receiver, size);
+    }
+}
+
+void
+ops_sflow_set_header_size(const int size)
+{
+    SFLSampler  *sampler;
+    uint32_t    dsIndex;
+    SFLDataSource_instance  dsi;
+
+    /* set header size on Sampler corresponding to 'port' */
+    if (ops_sflow_agent) {
+        dsIndex = 1000 + sflow_options->sub_id;
+        SFL_DS_SET(dsi, SFL_DSCLASS_PHYSICAL_ENTITY, dsIndex, 0);
+        sampler = sfl_agent_getSampler(ops_sflow_agent, &dsi);
+
+        if (sampler == NULL) {
+            VLOG_ERR("There is no Sampler for sFlow Agent.");
+            log_event("SFLOW_SAMPLER_MISSING_FAILURE", NULL);
+            return;
+        }
+        sfl_sampler_set_sFlowFsMaximumHeaderSize(sampler, size);
+    }
+}
+
 static void
 ops_sflow_set_rate(struct unixctl_conn *conn, int argc, const char *argv[],
                    void *aux OVS_UNUSED)
@@ -650,24 +690,17 @@ ops_sflow_show_all(struct ds *ds, int argc, const char *argv[])
  * @param feature name of the feature.
  * @param buf pointer to the buffer.
  */
-static void
-sflow_diag_dump_basic_cb(const char *feature , char **buf)
+void
+sflow_diag_dump_basic_cb(char *buf)
 {
     struct ds ds = DS_EMPTY_INITIALIZER;
-    if (!buf)
-        return;
-    *buf =  xcalloc(1, DIAGNOSTIC_BUFFER_LEN);
-    if (*buf) {
-        /* populate basic diagnostic data to buffer */
-        /* sflow on all ports of switch */
-        ops_sflow_show_all(&ds, 0, NULL);
-        snprintf(*buf , DIAGNOSTIC_BUFFER_LEN, "%s", ds_cstr(&ds));
-        VLOG_DBG("basic diag-dump data populated for feature %s",feature);
-    }
-    else {
-        VLOG_ERR("Memory allocation failed for feature %s , %d bytes",
-                         feature , DIAGNOSTIC_BUFFER_LEN);
-    }
+
+    /* populate basic diagnostic data to buffer */
+    /* sflow on all ports of switch */
+    ds_put_format(&ds, "Output for SFLOW information:\n");
+    ops_sflow_show_all(&ds, 0, NULL);
+    snprintf(buf , ds.length, "%s", ds_cstr(&ds));
+    ds_put_format(&ds, "\n\n");
     return;
 }
 
@@ -1214,7 +1247,6 @@ ops_sflow_init (int unit OVS_UNUSED)
 {
     /* TODO: Make this in to a thread so as to read messages from callback
      * function in Rx thread. */
-    INIT_DIAG_DUMP_BASIC(sflow_diag_dump_basic_cb);
     sflow_main();
 
     return 0;
