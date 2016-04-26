@@ -50,8 +50,7 @@ struct ofproto_sflow_options *sflow_options = NULL;
 struct collectors *sflow_collectors = NULL;
 
 /* sFlow knet filter id's */
-int knet_sflow_source_filter_id;
-int knet_sflow_dest_filter_id;
+int knet_sflow_filter_id;
 
 static struct ovs_mutex mutex;
 
@@ -740,6 +739,7 @@ ops_sflow_agent_enable(struct bcmsdk_provider_node *ofproto,
     void        *addr;
     uint32_t    header;
     uint32_t    datagram;
+    int         reasonCode[2];
 
     if (!ofproto) {
         return;
@@ -851,13 +851,12 @@ ops_sflow_agent_enable(struct bcmsdk_provider_node *ofproto,
 
     ops_sflow_set_polling_interval(ofproto, sflow_options->polling_interval);
 
-    /* Install KNET filters for source and destination sampling */
-    bcmsdk_knet_sflow_filter_create(&knet_sflow_source_filter_id,
-            opennslRxReasonSampleSource, "sFlow Source Sample");
-    bcmsdk_knet_sflow_filter_create(&knet_sflow_dest_filter_id,
-            opennslRxReasonSampleDest, "sFlow Dest Sample");
+    reasonCode[0] = opennslRxReasonSampleSource;
+    reasonCode[0] = opennslRxReasonSampleDest;
 
-    VLOG_DBG("knet filter id --> source:%d, dest:%d", knet_sflow_source_filter_id, knet_sflow_dest_filter_id);
+    /* Install KNET filters for source and destination sampling */
+    bcmsdk_knet_sflow_filter_create(&knet_sflow_filter_id, reasonCode, 2, "sFlow Sampling");
+    VLOG_DBG("knet filter id -->%d", knet_sflow_filter_id);
 }
 
 void
@@ -878,24 +877,18 @@ ops_sflow_agent_disable(struct bcmsdk_provider_node *ofproto)
     }
 
     if (ops_sflow_agent) {
-        VLOG_DBG("KNET filter IDs: source %d, dest %d",
-                knet_sflow_source_filter_id, knet_sflow_dest_filter_id);
+        VLOG_DBG("KNET filter ID:%d", knet_sflow_filter_id);
 
-        if (knet_sflow_source_filter_id || knet_sflow_dest_filter_id) {
+        if (knet_sflow_filter_id) {
             /* passing 0 ingress and egress rates will clear the sampling
              * rates on ASIC. */
             ops_sflow_set_sampling_rate(0, 0, 0, 0);
         }
 
         /* Remove KNET filters */
-        if (knet_sflow_source_filter_id) {
-            bcmsdk_knet_filter_delete("sflow source filter", 0, knet_sflow_source_filter_id);
-            knet_sflow_source_filter_id = 0;
-        }
-
-        if (knet_sflow_dest_filter_id) {
-            bcmsdk_knet_filter_delete("sflow dest filter", 0, knet_sflow_dest_filter_id);
-            knet_sflow_dest_filter_id = 0;
+        if (knet_sflow_filter_id) {
+            bcmsdk_knet_filter_delete("sflow filter", 0, knet_sflow_filter_id);
+            knet_sflow_filter_id = 0;
         }
 
         /* Delete sFlow Agent */

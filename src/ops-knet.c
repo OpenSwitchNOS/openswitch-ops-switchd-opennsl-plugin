@@ -286,7 +286,8 @@ bcmsdk_knet_filter_delete(char *name, int hw_unit, int knet_filter_id)
     }
 } /* bcmsdk_knet_filter_delete */
 
-void bcmsdk_knet_sflow_filter_create(int *knet_filter_id, int reason, char *desc)
+/* Function to create KNET filters for sFlow */
+void bcmsdk_knet_sflow_filter_create(int *knet_filter_id, int *reasonCode, int num, char *desc)
 {
     opennsl_error_t rc;
 
@@ -307,8 +308,10 @@ void bcmsdk_knet_sflow_filter_create(int *knet_filter_id, int reason, char *desc
     knet_filter.priority = KNET_FILTER_PRIO_SFLOW;
     knet_filter.dest_type = OPENNSL_KNET_DEST_T_OPENNSL_RX_API;
 
-    /* TODO :  Use reason code directly instead of passing into function. */
-    OPENNSL_RX_REASON_SET(knet_filter.m_reason, reason);
+    while (num > 0) {
+        OPENNSL_RX_REASON_SET(knet_filter.m_reason, reasonCode[num-1]);
+        num--;
+    }
 
     rc = opennsl_knet_filter_create(0, &knet_filter);
     if (OPENNSL_FAILURE(rc)) {

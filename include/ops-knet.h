@@ -83,6 +83,6 @@ extern void bcmsdk_knet_bridge_normal_filter_create(char *knet_dst_if_name,
         int *knet_filter_id);
 extern void ops_knet_dump(struct ds *ds, knet_debug_type_t debug_type);
 
-extern void bcmsdk_knet_sflow_filter_create(int *knet_filter_id, int reason, char *desc);
+extern void bcmsdk_knet_sflow_filter_create(int *knet_filter_id, int *reasonCode, int num, char *desc);
 
 #endif /* __OPS_KNET_H__ */
