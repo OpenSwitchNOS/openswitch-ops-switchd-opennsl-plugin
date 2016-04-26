@@ -31,6 +31,7 @@ set (SOURCES ${SRC_DIR}/bcm.c
              ${SRC_DIR}/ops-lag.c
              ${SRC_DIR}/ops-pbmp.c
              ${SRC_DIR}/ops-port.c
+             ${SRC_DIR}/ops-qos.c
              ${SRC_DIR}/ops-stats.c
              ${SRC_DIR}/ops-vlan.c
              ${SRC_DIR}/ops-sflow.c
@@ -39,7 +40,6 @@ set (SOURCES ${SRC_DIR}/bcm.c
              ${SRC_DIR}/ops-stg.c
              ${SRC_DIR}/netdev-bcmsdk.c
              ${SRC_DIR}/ofproto-bcm-provider.c
-             ${SRC_DIR}/qos.c
     )
 
 # Define and locate needed libraries and includes
@@ -57,7 +57,8 @@ include_directories(${CMAKE_SOURCE_DIR}/${INCL_DIR}
 # Create our library
 add_library (ovs_bcm_plugin SHARED ${SOURCES})
 
-target_link_libraries (ovs_bcm_plugin ${OVSCOMMON_LIBRARIES} ${OPENNSL_LIBRARIES})
+target_link_libraries (ovs_bcm_plugin ${OVSCOMMON_LIBRARIES}
+                       ${OPENNSL_LIBRARIES} -lsupportability)
 
 # Installation
 install(TARGETS ovs_bcm_plugin

@@ -31,6 +31,7 @@
                 - [CoPP classes](#copp-classes)
                 - [Policer mode](#policer-mode)
         - [Spanning Tree Group](#spanning-tree-group)
+        - [sFlow](#sFlow)
 - [References](#references)
 
 ## Overview
@@ -238,7 +239,7 @@ The current implementation enables OSPF on a global level. This includes creatin
 This is a one-time setup that is done as part of the ops_l3_init process.
 
 ### Control Plane Policing
-Control plane policing (CoPP) protects usage of the CPU by allowing ingress and egress control plane traffic to be prioritized and rate-limited as follows:
+Control plane policing (CoPP) protects usage of the CPU by prioritizing and rate-limiting control plane traffic as follows:
 
 #### Ingress traffic
 
@@ -295,11 +296,11 @@ Field processors are used in conjunction with traffic policers to rate limit egr
 | ICMP_BC       |  IPv4 broadcast/multicast ICMP |   Q4    |      1000       |
 |               |  packets                       |         |                 |
 +---------------+--------------------------------+---------+-----------------+
-| ICMP_UC       |  IPv4 unicast ICMP packets     |   Q6    |      1000       |
+| ICMP_UC       |  IPv4 unicast ICMP packets     |   Q5    |      1000       |
 +---------------+--------------------------------+---------+-----------------+
 | ICMPV6_MC     |  IPv6 multicast ICMP packets   |   Q4    |      1000       |
 +---------------+--------------------------------+---------+-----------------+
-| ICMPV6_UC     |  IPv6 unicast ICMP             |   Q6    |      1000       |
+| ICMPV6_UC     |  IPv6 unicast ICMP             |   Q5    |      1000       |
 +---------------+--------------------------------+---------+-----------------+
 | IPOPTIONV4    |  Packets with IPv4 options     |   Q5    |       250       |
 +---------------+--------------------------------+---------+-----------------+
@@ -313,15 +314,14 @@ Field processors are used in conjunction with traffic policers to rate limit egr
 +---------------+--------------------------------+---------+-----------------+
 | OSPF_UC       |  Unicast OSPF packets          |   Q9    |      5000       |
 +---------------+--------------------------------+---------+-----------------+
-| sFlow         |  Sampled sFlow packets         |   Q3    |     20000       |
+| sFlow         |  Sampled sFlow packets         |   Q3    |      5000       |
 +---------------+--------------------------------+---------+-----------------+
 | STP           |  STP packets                   |   Q10   |      1000       |
 +---------------+--------------------------------+---------+-----------------+
 |UNKNOWN_IP_DEST|  Unknown IPv4 or Ipv6          |   Q6    |      2500       |
-                |  destination                   |         |                 |
+|               |  destination                   |         |                 |
 +---------------+--------------------------------+---------+-----------------+
-|UNCLASSIFIED   |  Unclassified multicast/       |   Q1    |      5000       |
-|               |  broadcast packets             |         |                 |
+|UNCLASSIFIED   |  Unclassified packets          |   Q1    |      5000       |
 +------------------------------------------------+---------+-----------------+
 ```
 
@@ -360,6 +360,24 @@ Following are the actions done on spanning tree instance port state update:
 - update the port state in STG entry with the given port state.
 - valid port states are Disabled(2'b00), Blocking(2'b01), Learning(2'b10), Forwarding(2'b11)
 - update the internal cache
+
+### sFlow(sFlow)
+sFlow protocol samples ingress and egress packets from the physical interface
+on the switch and sends these samples as sFlow UDP datagrams to an external
+collector.
+
+-   The plugin creates a KNET filter to register for sFlow reason codes.
+-   The sampling rates are configured in the ASIC for each interface.
+-   For each sampled packet, ASIC would then set the sFlow reason code and send
+    the packet to the registered rx callback function.
+-   The rx callback function would then use the sFlow libraries in
+    `ops-openvswitch` to send out the sampled packet to the collector.
+-   The `run()` function of the plugin would periodically poll the interface
+    statistics from the ASIC and send them to the collector using the same
+    sFlow libraries.
+-   The plugin also maintains the number of samples sent to the collector.
+    These statistics are published to the database as part of the generic stats
+    collection infrastructure.
 
 ## References
 [OpenvSwitch Porting Guide](http://git.openvswitch.org/cgi-bin/gitweb.cgi?p=openvswitch;a=blob;f=PORTING)
