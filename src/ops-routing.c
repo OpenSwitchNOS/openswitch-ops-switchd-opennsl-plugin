@@ -353,6 +353,40 @@ static int l3_ingress_stats_init()
 }
 
 int
+ops_default_route_config(int unit)
+{
+    opennsl_vrf_t vrf = 0;
+    opennsl_l3_route_t default_route;
+    opennsl_error_t rc = OPENNSL_E_NONE;
+
+    opennsl_l3_route_t_init(&default_route);
+    default_route.l3a_vrf  = vrf;
+    default_route.l3a_intf = local_nhid;
+    rc = opennsl_l3_route_add (unit, &default_route);
+
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Default route for IPv4 failed rc = %s",
+	         opennsl_errmsg(rc));
+        return 1; /* Return error */
+    }
+
+    /* configuring default route for ipv6 */
+    opennsl_l3_route_t_init(&default_route);
+    default_route.l3a_vrf  = vrf;
+    default_route.l3a_flags |= OPENNSL_L3_IP6;
+    default_route.l3a_intf = local_nhid;
+    rc = opennsl_l3_route_add (unit, &default_route);
+
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Default route for IPv4 failed rc = %s",
+	         opennsl_errmsg(rc));
+        return 1; /* Return error */
+    }
+
+    return 0;
+}
+
+int
 ops_l3_init(int unit)
 {
     int hash_cfg = 0;
@@ -386,6 +420,15 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Error, create a local egress object, rc=%s", opennsl_errmsg(rc));
         return rc;
+    }
+
+    /* adding a default vrf route for v4 and v6 */
+    rc = ops_default_route_config(unit);
+
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Default route configuration failed unit=%d rc=%s",
+                 unit, opennsl_errmsg(rc));
+        return 1;
     }
 
     /* Send ARP to CPU */
