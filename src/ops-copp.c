@@ -127,7 +127,7 @@ char ops_copp_all_packet_stat_buffer[COPP_MAX_PACKET_STAT_BUFFER_SIZE
  * Array of strings for names for CPU queue numbers
  */
 char* ops_cpu_queue_name[OPS_COPP_QOS_QUEUE_MAX + 1] = {
-                                                          "Execption",
+                                                          "Acl-Logging",
                                                           "Default",
                                                           "Snooping",
                                                           "Sflow",
