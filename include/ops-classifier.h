@@ -116,28 +116,39 @@ int ops_classifier_init (int unit);
  */
 int register_ops_cls_plugin(void);
 
+struct ops_cls_hw_info {
+    bool in_asic;                              /* classifer already in asic */
+    opennsl_pbmp_t pbmp;                       /* port classifier is applied */
+    struct ovs_list rule_index_list;           /* list of hardware rule index */
+    struct ovs_list range_index_list;          /* list of hardware range index */
+    struct ovs_list stats_index_list;          /* list of hardware stats index */
+    struct ovs_list rule_index_update_list;    /* updated list of rule index */
+    struct ovs_list range_index_update_list;   /* updated list of range index */
+    struct ovs_list stats_index_update_list;   /* updated list of stats index */
+};
+
 struct ops_classifier {
     struct hmap_node node;
     struct uuid id;
     char *name;                                /* name of classifier list */
-    bool in_asic;                              /* classifer already in asic */
     enum ops_cls_type type;                    /* type of classifier list - aclv4, aclv6 */
-    opennsl_pbmp_t pbmp;                       /* port classifier is applied */
-    struct ovs_list entry_list;                /* list of ops_classifier_entry */
-    struct ovs_list range_list;                /* list of ops_range_entry */
-    struct ovs_list stats_list;                /* list of stats entry */
-    struct ovs_list entry_update_list;         /* updated ops_classifier_entry list */
-    struct ovs_list range_update_list;         /* updated list of ops_range_entry */
-    struct ovs_list stats_update_list;         /* updated list of stats entry */
+    struct ovs_list cls_entry_list;            /* list of ops_cls_entry */
+    struct ovs_list cls_entry_update_list;     /* list of updated ops_cls_entry */
+
+    struct ops_cls_hw_info port_cls;           /* port classifier */
+    struct ops_cls_hw_info route_cls;          /* routed classifier */
 };
 
-struct ops_classifier_entry {
+
+struct ops_cls_entry {
     struct ovs_list node;
-    uint32_t index;                     /* classifier index*/
-    struct ops_classifier *pacl;
-    bool in_asic;                       /* installed in asic */
     struct ops_cls_list_entry_match_fields entry_fields;   /* field(s)/value(s) to match */
     struct ops_cls_list_entry_actions entry_actions;        /* action(s) to take */
+};
+
+struct ops_rule_entry {
+    struct ovs_list node;
+    uint32_t index;                     /* classifier index*/
 };
 
 struct ops_range_entry {
