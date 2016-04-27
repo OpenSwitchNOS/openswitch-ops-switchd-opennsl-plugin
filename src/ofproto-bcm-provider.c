@@ -44,6 +44,7 @@
 #include "ops-stg.h"
 #include "ops-qos.h"
 #include "qos-asic-provider.h"
+#include "ops-mac-learning.h"
 
 VLOG_DEFINE_THIS_MODULE(ofproto_bcm_provider);
 
@@ -1627,7 +1628,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     bcmsdk_destroy_pbmp(temp_pbm);
 
 done:
-    /* Save enable/dsiable on bundle */
+    /* Save enable/disable on bundle */
     bundle->enable = s->enable;
     /* Done with VLAN configuration.  Save the new information. */
     bundle->vlan_mode = s->vlan_mode;
@@ -2144,8 +2145,11 @@ static int
 set_sflow(struct ofproto *ofproto_,
           const struct ofproto_sflow_options *oso)
 {
+    int ret;
     uint32_t rate;
     struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
+    uint32_t header;
+    uint32_t datagram;
 
     if (oso == NULL) { /* disable sflow */
         VLOG_DBG("%s : Input sflow options are NULL (maybe sflow (or collectors) is "
@@ -2181,6 +2185,15 @@ set_sflow(struct ofproto *ofproto_,
         return 0;
     }
 
+    if (!oso->agent_ip || (strlen(oso->agent_ip) == 0)) {
+        VLOG_DBG("sflow agent IP not found. Disable sFlow Agent.");
+        ops_sflow_agent_disable(ofproto);
+        if (sflow_options) {
+            memset(sflow_options->agent_ip, 0, sizeof(sflow_options->agent_ip));
+        }
+        return 0;
+    }
+
     /* sFlow Agent create, for first time. */
     if (sflow_options == NULL) {
         VLOG_DBG("sflow: Initialize sFlow agent with input options.");
@@ -2209,18 +2222,41 @@ set_sflow(struct ofproto *ofproto_,
         VLOG_DBG("sflow: sampling rate %d applied on sFlow Agent", rate);
     }
 
-    /* source IP for sFlow agent */
-    sflow_options->agent_ip[0] = '\0';
-    if (oso->agent_ip) {
-        strncpy(sflow_options->agent_ip, oso->agent_ip, INET6_ADDRSTRLEN);
+
+    /* Max datagram size has changed. */
+    datagram = oso->max_datagram;
+    if (sflow_options->max_datagram != datagram) {
+        sflow_options->max_datagram = datagram;
+        ops_sflow_set_max_datagram_size(datagram);
+        VLOG_DBG("sflow: max datagram set to %d", datagram);
     }
-    ops_sflow_agent_ip(oso->agent_ip);
+
+    /* Header size has changed. */
+    header = oso->header_len;
+    if (sflow_options->header_len != header) {
+        sflow_options->header_len = header;
+        ops_sflow_set_header_size(header);
+        VLOG_DBG("sflow: header size set to %d", header);
+    }
+
+    /* source IP for sFlow agent */
+    if (strncmp(sflow_options->agent_ip, oso->agent_ip, sizeof(oso->agent_ip))) {
+        memset(sflow_options->agent_ip, 0, sizeof(sflow_options->agent_ip));
+        strncpy(sflow_options->agent_ip, oso->agent_ip,
+                sizeof(sflow_options->agent_ip) - 1);
+        ops_sflow_agent_ip(oso->agent_ip);
+        VLOG_DBG("sflow: agent_ip changed to '%s'", oso->agent_ip);
+    }
 
     if (!sset_equals(&oso->targets, &sflow_options->targets)) {
         /* collectors has changed. destroy and create again. */
         sset_destroy(&sflow_options->targets);
         sset_clone(&sflow_options->targets, &oso->targets);
-        ops_sflow_set_collectors(&sflow_options->targets);
+        if ((ret = ops_sflow_set_collectors(&sflow_options->targets)) != 0) {
+            /* couldn't configure collectors. retry next time */
+            VLOG_DBG("sflow: couldn't configure collectors. ret %d", ret);
+            sset_clear(&sflow_options->targets);
+        }
     }
 
     /* polling interval change checked later for each port. */
@@ -2602,5 +2638,4 @@ const struct ofproto_class ofproto_bcm_provider_class = {
     l3_route_action,            /* l3 route action - install, update, delete */
     l3_ecmp_set,                /* enable/disable ECMP globally */
     l3_ecmp_hash_set,           /* enable/disable ECMP hash configs */
-
 };

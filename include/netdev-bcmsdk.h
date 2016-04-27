@@ -20,6 +20,13 @@
 #ifndef NETDEV_BCMSDK_H
 #define NETDEV_BCMSDK_H 1
 
+#define SPEED_1G                    1000
+#define SPEED_10G                   10000
+#define SPEED_25G                   25000
+#define SPEED_40G                   40000
+#define SPEED_50G                   50000
+#define SPEED_100G                  100000
+
 #define STR_EQ(s1, s2)      ((s1 != NULL) && (s2 != NULL) && \
                              (strlen((s1)) == strlen((s2))) && \
                              (!strncmp((s1), (s2), strlen((s2)))))
@@ -67,4 +74,5 @@ netdev_bcmsdk_l3intf_fp_stats_destroy(opennsl_port_t hw_port, int hw_unit);
 extern int
 netdev_bcmsdk_l3_global_stats_destroy(struct netdev *netdev_);
 
+extern void netdev_port_name_from_hw_id(int hw_unit, int hw_id, char *str);
 #endif /* netdev-bcmsdk.h */

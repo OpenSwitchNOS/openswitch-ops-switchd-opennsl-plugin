@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015. 2016 Hewlett-Packard Development Company, L.P.
+ * Copyright (C) 2015-2016 Hewlett-Packard Enterprise Development Company, L.P.
  * All Rights Reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -40,6 +40,7 @@
 #include "ops-routing.h"
 #include "ops-sflow.h"
 #include "eventlog.h"
+#include "mac-learning-plugin.h"
 
 VLOG_DEFINE_THIS_MODULE(netdev_bcmsdk);
 
@@ -253,6 +254,23 @@ netdev_from_hw_id(int hw_unit, int hw_id)
     }
     ovs_mutex_unlock(&bcmsdk_list_mutex);
     return (found == true) ? netdev : NULL;
+}
+
+void netdev_port_name_from_hw_id(int hw_unit,
+                                 int hw_id,
+                                 char *str)
+{
+    struct netdev_bcmsdk *netdev = NULL;
+
+    if (!str) {
+        return;
+    }
+
+    netdev = netdev_from_hw_id(hw_unit, hw_id);
+
+    if (netdev && netdev->port_info) {
+        strncpy(str, netdev->port_info->name, PORT_NAME_SIZE);
+    }
 }
 
 static struct netdev *
@@ -506,6 +524,16 @@ error:
 }
 
 static void
+get_interface_speed_config(const char *speed_cfg, int *speed)
+{
+    /* Speed configuration. */
+    if (sscanf(speed_cfg, "%d,", speed) != 1) {
+        /* Set 40G as default speed */
+        *speed = SPEED_40G;
+    }
+}
+
+static void
 get_interface_autoneg_config(const char *autoneg_cfg, int *autoneg)
 {
         /* Auto negotiation configuration. */
@@ -713,6 +741,7 @@ netdev_bcmsdk_set_hw_intf_config(struct netdev *netdev_, const struct smap *args
     const char *pause = smap_get(args, INTERFACE_HW_INTF_CONFIG_MAP_PAUSE);
     const char *interface_type = smap_get(args, INTERFACE_HW_INTF_CONFIG_MAP_INTERFACE_TYPE);
     const int mtu = smap_get_int(args, INTERFACE_HW_INTF_CONFIG_MAP_MTU, 0);
+    const char *speeds = smap_get(args, INTERFACE_HW_INTF_CONFIG_MAP_SPEEDS);
 
     VLOG_DBG("netdev set_hw_intf_config called for interface %s", netdev->up.name);
 
@@ -734,6 +763,7 @@ netdev_bcmsdk_set_hw_intf_config(struct netdev *netdev_, const struct smap *args
         get_interface_pause_config(pause, &(pcfg->pause_rx), &(pcfg->pause_tx));
         get_interface_connector_type(interface_type, &(pcfg->intf_type));
         pcfg->max_frame_sz = (mtu == 0) ? 0 : mtu + BCMSDK_MTU_TO_MAXFRAMESIZE_PAD;
+        get_interface_speed_config(speeds, &(pcfg->cfg_speed));
 
     } else {
         /* Treat the absence of hw_enable info as a "disable" action. */
