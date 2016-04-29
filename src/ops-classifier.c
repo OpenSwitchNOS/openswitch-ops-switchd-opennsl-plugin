@@ -421,7 +421,7 @@ ops_cls_set_action(int                          unit,
                    bool                        *isStatEnabled)
 {
     opennsl_error_t rc = OPENNSL_E_NONE;
-    opennsl_field_stat_t stats_type[2] = {opennslFieldStatPackets, opennslFieldStatBytes} ;
+    opennsl_field_stat_t stats_type = opennslFieldStatPackets;
     int stat_id;
 
     VLOG_DBG("Classifier list entry action flag: 0x%x", cls_entry->act_flags);
@@ -439,28 +439,29 @@ ops_cls_set_action(int                          unit,
     }
 
     if (cls_entry->act_flags & OPS_CLS_ACTION_COUNT) {
-        rc = opennsl_field_stat_create(unit, ip_group, 2, stats_type, &stat_id);
+        rc = opennsl_field_stat_create(unit, ip_group, 1, &stats_type,
+                                       &stat_id);
         if (OPENNSL_FAILURE(rc)) {
             VLOG_ERR("Failed to create stats for ACL %s at entry 0x%x rc=%s",
                      cls->name, entry, opennsl_errmsg(rc));
             return rc;
         } else {
-            VLOG_DBG("Count action added at entry 0x%x.", entry);
+            VLOG_DBG("Stat index %d attached to entry 0x%x.", stat_id, entry);
         }
 
         rc = opennsl_field_entry_stat_attach(unit, entry, stat_id);
         if (OPENNSL_FAILURE(rc)) {
-            VLOG_ERR("Failed to attach stats 0x%x to entry 0x%x in ACL %s rc=%s",
+            VLOG_ERR("Failed to attach stats %d to entry 0x%x in ACL %s rc=%s",
                      stat_id, entry, cls->name, opennsl_errmsg(rc));
             rc = opennsl_field_stat_destroy(unit, stat_id);
             if (OPENNSL_FAILURE(rc)) {
-                VLOG_ERR("Failed to destroy stats 0x%x for ACL %s rc=%s",
+                VLOG_ERR("Failed to destroy stats %d for ACL %s rc=%s",
                           stat_id, cls->name, opennsl_errmsg(rc));
             }
             return rc;
         }
 
-        VLOG_DBG("Attached stats 0x%x to entry 0x%x in ACL %s",
+        VLOG_DBG("Attached stats %d to entry 0x%x in ACL %s",
                  stat_id, entry, cls->name);
 
         *stat_index = stat_id;
@@ -775,7 +776,8 @@ ops_cls_install_rule_in_asic(int                            unit,
         }
     }
 
-    if (cls_entry->match_flags & OPS_CLS_SRC_IPADDR_VALID) {
+    if ((cls_entry->match_flags & OPS_CLS_SRC_IPADDR_VALID) &&
+         (cls_entry->src_ip != 0) && (cls_entry->src_mask != 0)){
         VLOG_DBG("Src ipv4 addr 0x%x and mask 0x%x", htonl(cls_entry->src_ip),
                  htonl(cls_entry->src_mask));
 
@@ -789,7 +791,8 @@ ops_cls_install_rule_in_asic(int                            unit,
         }
     }
 
-    if (cls_entry->match_flags & OPS_CLS_DEST_IPADDR_VALID) {
+    if ((cls_entry->match_flags & OPS_CLS_DEST_IPADDR_VALID) &&
+        (cls_entry->dst_ip != 0) && (cls_entry->dst_mask != 0)) {
         VLOG_DBG("Dst ipv4 addr 0x%x and mask 0x%x",
                  htonl(cls_entry->dst_ip), htonl(cls_entry->dst_mask));
 
@@ -803,7 +806,8 @@ ops_cls_install_rule_in_asic(int                            unit,
         }
     }
 
-    if (cls_entry->match_flags & OPS_CLS_PROTOCOL_VALID) {
+    if ((cls_entry->match_flags & OPS_CLS_PROTOCOL_VALID) &&
+         (match->protocol != 255)) {
         VLOG_DBG("IP protocol: 0x%x", match->protocol);
 
         rc = opennsl_field_qualify_IpProtocol(unit,
@@ -845,8 +849,8 @@ ops_cls_install_rule_in_asic(int                            unit,
                                             OPENNSL_FIELD_RANGE_SRCPORT,
                                             min_port, max_port);
             if (OPENNSL_FAILURE(rc)) {
-                VLOG_ERR("Failed to create L4 src port range min %d, max %d rc=%s",
-                         min_port, max_port, opennsl_errmsg(rc));
+                VLOG_ERR("Failed to create L4 src port range min %d, max %d"
+                         " rc=%s", min_port, max_port, opennsl_errmsg(rc));
                 goto cleanup;
             }
 
@@ -900,8 +904,8 @@ ops_cls_install_rule_in_asic(int                            unit,
                                             OPENNSL_FIELD_RANGE_DSTPORT,
                                             min_port, max_port);
             if (OPENNSL_FAILURE(rc)) {
-                VLOG_ERR("Failed to create L4 dst port range min %d, max %d rc=%s",
-                         min_port, max_port, opennsl_errmsg(rc));
+                VLOG_ERR("Failed to create L4 dst port range min %d, max %d"
+                         " rc=%s", min_port, max_port, opennsl_errmsg(rc));
                 goto cleanup;
             }
 
@@ -938,7 +942,8 @@ ops_cls_install_rule_in_asic(int                            unit,
     /* Install the entry */
     rc = opennsl_field_entry_install(unit, entry);
     if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("Failed to install entry 0x%x rc=%s", entry,opennsl_errmsg(rc));
+        VLOG_ERR("Failed to install entry 0x%x rc=%s", entry,
+                  opennsl_errmsg(rc));
         goto cleanup;
     }
 
@@ -1274,7 +1279,8 @@ ops_cls_pd_apply(struct ops_cls_list            *list,
 
     if (!in_asic) {
         /* first binding of classifier*/
-        rc = ops_cls_install_classifier_in_asic(hw_unit, cls, &cls->cls_entry_list,
+        rc = ops_cls_install_classifier_in_asic(hw_unit, cls,
+                                                &cls->cls_entry_list,
                                                 &port_bmp, &fail_index, FALSE,
                                                 interface_info);
         if (OPENNSL_FAILURE(rc)) {
@@ -1497,7 +1503,8 @@ ops_cls_pd_list_update(struct ops_cls_list                 *list,
     if (!cls) {
         cls = ops_cls_add(list);
         if (!cls) {
-            VLOG_ERR ("Failed to add classifier %s in hashmap", list->list_name);
+            VLOG_ERR ("Failed to add classifier %s in hashmap",
+                      list->list_name);
             rc = OPS_FAIL;
             goto update_fail;
         }
@@ -1595,7 +1602,7 @@ ops_cls_pd_statistics_get(const struct uuid              *list_id,
     struct ops_classifier *cls;
     int hw_unit, rc, fail_index = 0;
     opennsl_pbmp_t port_bmp;
-    uint64 packets;
+    uint64 packets = 0;
     struct ops_stats_entry *sentry = NULL, *next_sentry;
     opennsl_field_stat_t stats_type = opennslFieldStatPackets;
     struct ovs_list *stats_index_listp;
@@ -1628,11 +1635,12 @@ ops_cls_pd_statistics_get(const struct uuid              *list_id,
             rc = opennsl_field_stat_get(hw_unit, sentry->index, stats_type, &packets);
             if (OPENNSL_FAILURE(rc)) {
                 VLOG_ERR("Failed to get packets stats for stats index"
-                         " 0x%x in classifier %s rc:%s",
+                         " %d in classifier %s rc:%s",
                          sentry->index, cls->name, opennsl_errmsg(rc));
                 fail_index = sentry->rule_index;
                 goto stats_get_fail;
             }
+            VLOG_DBG("Hit count: stats index %d, packets %llu", sentry->index, packets);
             statistics[sentry->rule_index].stats_enabled = TRUE;
             statistics[sentry->rule_index].hitcounts = packets;
         }
@@ -1689,11 +1697,12 @@ ops_cls_pd_statistics_clear(const struct uuid               *list_id,
         rc = opennsl_field_stat_all_set(hw_unit, sentry->index, value);
         if (OPENNSL_FAILURE(rc)) {
             VLOG_ERR("Failed to set  packets stats for stats index"
-                     " 0x%x in classifier %s rc:%s",
+                     " %d in classifier %s rc:%s",
                      sentry->index, cls->name, opennsl_errmsg(rc));
             fail_index = sentry->rule_index;
             goto stats_clear_fail;
         }
+        VLOG_DBG("Clear hit count: stats index %d", sentry->index);
     }
 
     return OPS_OK;
