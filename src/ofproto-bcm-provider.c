@@ -1489,7 +1489,9 @@ bundle_set(struct ofproto *ofproto_, void *aux,
 
         /* Check for mode changes first. */
         if (mode_changed) {
-            if (bundle->vlan_mode == PORT_VLAN_ACCESS) {
+                /* Unconfigure old native tag settings first. */
+                switch (bundle->vlan_mode) {
+                case PORT_VLAN_ACCESS:
                 /* Was ACCESS type, becoming one of the TRUNK types. */
                 if (bundle->vlan != -1) {
                     bcmsdk_del_access_ports(bundle->vlan, temp_pbm);
@@ -1498,30 +1500,10 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                 /* Add all new trunk VLANs. */
                 config_all_vlans(s->vlan_mode, s->vlan,
                                  new_trunks, temp_pbm);
+                /* Now that we've handled VLAN mode or VLAN tag changes, check &
+                  update the rest of TRUNK VLANs (tagged VLANs only). */
+                break;
 
-                /* Should have nothing else to do... */
-                goto done;
-
-            } else if (s->vlan_mode == PORT_VLAN_ACCESS) {
-                /* Was one of the TRUNK types (trunk, native-tagged,
-                 * or native-untagged), becoming ACCESS type. */
-                unconfig_all_vlans(bundle->vlan_mode, bundle->vlan,
-                                   bundle->trunks, temp_pbm);
-
-                /* Add new access VLAN. */
-                if (s->vlan != -1) {
-                    bcmsdk_add_access_ports(s->vlan, temp_pbm);
-                }
-
-                /* Should have nothing else to do... */
-                goto done;
-
-            } else {
-                /* Changing modes among one of the TRUNK types (trunk,
-                 * native-tagged, or native-untagged). */
-
-                /* Unconfigure old native tag settings first. */
-                switch (bundle->vlan_mode) {
                 case PORT_VLAN_NATIVE_TAGGED:
                     if (bundle->vlan != -1) {
                         bcmsdk_del_native_tagged_ports(bundle->vlan, temp_pbm);
@@ -1540,35 +1522,60 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                         /* If the native VLAN we just unconfigured is also listed
                          * explicitly as part of the trunks, need to add it back. */
                         if (bitmap_is_set(bundle->trunks, bundle->vlan)) {
-                            bcmsdk_add_trunk_ports(bundle->vlan, temp_pbm);
+                              bcmsdk_add_trunk_ports(bundle->vlan, temp_pbm);
                         }
                     }
                     break;
-                case PORT_VLAN_ACCESS:
                 case PORT_VLAN_TRUNK:
                 default:
                     break;
                 }
-
-                /* Configure new native tag settings. */
+                 /* Configure new native tag settings. */
                 switch (s->vlan_mode) {
                 case PORT_VLAN_NATIVE_TAGGED:
                     if (s->vlan != -1) {
+                        bcmsdk_del_native_untagged_ports(s->vlan, temp_pbm, false);
                         bcmsdk_add_native_tagged_ports(s->vlan, temp_pbm);
                     }
                     break;
+
+                case PORT_VLAN_TRUNK:
+                    if (s->vlan != -1) {
+                        bcmsdk_add_native_untagged_ports(1, temp_pbm, false);
+                    }
+                    break;
+
                 case PORT_VLAN_NATIVE_UNTAGGED:
+                    if (bundle->vlan == 1) {
+                        bcmsdk_del_native_untagged_ports(1, temp_pbm, false);
+                    }
                     if (s->vlan != -1) {
                         bcmsdk_add_native_untagged_ports(s->vlan, temp_pbm, false);
                     }
                     break;
+
                 case PORT_VLAN_ACCESS:
-                case PORT_VLAN_TRUNK:
                 default:
                     break;
                 }
-            } /* Changing modes among one of the TRUNK types */
+                if (bundle->vlan_mode == PORT_VLAN_ACCESS) {
+                    goto done;
+                }
+                if (s->vlan_mode == PORT_VLAN_ACCESS) {
+                    /* Was one of the TRUNK types (trunk, native-tagged,
+                     * or native-untagged), becoming ACCESS type. */
+                    unconfig_all_vlans(bundle->vlan_mode, bundle->vlan,
+                                   bundle->trunks, temp_pbm);
+                    bcmsdk_del_native_untagged_ports(1, temp_pbm, false);
 
+                    /* Add new access VLAN. */
+                    if (s->vlan != -1) {
+                        bcmsdk_add_access_ports(s->vlan, temp_pbm);
+                    }
+
+                    /* Should have nothing else to do... */
+                    goto done;
+                }
         } else if (tag_changed) {
             /* VLAN mode didn't change, but VLAN tag changed. */
             switch (bundle->vlan_mode) {
@@ -1620,6 +1627,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
             handle_trunk_vlan_changes(bundle->trunks, new_trunks, temp_pbm,
                                       bundle->vlan_mode, s->vlan_mode);
         }
+
     }
 
     /* Done with temp_pbm. */
