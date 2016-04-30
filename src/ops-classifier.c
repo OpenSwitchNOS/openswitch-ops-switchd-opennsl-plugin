@@ -145,7 +145,7 @@ ops_classifier_init(int unit)
 /*
  * Classifier lookup in hash table
  */
-struct ops_classifier*
+static struct ops_classifier*
 ops_cls_lookup(const struct uuid *cls_id)
 {
     struct ops_classifier *cls = NULL;
@@ -163,7 +163,7 @@ ops_cls_lookup(const struct uuid *cls_id)
 /*
  * Copy classifier entries and store in hash
  */
-void
+static void
 ops_cls_populate_entries(struct ops_classifier  *cls,
                          struct ovs_list        *list,
                          struct ops_cls_list    *clist)
@@ -412,7 +412,7 @@ ops_cls_get_port_bitmap(struct ofproto *ofproto_,
 /*
  * Set rule action
  */
-int
+static int
 ops_cls_set_action(int                          unit,
                    opennsl_field_entry_t        entry,
                    struct ops_classifier       *cls,
@@ -498,7 +498,7 @@ ops_cls_set_action(int                          unit,
 /*
  * Display ports
  */
-char*
+static char*
 ops_cls_display_port_bit_map(opennsl_pbmp_t *pbmp,
                              char           *buffer,
                              int             bufsize)
@@ -521,7 +521,7 @@ ops_cls_display_port_bit_map(opennsl_pbmp_t *pbmp,
 /*
  * Set PI error code
  */
-void
+static void
 ops_cls_set_pd_status(int                        rc,
                       int                        fail_index,
                       struct ops_cls_pd_status  *pd_status)
@@ -596,7 +596,7 @@ ops_cls_set_pd_status(int                        rc,
 /*
  * Set PI (list) error code
  */
-void
+static void
 ops_cls_set_pd_list_status(int                             rc,
                            int                             fail_index,
                            struct ops_cls_pd_list_status  *status)
@@ -671,7 +671,7 @@ ops_cls_set_pd_list_status(int                             rc,
 /*
  * Get the port range from classifier
  */
-void
+static void
 ops_cls_port_range_get(struct ops_cls_list_entry_match_fields *field,
                        uint16_t                               *port_min,
                        uint16_t                               *port_max)
@@ -692,7 +692,7 @@ ops_cls_port_range_get(struct ops_cls_list_entry_match_fields *field,
 /*
  * Add rule in FP
  */
-int
+static int
 ops_cls_install_rule_in_asic(int                            unit,
                              struct ops_classifier         *cls,
                              struct ops_cls_entry          *cls_entry,
@@ -703,14 +703,15 @@ ops_cls_install_rule_in_asic(int                            unit,
 {
     opennsl_error_t rc = OPENNSL_E_NONE;
     opennsl_field_entry_t entry;
-    opennsl_field_range_t range;
+    opennsl_field_range_t src_range, dst_range;
     opennsl_pbmp_t pbmp_mask;
     uint16_t port_mask = 0xFFFF;
     uint8_t protocol_mask = 0XFF;
     uint16_t min_port, max_port;
-    int stat_index;
+    int stat_index = 0;
     bool statEnabled = FALSE;
-    bool rangeEnabled = FALSE;
+    bool src_rangeEnabled = FALSE;
+    bool dst_rangeEnabled = FALSE;
     struct ops_rule_entry *rulep;
     struct ops_stats_entry *sentry;
     struct ops_range_entry *rentry;
@@ -845,7 +846,7 @@ ops_cls_install_rule_in_asic(int                            unit,
         case OPS_CLS_L4_PORT_OP_GT:
             ops_cls_port_range_get(match, &min_port, &max_port);
 
-            rc = opennsl_field_range_create(unit, &range,
+            rc = opennsl_field_range_create(unit, &src_range,
                                             OPENNSL_FIELD_RANGE_SRCPORT,
                                             min_port, max_port);
             if (OPENNSL_FAILURE(rc)) {
@@ -854,18 +855,18 @@ ops_cls_install_rule_in_asic(int                            unit,
                 goto cleanup;
             }
 
-            rc = opennsl_field_qualify_RangeCheck(unit, entry, range, 0);
+            rc = opennsl_field_qualify_RangeCheck(unit, entry, src_range, 0);
             if (OPENNSL_FAILURE(rc)) {
                 VLOG_ERR("Failed to add L4 src port range min %d, max %d rc=%s",
                          min_port, max_port, opennsl_errmsg(rc));
-                rc = opennsl_field_range_destroy(unit, range);
+                rc = opennsl_field_range_destroy(unit, src_range);
                 if (OPENNSL_FAILURE(rc)) {
                     VLOG_ERR("Failed to destroy L4 src port range %d rc= %s",
-                             range, opennsl_errmsg(rc));
+                             src_range, opennsl_errmsg(rc));
                 }
                 goto cleanup;
             }
-            rangeEnabled = TRUE;
+            src_rangeEnabled = TRUE;
             break;
 
         case OPS_CLS_L4_PORT_OP_NONE:
@@ -900,7 +901,7 @@ ops_cls_install_rule_in_asic(int                            unit,
         case OPS_CLS_L4_PORT_OP_GT:
             ops_cls_port_range_get(match, &min_port, &max_port);
 
-            rc = opennsl_field_range_create(unit, &range,
+            rc = opennsl_field_range_create(unit, &dst_range,
                                             OPENNSL_FIELD_RANGE_DSTPORT,
                                             min_port, max_port);
             if (OPENNSL_FAILURE(rc)) {
@@ -909,18 +910,18 @@ ops_cls_install_rule_in_asic(int                            unit,
                 goto cleanup;
             }
 
-            rc = opennsl_field_qualify_RangeCheck(unit, entry, range, 0);
+            rc = opennsl_field_qualify_RangeCheck(unit, entry, dst_range, 0);
             if (OPENNSL_FAILURE(rc)) {
                 VLOG_ERR("Failed to add L4 dst port range min %d, max %d rc=%s",
                          min_port, max_port, opennsl_errmsg(rc));
-                rc = opennsl_field_range_destroy(unit, range);
+                rc = opennsl_field_range_destroy(unit, dst_range);
                 if (OPENNSL_FAILURE(rc)) {
                     VLOG_ERR("Failed to destroy L4 dst port range %d rc= %s",
-                              range, opennsl_errmsg(rc));
+                              dst_range, opennsl_errmsg(rc));
                 }
                 goto cleanup;
             }
-            rangeEnabled = TRUE;
+            dst_rangeEnabled = TRUE;
             break;
 
         case OPS_CLS_L4_PORT_OP_NONE:
@@ -961,9 +962,16 @@ ops_cls_install_rule_in_asic(int                            unit,
     }
 
     /* store range entry */
-    if(rangeEnabled) {
+    if(src_rangeEnabled) {
         rentry = xzalloc(sizeof(struct ops_range_entry));
-        rentry->index = range;
+        rentry->index = src_range;
+        listp = isUpdate ? range_index_update_listp : range_index_listp;
+        list_push_back(listp, &rentry->node);
+    }
+
+    if (dst_rangeEnabled) {
+        rentry = xzalloc(sizeof(struct ops_range_entry));
+        rentry->index = dst_range;
         listp = isUpdate ? range_index_update_listp : range_index_listp;
         list_push_back(listp, &rentry->node);
     }
@@ -978,10 +986,18 @@ ops_cls_install_rule_in_asic(int                            unit,
 
 cleanup:
 
-    if (rangeEnabled) {
-        rc = opennsl_field_range_destroy(unit, range);
+    if (src_rangeEnabled) {
+        rc = opennsl_field_range_destroy(unit, src_range);
         if (OPENNSL_FAILURE(rc)) {
-            VLOG_ERR("Failed to destroy L4 src port range %d rc= %s", range,
+            VLOG_ERR("Failed to destroy L4 src port range %d rc= %s", src_range,
+                     opennsl_errmsg(rc));
+        }
+    }
+
+    if (dst_rangeEnabled) {
+        rc = opennsl_field_range_destroy(unit, dst_range);
+        if (OPENNSL_FAILURE(rc)) {
+            VLOG_ERR("Failed to destroy L4 dst port range %d rc= %s", dst_range,
                      opennsl_errmsg(rc));
         }
     }
@@ -1003,13 +1019,14 @@ cleanup:
 /*
  * Add classifier rules in FP
  */
-int ops_cls_install_classifier_in_asic(int                             hw_unit,
-                                       struct ops_classifier          *cls,
-                                       struct ovs_list                *list,
-                                       opennsl_pbmp_t                 *port_bmp,
-                                       int                            *fail_index,
-                                       bool                            isUpdate,
-                                       struct ops_cls_interface_info  *intf_info)
+static int
+ops_cls_install_classifier_in_asic(int                             hw_unit,
+                                   struct ops_classifier          *cls,
+                                   struct ovs_list                *list,
+                                   opennsl_pbmp_t                 *port_bmp,
+                                   int                            *fail_index,
+                                   bool                            isUpdate,
+                                   struct ops_cls_interface_info  *intf_info)
 {
     opennsl_error_t rc = OPENNSL_E_NONE;
     struct ops_cls_entry *cls_entry = NULL, *next_cls_entry;
@@ -1044,11 +1061,12 @@ int ops_cls_install_classifier_in_asic(int                             hw_unit,
 /*
  * Update rule(s) port bitmap in FP
  */
-int ops_cls_pbmp_update(int                             hw_unit,
-                        struct ops_classifier          *cls,
-                        opennsl_pbmp_t                 *port_bmp,
-                        int                            *fail_index,
-                        struct ops_cls_interface_info  *intf_info)
+static int
+ops_cls_pbmp_update(int                             hw_unit,
+                    struct ops_classifier          *cls,
+                    opennsl_pbmp_t                 *port_bmp,
+                    int                            *fail_index,
+                    struct ops_cls_interface_info  *intf_info)
 {
     opennsl_error_t rc = OPENNSL_E_NONE;
     struct ops_rule_entry *rule_entry = NULL, *next_rule_entry;
@@ -1086,7 +1104,7 @@ int ops_cls_pbmp_update(int                             hw_unit,
 /*
  * Delete rules in asic
  */
-int
+static int
 ops_cls_delete_rules_in_asic(int                             hw_unit,
                              struct ops_classifier          *cls,
                              int                            *fail_index,
@@ -1160,12 +1178,13 @@ ops_cls_delete_rules_in_asic(int                             hw_unit,
 /*
  * Update port bitmap of classifier
  */
-int ops_cls_update_classifier_in_asic(int                             hw_unit,
-                                      struct ops_classifier          *cls,
-                                      opennsl_pbmp_t                 *port_bmp,
-                                      enum ops_update_pbmp            action,
-                                      int                            *fail_index,
-                                      struct ops_cls_interface_info  *intf_info)
+static int
+ops_cls_update_classifier_in_asic(int                             hw_unit,
+                                  struct ops_classifier          *cls,
+                                  opennsl_pbmp_t                 *port_bmp,
+                                  enum ops_update_pbmp            action,
+                                  int                            *fail_index,
+                                  struct ops_cls_interface_info  *intf_info)
 {
     opennsl_error_t rc = OPENNSL_E_NONE;
     opennsl_pbmp_t pbmp, *p_bmp;
