@@ -1,0 +1,9 @@
+Verified+1: Zuul <zuul@lists.openswitch.net>
+Code-Review+2: Chandra Shekhar <chandra.shekhar@hpe.com>
+Verified+2: Chandra Shekhar <chandra.shekhar@hpe.com>
+Workflow+1: Chandra Shekhar <chandra.shekhar@hpe.com>
+Submitted-by: Chandra Shekhar <chandra.shekhar@hpe.com>
+Submitted-at: Mon, 02 May 2016 21:16:06 +0000
+Reviewed-on: https://review.openswitch.net/8182
+Project: openswitch/ops-switchd-opennsl-plugin
+Branch: refs/heads/feature/acl
