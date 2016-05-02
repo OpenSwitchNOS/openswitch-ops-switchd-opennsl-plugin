@@ -46,6 +46,7 @@
 #include "ops-port.h"
 #include "ops-qos.h"
 #include "ops-stg.h"
+#include "ops-classifier.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_debug);
 
@@ -93,7 +94,7 @@ char cmd_ops_usage[] =
 "   l3ecmp [<entry>] - display an ecmp egress object info.\n"
 "   lag [<lagid>] - displays OpenSwitch LAG info.\n"
 "   stg [hw] <stgid> - displays Spanning Tree Group Info. \n"
-"   fp [<copp-ingress-group> | <copp-egress-group> | <ospf-group>]- displays programmed fp rules.\n"
+"   fp [<copp-ingress-group> | <copp-egress-group> | <ospf-group> | <acl-ingress-group>]- displays programmed fp rules.\n"
 "   copp-stats - displays all the CoPP configuration and statistics.\n"
 "   copp-config <packet class name> <CPU queue class> <Rate> <Burst> - Modifies the CoPP rule for a control packet class \n"
 "   cpu-queue-stats - displays the per cpu queue statistics.\n"
@@ -306,6 +307,8 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
     uint32 p0, p1;
     static char *stat_type_str[] = STAT_TYPE_STRINGS;
     opennsl_ip6_t ip6_dest, ip6_mask;
+    opennsl_pbmp_t pbmp, pbmp_mask;
+    char pfmt[_SHR_PBMP_FMT_LEN];
 
     ds_put_format(ds, "Group ID = %d\n", group);
     /* First get th entry count for this group */
@@ -355,7 +358,28 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
             ds_put_format(ds, "\tQualifier Stage is Egress\n");
         }
 
-        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyInPort)) {
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyL3Routable)) {
+            ret = opennsl_field_qualify_L3Routable_get(unit,
+                    entry_array[entry_index],(uint8 *) &data,(uint8 *) &mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is L3Routable - ");
+                ds_put_format(ds, "0x%x mask 0x%x\n", (int)data, (int)mask);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyInPorts)) {
+            ret = opennsl_field_qualify_InPorts_get(unit,
+                  entry_array[entry_index], &pbmp, &pbmp_mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is Inports -\n");
+                ds_put_format(ds, "\t       Data=%s\n", _SHR_PBMP_FMT(pbmp, pfmt));
+                ds_put_format(ds, "\t       Mask=%s\n", _SHR_PBMP_FMT(pbmp_mask, pfmt));
+            }
+        }
+
+       if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyInPort)) {
             ret = opennsl_field_qualify_InPort_get(unit,
                   entry_array[entry_index],(int *) &data,(int *) &mask);
             if (!OPENNSL_FAILURE(ret)) {
@@ -372,18 +396,6 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
                   entry_array[entry_index],(int *) &data,(int *) &mask);
             if (!OPENNSL_FAILURE(ret)) {
                 ds_put_format(ds, "\t    Qualifier is Outport - ");
-                ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
-                                  (int)mask);
-            }
-            data = 0;
-            mask = 0;
-        }
-
-        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyL4DstPort)) {
-            ret = opennsl_field_qualify_L4DstPort_get(unit,
-                  entry_array[entry_index],(int *) &data,(int *) &mask);
-            if (!OPENNSL_FAILURE(ret)) {
-                ds_put_format(ds, "\t    Qualifier is L4DstPort - ");
                 ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
                                   (int)mask);
             }
@@ -433,6 +445,26 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
             mask = 0;
         }
 
+         if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifySrcIp)) {
+            char ip_str[IPV4_BUFFER_LEN];
+            char mask_str[IPV4_BUFFER_LEN];
+            ret = opennsl_field_qualify_SrcIp_get(unit,
+                          entry_array[entry_index],(opennsl_ip_t *)&data,
+                          (opennsl_ip_t *)&mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is SrcIp - ");
+                sprintf(ip_str, "%d.%d.%d.%d",
+                 ((int) data >> 24) & 0xff, ((int) data >> 16) & 0xff,
+                 ((int) data >> 8) & 0xff,(int) data & 0xff);
+                sprintf(mask_str, "%d.%d.%d.%d",
+                 ((int) mask >> 24) & 0xff, ((int) mask >> 16) & 0xff,
+                 ((int) mask >> 8) & 0xff,(int) mask & 0xff);
+                ds_put_format(ds,"data %-16s mask %-16s\n", ip_str, mask_str);
+            }
+            data = 0;
+            mask = 0;
+        }
+
         if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyDstIp)) {
             char ip_str[IPV4_BUFFER_LEN];
             char mask_str[IPV4_BUFFER_LEN];
@@ -448,6 +480,30 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
                  ((int) mask >> 24) & 0xff, ((int) mask >> 16) & 0xff,
                  ((int) mask >> 8) & 0xff,(int) mask & 0xff);
                 ds_put_format(ds,"data %-16s mask %-16s\n", ip_str, mask_str);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyL4SrcPort)) {
+            ret = opennsl_field_qualify_L4SrcPort_get(unit,
+                  entry_array[entry_index],(int *) &data,(int *) &mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is L4SrcPort - ");
+                ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
+                                  (int)mask);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyL4DstPort)) {
+            ret = opennsl_field_qualify_L4DstPort_get(unit,
+                  entry_array[entry_index],(int *) &data,(int *) &mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Qualifier is L4DstPort - ");
+                ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
+                                  (int)mask);
             }
             data = 0;
             mask = 0;
@@ -786,6 +842,52 @@ ops_fp_dump_copp_egress_rules (struct ds *ds)
         fp_entries_show(unit, group_id, ds);
     }
 }
+/*
+ * ops_fp_dump_acl_ingress_rules
+ *
+ * This function dumps the "fp show" output for acl ingress rules
+ * for all hardware units.
+ */
+static void
+ops_fp_dump_acl_ingress_rules (struct ds *ds)
+{
+    int                   unit = 0;
+    opennsl_field_group_t group_id;
+
+    /*
+     * If "ds" is not a valid pointer, then return
+     * from this function.
+     */
+    if (!ds) {
+        return;
+    }
+
+    /*
+     * Iterate over all the hardware units available.
+     */
+    for(unit =0; unit < MAX_SWITCH_UNITS; unit++) {
+
+        /*
+         * Get the group-id for CoPP FP egress rules.
+         */
+        group_id = ops_cls_get_ingress_group_id_for_hw_unit(unit);
+
+        /*
+         * If the group-id is invalid, then do not dump the
+         * "fp show" for that hardware unit.
+         */
+        if (group_id == -1) {
+            continue;
+        }
+
+        /*
+         * Call the "fp show" function to dump the fp rules
+         * for the given group and hardware unit.
+         */
+        fp_entries_show(unit, group_id, ds);
+    }
+}
+
 
 /*
  * This function converts the protocol string passed to
@@ -963,6 +1065,8 @@ bcm_plugin_debug(struct unixctl_conn *conn, int argc,
                     ops_fp_dump_copp_ingress_rules(&ds);
                 } else if (!strcmp(option, "copp-egress-group")) {
                     ops_fp_dump_copp_egress_rules(&ds);
+                } else if (!strcmp(option, "acl-ingress-group")) {
+                    ops_fp_dump_acl_ingress_rules(&ds);
                 }
             } else {
                 ops_fp_show_dump(&ds);

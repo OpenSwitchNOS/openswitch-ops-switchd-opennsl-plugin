@@ -167,5 +167,7 @@ enum ops_update_pbmp {
     OPS_PBMP_DEL,
 };
 
+int ops_cls_get_ingress_group_id_for_hw_unit(int hw_unit);
+
 #endif /* __OPS_CLASSIFIER_H__ */
 

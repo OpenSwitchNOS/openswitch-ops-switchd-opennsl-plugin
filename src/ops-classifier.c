@@ -63,6 +63,7 @@
 
 /** Define a module for VLOG_ functionality */
 VLOG_DEFINE_THIS_MODULE(ops_classifier);
+
 struct hmap classifier_map;
 
 opennsl_field_group_t ip_group;
@@ -669,12 +670,12 @@ ops_cls_set_pd_list_status(int                             rc,
 }
 
 /*
- * Get the port range from classifier
+ * Get the src port range from classifier
  */
 static void
-ops_cls_port_range_get(struct ops_cls_list_entry_match_fields *field,
-                       uint16_t                               *port_min,
-                       uint16_t                               *port_max)
+ops_cls_get_src_port_range(struct ops_cls_list_entry_match_fields *field,
+                           uint16_t                               *port_min,
+                           uint16_t                               *port_max)
 {
     if(field->L4_src_port_op == OPS_CLS_L4_PORT_OP_RANGE) {
         *port_min = field->L4_src_port_min;
@@ -688,6 +689,25 @@ ops_cls_port_range_get(struct ops_cls_list_entry_match_fields *field,
     }
 }
 
+/*
+ * Get the src port range from classifier
+ */
+static void
+ops_cls_get_dst_port_range(struct ops_cls_list_entry_match_fields *field,
+                           uint16_t                               *port_min,
+                           uint16_t                               *port_max)
+{
+    if(field->L4_dst_port_op == OPS_CLS_L4_PORT_OP_RANGE) {
+        *port_min = field->L4_dst_port_min;
+        *port_max = field->L4_dst_port_max;
+    } else if (field->L4_dst_port_op == OPS_CLS_L4_PORT_OP_RANGE) {
+        *port_min = 0;
+        *port_max = field->L4_dst_port_max;
+    } else {
+        *port_min = field->L4_dst_port_min;
+        *port_max = 65535;
+    }
+}
 
 /*
  * Add rule in FP
@@ -844,7 +864,7 @@ ops_cls_install_rule_in_asic(int                            unit,
         case OPS_CLS_L4_PORT_OP_RANGE:
         case OPS_CLS_L4_PORT_OP_LT:
         case OPS_CLS_L4_PORT_OP_GT:
-            ops_cls_port_range_get(match, &min_port, &max_port);
+            ops_cls_get_src_port_range(match, &min_port, &max_port);
 
             rc = opennsl_field_range_create(unit, &src_range,
                                             OPENNSL_FIELD_RANGE_SRCPORT,
@@ -853,6 +873,9 @@ ops_cls_install_rule_in_asic(int                            unit,
                 VLOG_ERR("Failed to create L4 src port range min %d, max %d"
                          " rc=%s", min_port, max_port, opennsl_errmsg(rc));
                 goto cleanup;
+            } else {
+                VLOG_DBG("Src range index 0x%x for min %d, max %d", src_range,
+                          min_port, max_port);
             }
 
             rc = opennsl_field_qualify_RangeCheck(unit, entry, src_range, 0);
@@ -899,7 +922,7 @@ ops_cls_install_rule_in_asic(int                            unit,
         case OPS_CLS_L4_PORT_OP_RANGE:
         case OPS_CLS_L4_PORT_OP_LT:
         case OPS_CLS_L4_PORT_OP_GT:
-            ops_cls_port_range_get(match, &min_port, &max_port);
+            ops_cls_get_dst_port_range(match, &min_port, &max_port);
 
             rc = opennsl_field_range_create(unit, &dst_range,
                                             OPENNSL_FIELD_RANGE_DSTPORT,
@@ -908,6 +931,9 @@ ops_cls_install_rule_in_asic(int                            unit,
                 VLOG_ERR("Failed to create L4 dst port range min %d, max %d"
                          " rc=%s", min_port, max_port, opennsl_errmsg(rc));
                 goto cleanup;
+            } else {
+                VLOG_DBG("Dst range index 0x%x for min %d, max %d", dst_range,
+                          min_port, max_port);
             }
 
             rc = opennsl_field_qualify_RangeCheck(unit, entry, dst_range, 0);
@@ -1810,4 +1836,10 @@ acl_log_handle_rx_event(opennsl_pkt_t *pkt)
         /* submit packet data for PI code to retrieve */
         (*acl_pd_log_pkt_data_set)(&pkt_info);
     }
+}
+
+int
+ops_cls_get_ingress_group_id_for_hw_unit(int hw_unit)
+{
+    return (ip_group);
 }
