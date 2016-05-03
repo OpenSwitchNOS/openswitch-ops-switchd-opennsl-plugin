@@ -299,7 +299,8 @@ ops_sflow_set_per_interface (const int unit, const int port, bool set)
             return;
         }
 
-        ingress_rate = egress_rate = sampler->sFlowFsPacketSamplingRate;
+        ingress_rate = egress_rate = sflow_options->sampling_rate;
+
         rc = opennsl_port_sample_rate_set(unit, port, ingress_rate, egress_rate);
         if (OPENNSL_FAILURE(rc)) {
             VLOG_ERR("Failed to set sampling rate on port: %d, (error-%s).",
@@ -338,7 +339,6 @@ ops_sflow_get_port_counters(void *arg, SFLPoller *poller,
     ovs_mutex_lock(&mutex);
     hw_unit = (poller->bridgePort & 0xFFFF0000) >> 16;
     hw_port = poller->bridgePort & 0x0000FFFF;
-
 
     netdev_bcmsdk_get_sflow_intf_info(hw_unit, hw_port, &index, &speed,
                                       &direction, &status);
@@ -558,6 +558,7 @@ ops_sflow_set_header_size(const int size)
     }
 }
 
+/* This function is used to handle "ovs-appctl sflow/set-rate ...' command. */
 static void
 ops_sflow_set_rate(struct unixctl_conn *conn, int argc, const char *argv[],
                    void *aux OVS_UNUSED)
@@ -593,12 +594,7 @@ ops_sflow_show_all(struct ds *ds, int argc, const char *argv[])
     int port=0;
     int ingress_rate, egress_rate;
     int rc;
-
-    ds_put_format(ds, "\t\t SFLOW SETTINGS\n");
-    ds_put_format(ds, "\t\t ==============\n");
-
-    ds_put_format(ds, "\tPORT\tINGRESS RATE\tEGRESS RATE\n");
-    ds_put_format(ds, "\t====\t============\t===========\n");
+    char out[16];
 
     if (argc > 1) {
         port = atoi(argv[1]);
@@ -624,8 +620,13 @@ ops_sflow_show_all(struct ds *ds, int argc, const char *argv[])
                       EV_KV("error", "%s", opennsl_errmsg(rc)));
             return;
         }
-    ds_put_format(ds, "\t%2d\t%6d\t\t%6d\n", port, ingress_rate, egress_rate);
+        ds_put_format(ds, "%-14s:%d\n", "Port", port);
+        ds_put_format(ds, "%-14s:%d\n", "Ingress Rate", ingress_rate);
+        ds_put_format(ds, "%-14s:%d\n", "Egress Rate", egress_rate);
     } else {
+        ds_put_format(ds, "\t\t\tPort Number(Ingress Rate, Egress Rate)\n");
+        ds_put_format(ds, "\t\t\t======================================\n");
+
         OPENNSL_PBMP_ITER (port_config.e, tempPort) {
             rc = opennsl_port_sample_rate_get(0, tempPort, &ingress_rate, &egress_rate);
             if (OPENNSL_FAILURE(rc)) {
@@ -636,7 +637,12 @@ ops_sflow_show_all(struct ds *ds, int argc, const char *argv[])
                           EV_KV("error", "%s", opennsl_errmsg(rc)));
                 return;
             }
-            ds_put_format(ds, "\t%2d\t%6d\t\t%6d\n", tempPort, ingress_rate, egress_rate);
+            snprintf(out, 15, "%d(%d,%d)", tempPort, ingress_rate, egress_rate);
+            ds_put_format(ds, "%15s  ", out);
+
+            if (tempPort%8 == 0) {
+                ds_put_format(ds, "\n");
+            }
         }
     }
     return;
@@ -734,6 +740,7 @@ ops_sflow_agent_enable(struct bcmsdk_provider_node *ofproto,
     uint32_t    header;
     uint32_t    datagram;
     int         ret;
+    const char  *port_name;
 
     if (!ofproto) {
         return;
@@ -746,8 +753,12 @@ ops_sflow_agent_enable(struct bcmsdk_provider_node *ofproto,
 
         if (oso) {
             memcpy(sflow_options, oso, sizeof *oso);
+
             sset_init(&sflow_options->targets);
             sset_clone(&sflow_options->targets, &oso->targets);
+
+            sset_init(&sflow_options->ports);
+            sset_clone(&sflow_options->ports, &oso->ports);
         } else {
             ops_sflow_options_init(sflow_options);
         }
@@ -842,7 +853,13 @@ ops_sflow_agent_enable(struct bcmsdk_provider_node *ofproto,
 
     sfl_sampler_set_sFlowFsPacketSamplingRate(sampler, rate);
 
-    ops_sflow_set_sampling_rate(0, 0, rate, rate);  // download the rate to ASIC
+    /* Enable sampling globally */
+    ops_sflow_set_sampling_rate(0, 0, rate, rate);
+
+    /* Disbale sampling individually, on disabled ports */
+    SSET_FOR_EACH(port_name, &oso->ports) {
+        ops_sflow_set_sampling_rate(0, atoi(port_name), 0, 0);
+    }
 
     sfl_sampler_set_sFlowFsMaximumHeaderSize(sampler, header);
     sfl_sampler_set_sFlowFsReceiver(sampler, SFLOW_RECEIVER_INDEX);
