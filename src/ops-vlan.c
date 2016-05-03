@@ -857,8 +857,8 @@ bcmsdk_add_trunk_ports(int vid, opennsl_pbmp_t *pbm)
             // Add the ports as tagged members of the VLAN.
             if(OPENNSL_PBMP_IS_NULL(temp_bcm_pbm)) {
                 hw_add_ports_to_vlan(unit, bcm_pbm, g_empty_pbm, vid, 0);
+                OPENNSL_PBMP_OR(vlanp->hw_trunk_ports[unit], bcm_pbm);
             }
-            OPENNSL_PBMP_OR(vlanp->hw_trunk_ports[unit], bcm_pbm);
         }
     }
 
@@ -975,8 +975,8 @@ bcmsdk_del_trunk_ports(int vid, opennsl_pbmp_t *pbm)
                 OPENNSL_PBMP_AND(temp_bcm_pbm, bcm_pbm);
                 if(OPENNSL_PBMP_IS_NULL(temp_bcm_pbm)) {
                     hw_del_ports_from_vlan(unit, bcm_pbm, g_empty_pbm, vid, 0);
+                    OPENNSL_PBMP_REMOVE(vlanp->hw_trunk_ports[unit], bcm_pbm);
                 }
-                OPENNSL_PBMP_REMOVE(vlanp->hw_trunk_ports[unit], bcm_pbm);
             }
         }
 
