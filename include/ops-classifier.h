@@ -167,7 +167,7 @@ enum ops_update_pbmp {
     OPS_PBMP_DEL,
 };
 
-int ops_cls_get_ingress_group_id_for_hw_unit(int hw_unit);
+extern opennsl_field_group_t ops_cls_get_ingress_group_id_for_hw_unit(int unit);
 
 #endif /* __OPS_CLASSIFIER_H__ */
 
