@@ -795,8 +795,10 @@ static int
 mirror_object_setup (struct mbridge *mbridge, void *aux, const char *name,
         struct ofbundle **srcs, size_t n_srcs,
         struct ofbundle **dsts, size_t n_dsts,
-        unsigned long *src_vlans, struct ofbundle *mtp,
-        uint16_t out_vlan)
+#ifdef RSPAN
+        unsigned long *src_vlans, uint16_t out_vlan,
+#endif
+        struct ofbundle *mtp)
 {
     int rc, i, flag;
     bool output_is_lag = false;
@@ -905,8 +907,13 @@ mirror_set__ (struct ofproto *ofproto_,
         return EXTERNAL_ERROR;
     }
 
+#ifdef RSPAN
     VLOG_DBG("    n_srcs %d, n_dsts %d, out_vlan %u",
             (int) s->n_srcs, (int) s->n_dsts, s->out_vlan);
+#else
+    VLOG_DBG("    n_srcs %d, n_dsts %d",
+            (int) s->n_srcs, (int) s->n_dsts);
+#endif
 
     srcs = xmalloc(s->n_srcs * sizeof *srcs);
     dsts = xmalloc(s->n_dsts * sizeof *dsts);
@@ -939,8 +946,11 @@ mirror_set__ (struct ofproto *ofproto_,
 
     if (!error) {
         error = mirror_object_setup(ofproto->mbridge, aux, s->name,
-                    srcs, s->n_srcs, dsts, s->n_dsts, s->src_vlans,
-                    out, s->out_vlan);
+                    srcs, s->n_srcs, dsts, s->n_dsts,
+#ifdef RSPAN
+                    s->src_vlans, s->out_vlan,
+#endif
+                    out);
     }
 
     free(srcs);
