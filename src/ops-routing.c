@@ -74,23 +74,28 @@ struct ops_route_table ops_rtable;
 /* Profile id for ip-options */
 int default_ip4_options_profile_id = 1;
 
+opennsl_field_group_t cpu_rx_group_id = NULL;
+
 /* Global Structure that stores OSPF related data */
 static ops_ospf_data_t *ospf_data = NULL;
 
+/* Global structure that stors BFD related data */
+static ops_bfd_data_t * bfd_data = NULL;
+
 /*
- * ops_routing_get_ospf_group_id_by_hw_unit
+ * ops_routing_get_cpu_rx_group_id_by_hw_unit
  *
 '* This function returns the group-id for the OSPF ingress FP rules for
  * the given hardware unit.
  */
 opennsl_field_group_t
-ops_routing_get_ospf_group_id_by_hw_unit (int unit)
+ops_routing_get_cpu_rx_group_id_by_hw_unit (int unit)
 {
-    if (!ospf_data) {
+    if (!cpu_rx_group_id) {
         return(-1);
     }
 
-    return(ospf_data->ospf_group_id);
+    return(cpu_rx_group_id);
 }
 
 static void
@@ -111,6 +116,94 @@ ops_update_ecmp_resilient(opennsl_l3_egress_ecmp_t *ecmp){
                                                ECMP_DYN_SIZE_ZERO;
 }
 
+/*
+ * This function programs the qualifiers for identifying a BFD packet
+ * in ingress pipeline.
+ */
+static int
+ops_routing_create_bfd_field_entry(int unit, bool single_hop)
+{
+    opennsl_field_entry_t      BFDfieldEntry;
+    int                        retval = -1;
+
+    /* BFD constants used for programming FPs */
+    opennsl_l4_port_t      L4_dst_port_bfd_single_hop = 3784;
+    opennsl_l4_port_t      L4_dst_port_bfd_multi_hop = 4784;
+    opennsl_l4_port_t      L4_dst_port_bfd_mask = 0xFFFFFFFF;
+    uint8                  address_data = 0x01;
+    uint8                  address_mask = 0x0F;
+    uint8                  protocol_type = 0x11;
+    uint8                  protocol_mask = 0xFF;
+
+    retval = opennsl_field_entry_create(unit, cpu_rx_group_id,
+                                        &BFDfieldEntry);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("Failed at BFD opennsl_field_entry_create :: "
+                 "unit=%d retval=%s ", unit, opennsl_errmsg(retval));
+        return retval;
+    }
+
+    if (single_hop) {
+        retval = opennsl_field_qualify_L4DstPort(unit, BFDfieldEntry,
+                                                 L4_dst_port_bfd_single_hop,
+                                                 L4_dst_port_bfd_mask);
+        if (OPENNSL_FAILURE(retval)) {
+            VLOG_ERR("Failed at BFD opennsl_field_qualify_L4DstPort :: "
+                     "unit=%d retval= %s ", unit, opennsl_errmsg(retval));
+            return retval;
+        }
+    } else {
+
+        retval = opennsl_field_qualify_L4DstPort(unit, BFDfieldEntry,
+                                                 L4_dst_port_bfd_multi_hop,
+                                                 L4_dst_port_bfd_mask);
+        if (OPENNSL_FAILURE(retval)) {
+            VLOG_ERR("Failed at BFD opennsl_field_qualify_L4DstPort multi:: "
+                     "unit=%d retval= %s ", unit, opennsl_errmsg(retval));
+            return retval;
+        }
+    }
+
+    retval = opennsl_field_qualify_IpProtocol(unit, BFDfieldEntry,
+                                              protocol_type, protocol_mask);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("Failed at BFD opennsl_field_qualify_IpProtocol :: "
+                 "unit=%d retval= %s ", unit, opennsl_errmsg(retval));
+        return retval;
+    }
+
+    retval = opennsl_field_qualify_DstIpLocal(unit, BFDfieldEntry,
+                                              address_data, address_mask);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("Failed at BFD opennsl_field_qualify_DstIpLocal :: "
+                 "unit=%d retval= %s ", unit, opennsl_errmsg(retval));
+        return retval;
+    }
+
+    retval = opennsl_field_action_add(unit, BFDfieldEntry,
+                                      opennslFieldActionCopyToCpu, 0, 0);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("Failed at BFD opennslFieldActionCopyToCpu :: "
+                 "unit=%d retval=%s ", unit, opennsl_errmsg(retval));
+        return retval;
+    }
+
+    retval = opennsl_field_entry_install(unit, BFDfieldEntry);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("Failed to BFD opennsl_field_entry_install :: "
+                  "unit=%d retval=%s ", unit, opennsl_errmsg(retval));
+        return retval;
+    }
+
+    if (single_hop) {
+        bfd_data->bfd_single_hop_fp_id = BFDfieldEntry;
+    } else {
+        bfd_data->bfd_multi_hop_fp_id = BFDfieldEntry;
+    }
+
+    return retval;
+}
+
 /* This function is used to add an OSPF field entry.
  * There are two entries in OSPF distinguished using the
  * 'designatedRouter' parameter:
@@ -118,7 +211,7 @@ ops_update_ecmp_resilient(opennsl_l3_egress_ecmp_t *ecmp){
  *   2. Designated Routers (224.0.0.6)
  *   This function also attaches stat entries to the FPs.
  *
- * TODO: See TODO for ops_routing_ospf_init()
+ * TODO: See TODO for ops_routing_cpu_rx_init()
  */
 static int
 ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
@@ -138,7 +231,7 @@ ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
     uint8          OSPF_PROTOCOL_TYPE = 0x59;
     uint8          OSPF_PROTOCOL_MASK = 0xFF;
 
-    retval = opennsl_field_entry_create(unit, ospf_data->ospf_group_id, &fieldEntry);
+    retval = opennsl_field_entry_create(unit, cpu_rx_group_id, &fieldEntry);
     if (OPENNSL_FAILURE(retval)) {
         VLOG_ERR("Failed at %s opennsl_field_entry_create :: "
                  "unit=%d retval=%s ",
@@ -219,7 +312,7 @@ ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
         return retval;
     }
 
-    retval =  opennsl_field_stat_create(unit, ospf_data->ospf_group_id, 1,
+    retval =  opennsl_field_stat_create(unit, cpu_rx_group_id, 1,
                                         stat_arr, &stat_id);
     if (OPENNSL_FAILURE(retval)) {
         VLOG_ERR("Failed at %s opennsl_field_stat_create :: unit=%d retval=%s ",
@@ -279,13 +372,14 @@ ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
  *        will become obsolete and should be removed.
  */
 static int
-ops_routing_ospf_init(int unit)
+ops_routing_cpu_rx_init(int unit)
 {
 
     opennsl_field_qset_t       qualifierSet;
     int                        retval = -1;
 
     ospf_data = xzalloc(sizeof(ops_ospf_data_t));
+    bfd_data = xzalloc(sizeof(ops_bfd_data_t));
 
     /* Build the qualifier set */
     OPENNSL_FIELD_QSET_INIT (qualifierSet);
@@ -293,10 +387,12 @@ ops_routing_ospf_init(int unit)
     OPENNSL_FIELD_QSET_ADD (qualifierSet, opennslFieldQualifyDstMac);
     OPENNSL_FIELD_QSET_ADD (qualifierSet, opennslFieldQualifyIpProtocol);
     OPENNSL_FIELD_QSET_ADD (qualifierSet, opennslFieldQualifyDstIp);
+    OPENNSL_FIELD_QSET_ADD (qualifierSet, opennslFieldQualifyL4DstPort);
+    OPENNSL_FIELD_QSET_ADD (qualifierSet, opennslFieldQualifyDstIpLocal);
 
     retval = opennsl_field_group_create(unit, qualifierSet,
                                         OPS_ROUTING_INGRESS_OSPF_GROUP_PRIORITY,
-                                        &ospf_data->ospf_group_id);
+                                        &cpu_rx_group_id);
     if (OPENNSL_FAILURE(retval)) {
         VLOG_ERR("Failed at OSPF opennsl_field_group_create :: "
                 "unit=%d retval=%s ", unit, opennsl_errmsg(retval));
@@ -308,13 +404,13 @@ ops_routing_ospf_init(int unit)
         return retval;
     }
 
-    VLOG_DBG("OSPF group added :: group_id=%d ", ospf_data->ospf_group_id);
+    VLOG_DBG("OSPF group added :: group_id=%d ", cpu_rx_group_id);
 
     retval = ops_routing_create_ospf_field_entry(unit, false);
     if (OPENNSL_FAILURE(retval)) {
         VLOG_ERR("Failed at create field entry for OSPF:AllRouters :: "
                 "unit=%d retval=%s ", unit, opennsl_errmsg(retval));
-        opennsl_field_group_destroy(unit, ospf_data->ospf_group_id);
+        opennsl_field_group_destroy(unit, cpu_rx_group_id);
         log_event("OSPFv2_FP_ERR",
                   EV_KV("action", "%s", "create field entry for OSPF:AllRouters"),
                   EV_KV("rule", "%s", ""),
@@ -325,11 +421,11 @@ ops_routing_ospf_init(int unit)
 
     VLOG_DBG("OSPF all routers field entry added: "
             "group_id=%d fp_id=%d stat_id=%d",
-            ospf_data->ospf_group_id,
+            cpu_rx_group_id,
             ospf_data->ospf_all_routers_fp_id,
             ospf_data->ospf_all_routers_stat_id);
     log_event("OSPFv2_FP_SUCCESS",
-            EV_KV("group_id", "%d", ospf_data->ospf_group_id),
+            EV_KV("group_id", "%d", cpu_rx_group_id),
             EV_KV("fp_id", "%d", ospf_data->ospf_all_routers_fp_id),
             EV_KV("stats_id", "%d", ospf_data->ospf_all_routers_stat_id));
 
@@ -341,20 +437,44 @@ ops_routing_ospf_init(int unit)
                   EV_KV("action", "%s", "create field entry for OSPF:DesignatedRouters"),
                   EV_KV("rule", "%s", ""),
                   EV_KV("err", "%s", opennsl_errmsg(retval)));
-        opennsl_field_group_destroy(unit, ospf_data->ospf_group_id);
+        opennsl_field_group_destroy(unit, cpu_rx_group_id);
         free(ospf_data);
         return retval;
     }
 
     VLOG_DBG("OSPF designated routers field entry added: "
              "group_id=%d fp_id=%d stat_id=%d",
-             ospf_data->ospf_group_id,
+             cpu_rx_group_id,
              ospf_data->ospf_desginated_routers_fp_id,
              ospf_data->ospf_desginated_routers_stat_id);
     log_event("OSPFv2_DR_FP_SUCCESS",
-            EV_KV("group_id", "%d", ospf_data->ospf_group_id),
+            EV_KV("group_id", "%d", cpu_rx_group_id),
             EV_KV("fp_id", "%d", ospf_data->ospf_desginated_routers_fp_id),
             EV_KV("stats_id", "%d", ospf_data->ospf_desginated_routers_stat_id));
+
+    retval = ops_routing_create_bfd_field_entry(unit, true);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("Failed at create field entry for BFD: single hop :: "
+                 "unit=%d retval=%s ", unit, opennsl_errmsg(retval));
+        opennsl_field_group_destroy(unit, cpu_rx_group_id);
+        free(bfd_data);
+        return retval;
+    }
+
+    VLOG_DBG("BFD field entry added: group_id=%d fp_id=%d",
+             cpu_rx_group_id, bfd_data->bfd_single_hop_fp_id);
+
+    retval = ops_routing_create_bfd_field_entry(unit, false);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("Failed at create field entry for BFD: multi hop :: "
+                 "unit=%d retval=%s ", unit, opennsl_errmsg(retval));
+        opennsl_field_group_destroy(unit, cpu_rx_group_id);
+        free(bfd_data);
+        return retval;
+    }
+
+    VLOG_DBG("BFD field entry added: group_id=%d fp_id=%d",
+             cpu_rx_group_id, bfd_data->bfd_multi_hop_fp_id);
 
     return retval;
 }
@@ -680,7 +800,7 @@ ops_l3_init(int unit)
     hmap_init(&ops_mac_move_egress_id_map);
 
     /* Install FPs for forwarding OSPF traffic */
-    rc = ops_routing_ospf_init(unit);
+    rc = ops_routing_cpu_rx_init(unit);
     if (rc) {
         VLOG_ERR("OSPF FP init failed");
         log_event("L3INTERFACE_ERR",

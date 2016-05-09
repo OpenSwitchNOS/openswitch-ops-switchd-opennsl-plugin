@@ -679,7 +679,7 @@ ops_fp_dump_ospf_rules (struct ds *ds)
         /*
          * Get the group-id for OSPF FP ingress rules.
          */
-        group_id = ops_routing_get_ospf_group_id_by_hw_unit(unit);
+        group_id = ops_routing_get_cpu_rx_group_id_by_hw_unit(unit);
 
         /*
          * If the group-id is invalid, then do not dump the
