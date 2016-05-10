@@ -14,7 +14,7 @@
  *   License for the specific language governing permissions and limitations
  *   under the License.
  *
- * File: ops-stats.h
+ * File: ops-mac-learning.h
  *
  * Purpose: This file provides public definitions for Interface statistics API.
  */
@@ -24,10 +24,13 @@
 
 #include <opennsl/l2.h>
 #include "openvswitch/vlog.h"
+#include "mac-learning-plugin.h"
+#include "plugin-extensions.h"
+#include "ops-routing.h"
 
 extern int ops_mac_learning_init();
 extern void ops_mac_learn_cb(int unit, opennsl_l2_addr_t *l2addr,
                              int operation, void *userdata);
-extern int ops_mac_learning_get_hmap(struct ofproto_mlearn_hmap **mhmap);
+extern int ops_mac_learning_get_hmap(struct mlearn_hmap **mhmap);
 
 #endif /* __OPS_MAC_LEARNING_H__ */
