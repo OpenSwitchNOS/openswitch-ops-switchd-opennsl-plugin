@@ -51,7 +51,7 @@ static void *
 bcm_timer_main (void * args OVS_UNUSED)
 {
     while (true) {
-        xsleep(TIMER_THREAD_TIMEOUT); //in seconds
+        xsleep(TIMER_THREAD_TIMEOUT); /* in seconds */
         ops_mac_learning_run();
     }
 
