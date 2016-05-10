@@ -1,21 +1,18 @@
 /*
- * Copyright (C) 2015-2016 Hewlett-Packard Enterprise Development Company, L.P.
- * All Rights Reserved.
- *
- *   Licensed under the Apache License, Version 2.0 (the "License"); you may
- *   not use this file except in compliance with the License. You may obtain
- *   a copy of the License at
- *
- *        http://www.apache.org/licenses/LICENSE-2.0
- *
- *   Unless required by applicable law or agreed to in writing, software
- *   distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- *   WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- *   License for the specific language governing permissions and limitations
- *   under the License.
- *
- * File: ops-routing.h
- */
+* (c) Copyright 2015-2016 Hewlett Packard Enterprise  Development LP
+*
+* Licensed under the Apache License, Version 2.0 (the "License"); you may
+* not use this file except in compliance with the License. You may obtain
+* a copy of the License at
+*
+* http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+* WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+* License for the specific language governing permissions and limitations
+* under the License.
+*/
 
 #ifndef __OPS_ROUTING_H__
 #define __OPS_ROUTING_H__ 1
@@ -24,6 +21,7 @@
 #include <opennsl/types.h>
 #include <opennsl/l2.h>
 #include <opennsl/l3.h>
+#include <opennsl/field.h>
 #include <netinet/in.h>
 #include <ofproto/ofproto.h>
 
@@ -35,7 +33,14 @@
 
 #define OPS_ROUTE_HASH_MAXSIZE 64
 
+#define OPS_ROUTING_ALL_OSPF_MULTICAST_IP_ADDR                "224.0.0.5"
+#define OPS_ROUTING_DESIGNATED_ROUTER_OSPF_MULTICAST_IP_ADDR  "224.0.0.6"
+#define OPS_ROUTING_INGRESS_OSPF_GROUP_PRIORITY               1
+
 #define OPS_FAILURE(rc) (((rc) < 0 ) || ((rc) == EINVAL))
+
+/* l3 ingress stats related globals */
+extern uint32_t l3_stats_mode_id;
 
 enum ops_route_state {
     OPS_ROUTE_STATE_NON_ECMP = 0,
@@ -44,6 +49,7 @@ enum ops_route_state {
 
 enum ecmp_res_dynamic_size {
     ECMP_DYN_SIZE_ZERO = 0,
+    ECMP_DYN_SIZE_64   = 64,
     ECMP_DYN_SIZE_512  = 512
 };
 
@@ -76,6 +82,22 @@ struct ops_mac_move_egress_id {
     struct  hmap_node node;
     int     egress_object_id;
 };
+
+/* Structure to store OSPF related data */
+typedef struct ops_ospf_data {
+
+    /* OSPF group id */
+    opennsl_field_group_t ospf_group_id;
+    /* All OSPF Routers field processor entry */
+    opennsl_field_entry_t ospf_all_routers_fp_id;
+    /* All OSPF Routers stat entry */
+    int ospf_all_routers_stat_id;
+    /* OSPF Designated Routers field processor entry */
+    opennsl_field_entry_t ospf_desginated_routers_fp_id;
+    /* OSPF Designated Routers stat entry */
+    int ospf_desginated_routers_stat_id;
+
+} ops_ospf_data_t;
 
 struct ops_switch_mac_info {
     struct hmap_node node;
@@ -160,5 +182,10 @@ extern bool ops_egress_lookup_from_dst_ip(int vrf, uint32_t ip_dst,
                                           opennsl_if_t * l3_egr_id);
 extern bool ops_egress_lookup_from_route(int vrf, char *route_prefix,
                                          opennsl_if_t * l3_egr_id);
+
+extern opennsl_field_group_t ops_routing_get_ospf_group_id_by_hw_unit (
+                                                                int unit);
+extern void ops_l3_mac_move_add(int unit, opennsl_l2_addr_t *l2addr, void *userdata);
+extern void ops_l3_mac_move_delete(int unit, opennsl_l2_addr_t *l2addr, void *userdata);
 
 #endif /* __OPS_ROUTING_H__ */

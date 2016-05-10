@@ -1,21 +1,18 @@
 /*
- * Copyright (C) 2015 Hewlett-Packard Development Company, L.P.
- * All Rights Reserved.
- *
- *   Licensed under the Apache License, Version 2.0 (the "License"); you may
- *   not use this file except in compliance with the License. You may obtain
- *   a copy of the License at
- *
- *        http://www.apache.org/licenses/LICENSE-2.0
- *
- *   Unless required by applicable law or agreed to in writing, software
- *   distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- *   WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- *   License for the specific language governing permissions and limitations
- *   under the License.
- *
- * File: ofproto-bcm-provider.h
- */
+* (c) Copyright 2015-2016 Hewlett Packard Enterprise  Development LP
+*
+* Licensed under the Apache License, Version 2.0 (the "License"); you may
+* not use this file except in compliance with the License. You may obtain
+* a copy of the License at
+*
+* http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+* WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+* License for the specific language governing permissions and limitations
+* under the License.
+*/
 
 #ifndef OFPROTO_BCM_PROVIDER_H
 #define OFPROTO_BCM_PROVIDER_H 1
@@ -23,12 +20,15 @@
 #include <ofproto/ofproto-provider.h>
 #include <opennsl/types.h>
 #include <opennsl/l3.h>
+#include <opennsl/stat.h>
 
 /* No bfd/cfm status change. */
 #define NO_STATUS_CHANGE -1
 
 /* vrf */
 #define BCM_MAX_VRFS 1024
+
+#define INTERFACE_TYPE_MAXLEN 10
 
 struct bcmsdk_provider_rule {
     struct rule up;
@@ -110,6 +110,9 @@ struct bcmsdk_provider_ofport_node {
     struct ofproto_port_queue *qdscp;
     size_t n_qdscp;
 
+    /* sflow polling interval for this port */
+    int sflow_polling_interval;
+
     /* Linux VLAN device support (e.g. "eth0.10" for VLAN 10.)
      *
      * This is deprecated.  It is only for compatibility with broken device */
@@ -190,4 +193,6 @@ enum { TBL_INTERNAL = N_TABLES - 1 };    /* Used for internal hidden rules. */
 
 extern const struct ofproto_class ofproto_bcm_provider_class;
 extern bool  ofproto_find_ipv4_from_port(int hw_port, uint32_t *ip);
+int register_qos_extension(void);
+
 #endif  /* ofproto-bcm-provider.h */
