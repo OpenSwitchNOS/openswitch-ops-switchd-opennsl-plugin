@@ -26,10 +26,12 @@
 #include <opennsl/error.h>
 #include <opennsl/types.h>
 #include <opennsl/trunk.h>
+#include <opennsl/switch.h>
 
 #include "platform-defines.h"
 #include "ops-debug.h"
 #include "ops-lag.h"
+#include "eventlog.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_lag);
 
@@ -64,6 +66,10 @@ lag_mode_to_str(int lag_mode)
         return "src_dst_MAC";
     case OPENNSL_TRUNK_PSC_SRCDSTIP:
         return "src_dst_IP";
+    case OPENNSL_TRUNK_PSC_PORTFLOW:
+    /* NOTE: we have to change this if we support two or more
+             enhanced hashing modes later on.*/
+        return "l4-src-dst";
     default:
         return "unknown";
     }
@@ -146,6 +152,10 @@ hw_create_lag(int unit, opennsl_trunk_t *lag_id)
         if (OPENNSL_SUCCESS(rc)) {
             SW_LAG_DBG("trunk set succeeds unit %d, lag_id %d\n",
                        unit, *lag_id);
+            log_event("TRUNK_SET_SUCCEEDS",
+                EV_KV("unit", "%d", unit),
+                EV_KV("lag_id", "%d", *lag_id));
+            VLOG_INFO("trunk set succeeds");
         }
     }
 
@@ -153,6 +163,11 @@ hw_create_lag(int unit, opennsl_trunk_t *lag_id)
         // Ignore duplicated create requests.
         VLOG_ERR("Unit %d LAG %d create error, rc=%d (%s)",
                  unit, *lag_id, rc, opennsl_errmsg(rc));
+        log_event("LAG_CREATION_FAILED",
+            EV_KV("unit", "%d", unit),
+            EV_KV("LAGID", "%d", *lag_id),
+            EV_KV("rc=", "%d", rc),
+            EV_KV("error", "%s", opennsl_errmsg(rc)));
     }
 
     SW_LAG_DBG("done: rc=%s", opennsl_errmsg(rc));
@@ -170,6 +185,11 @@ hw_destroy_lag(int unit, opennsl_trunk_t lag_id)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Unit %d, LAGID %d destroy error, rc=%d (%s)",
                  unit, lag_id, rc, opennsl_errmsg(rc));
+        log_event("DESTROY_LAG_FAILED",
+            EV_KV("unit", "%d", unit),
+            EV_KV("LAGID", "%d", lag_id),
+            EV_KV("rc=", "%d", rc),
+            EV_KV("error", "%s", opennsl_errmsg(rc)));
     }
 
     SW_LAG_DBG("done: rc=%s", opennsl_errmsg(rc));
@@ -238,9 +258,18 @@ hw_lag_attach_port(int unit, opennsl_trunk_t lag_id, opennsl_port_t hw_port)
     if (OPENNSL_SUCCESS(rc)) {
         SW_LAG_DBG("trunk member add succeeds unit %d, hw_port=%d, "
                    "tid %d", unit, hw_port, lag_id);
+        log_event("TRUNK_MEMBER_ADD_SUCCEEDS",
+            EV_KV("unit", "%d", unit),
+            EV_KV("hw_port", "%d", hw_port),
+            EV_KV("tid", "%d", lag_id));
     } else {
         VLOG_ERR("Trunk port attach error, hw_port %d, tid %d, "
                  "rc=%d (%s)", hw_port, lag_id, rc, opennsl_errmsg(rc));
+        log_event("TRUNK_PORT_ATTACH_ERROR",
+            EV_KV("hw_port", "%d", hw_port),
+            EV_KV("tid", "%d", lag_id),
+            EV_KV("rc", "%d", rc),
+            EV_KV("error", "%s", opennsl_errmsg(rc)));
         goto done;
     }
 
@@ -282,6 +311,11 @@ hw_lag_egress_enable_port(int unit, opennsl_trunk_t trunk_id, opennsl_port_t hw_
                     VLOG_ERR("Failed to set egress enable on "
                              "hw_port=%d, tid=%d, rc=%d (%s)",
                              hw_port, trunk_id, rc, opennsl_errmsg(rc));
+                    log_event("FAILED_TO_SET_EGRESS_ENABLE",
+                        EV_KV("hw_port=", "%d", hw_port),
+                        EV_KV("tid=", "%d", trunk_id),
+                        EV_KV("rc=", "%d", rc),
+                        EV_KV("error", "%s", opennsl_errmsg(rc)));
                 }
                 break;
             }
@@ -312,11 +346,53 @@ hw_lag_detach_port(int unit, opennsl_trunk_t lag_id, opennsl_port_t hw_port)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to delete hw_port %d from tid %d, "
                  "rc=%d (%s)", hw_port, lag_id, rc, opennsl_errmsg(rc));
+        log_event("FAILED_TO_DELETE_PORT",
+            EV_KV("hw_port", "%d", hw_port),
+            EV_KV("tid", "%d", lag_id),
+            EV_KV("rc", "%d", rc),
+            EV_KV("error", "%s", opennsl_errmsg(rc)));
     }
 
     SW_LAG_DBG("Done.");
 
 } // hw_lag_detach_port
+
+static void
+hw_trunk_hash_setup(int unit, int hash_mode)
+{
+    int field_list;
+    opennsl_error_t rc = OPENNSL_E_NONE;
+
+    SW_LAG_DBG("entry: unit=%d, hash_mode=%d", unit, hash_mode);
+
+    rc = opennsl_switch_control_set(unit, opennslSwitchHashSeed1, 0x22222222);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to set opennslSwitchHashSeed1: unit=%d rc=%s",
+                 unit, opennsl_errmsg(rc));
+        return;
+    }
+
+    rc = opennsl_switch_control_set(unit, opennslSwitchHashField1Config,
+                                        OPENNSL_HASH_FIELD_CONFIG_CRC32HI);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to set opennslSwitchHashField1Config: unit=%d rc=%s",
+                 unit, opennsl_errmsg(rc));
+        return;
+    }
+
+    field_list = OPENNSL_HASH_FIELD_DSTL4 | OPENNSL_HASH_FIELD_SRCL4;
+
+    rc = opennsl_switch_control_set(unit, opennslSwitchHashIP4TcpUdpField1,
+                                        field_list);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to set opennslSwitchHashIP4TcpUdpField1: unit=%d rc=%s",
+                 unit, opennsl_errmsg(rc));
+        return;
+    }
+
+    SW_LAG_DBG("done: rc=%s", opennsl_errmsg(rc));
+
+} //hw_trunk_hash_setup
 
 static
 void
@@ -330,7 +406,10 @@ hw_set_lag_balance_mode(int unit, opennsl_trunk_t lag_id, int lag_mode)
     // Verify lag_mode is one of the supported Broadcom's PSC mode.
     switch (lag_mode) {
     case OPENNSL_TRUNK_PSC_SRCDSTMAC:
+        break;
     case OPENNSL_TRUNK_PSC_SRCDSTIP:
+        break;
+    case OPENNSL_TRUNK_PSC_PORTFLOW:
         break;
     default:
         VLOG_ERR("Invalid LAG mode value %d", lag_mode);
@@ -342,6 +421,12 @@ hw_set_lag_balance_mode(int unit, opennsl_trunk_t lag_id, int lag_mode)
         VLOG_ERR("trunk psc set failed. unit %d, lag_id %d, "
                  "psc=%d, rc=%d (%s)", unit, lag_id,
                  lag_mode, rc, opennsl_errmsg(rc));
+        log_event("TRUNK_PSC_SET_FAILED",
+            EV_KV("unit", "%d", unit),
+            EV_KV("lag_id", "%d", lag_id),
+            EV_KV("psc", "%d", lag_mode),
+            EV_KV("rc", "%d", rc),
+            EV_KV("error", "%s", opennsl_errmsg(rc)));
     }
 
     SW_LAG_DBG("done: rc=%s", opennsl_errmsg(rc));
@@ -556,6 +641,19 @@ bcmsdk_egress_enable_lag_ports(opennsl_trunk_t lag_id, opennsl_pbmp_t *pbm)
     SW_LAG_DBG("done");
 
 } // bcmsdk_egress_enable_lag_ports
+
+void
+bcmsdk_trunk_hash_setup(int hash_mode)
+{
+    int unit = 0;
+
+    SW_LAG_DBG("entry: hash_mode=%d", hash_mode);
+
+    hw_trunk_hash_setup(unit, hash_mode);
+
+    SW_LAG_DBG("done");
+
+} // bcmsdk_trunk_hash_setup
 
 void
 bcmsdk_set_lag_balance_mode(opennsl_trunk_t lag_id, int lag_mode)

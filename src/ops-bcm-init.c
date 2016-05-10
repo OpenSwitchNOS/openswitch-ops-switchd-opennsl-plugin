@@ -33,16 +33,78 @@
 #include "ops-routing.h"
 #include "ops-vlan.h"
 #include "ops-debug.h"
+#include "ops-copp.h"
+#include "ops-stg.h"
+#include "ops-sflow.h"
+#include "ops-qos.h"
 #include "ops-mac-learning.h"
+#include "netdev-bcmsdk.h"
+#include "eventlog.h"
 #include "ops-vport.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
+
+
+extern int
+opennsl_rx_register(int, const char *, opennsl_rx_cb_f, uint8, void *, uint32);
+
+/* TODO: This callback is also sending sFlow pkts to collectors. It must
+ * do minimal computation in order to receive subsequent sFlow pkts.
+ * Callback should queue up pkts received from ASIC and return.
+ * Temporarily, configure a low sampling rate (say 1 in 10 pkts, when
+ * incoming rate is 1 pkt/s as in case of 'ping'). Eventually, a different
+ * thread will process incoming pkts.
+ */
+opennsl_rx_t opennsl_rx_callback(int unit, opennsl_pkt_t *pkt, void *cookie)
+{
+    if (!pkt) {
+        VLOG_ERR("Invalid pkt sent by ASIC");
+        log_event("SFLOW_CALLBACK_INVALID_PKT", NULL);
+        return OPENNSL_RX_HANDLED;
+    }
+
+    /* sFlow's sampled pkt */
+    if (OPENNSL_RX_REASON_GET(pkt->rx_reasons, opennslRxReasonSampleDest) ||
+        OPENNSL_RX_REASON_GET(pkt->rx_reasons, opennslRxReasonSampleSource)) {
+
+        /* Uncomment to print the sampled pkt info */
+        /* print_pkt(pkt); */
+
+        char port[IFNAMSIZ];
+
+        if (OPENNSL_RX_REASON_GET(pkt->rx_reasons,
+                                  opennslRxReasonSampleSource)) {
+            snprintf(port, IFNAMSIZ, "%d", pkt->src_port);
+            netdev_bcmsdk_populate_sflow_stats(true, port, pkt->pkt_len);
+        }
+
+        if (OPENNSL_RX_REASON_GET(pkt->rx_reasons,
+                                  opennslRxReasonSampleDest)) {
+            snprintf(port, IFNAMSIZ, "%d", pkt->dest_port);
+            netdev_bcmsdk_populate_sflow_stats(false, port, pkt->pkt_len);
+        }
+
+        /* Write incoming data to Receivers buffer. When buffer is full,
+         * data is sent to Collectors. */
+        ops_sflow_write_sampled_pkt(pkt);
+    }
+
+    return OPENNSL_RX_HANDLED;
+}
 
 int
 ops_rx_init(int unit)
 {
     opennsl_error_t  rc = OPENNSL_E_NONE;
     opennsl_rx_cfg_t rx_cfg;
+
+    rc = opennsl_rx_register(unit,
+                            "opennsl rx callback function",
+                            opennsl_rx_callback,
+                            OPS_RX_PRIORITY_MAX, /* Relative priority of callback.
+                                                    0 is lowest */
+                            NULL,   /* No data is passed to callback. */
+                            -1);
 
     /* Get the current RX config settings. */
     (void)opennsl_rx_cfg_get(unit, &rx_cfg);
@@ -82,6 +144,13 @@ ops_bcm_appl_init(void)
         return (1);
     }
 
+    /* Initialize QoS global data structures */
+    rc = ops_qos_global_init();
+    if (rc) {
+        VLOG_ERR("QoS global subsytem init failed, rc %d", rc);
+        return 1;
+    }
+
     for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
 
         rc = ops_port_init(unit);
@@ -118,6 +187,33 @@ ops_bcm_appl_init(void)
             return 1;
         }
 
+        rc = ops_stg_init(unit);
+        if (rc) {
+            VLOG_ERR("STG subsystem init failed");
+            return 1;
+        }
+
+        rc = ops_sflow_init(unit);
+        if (rc) {
+            VLOG_ERR("sflow init failed");
+            log_event("SFLOW_INIT_FAILURE", NULL);
+            return 1;
+        }
+
+        rc = ops_copp_init();
+        if (rc) {
+            VLOG_ERR("COPP subsystem init failed");
+            log_event("COPP_INITIALIZATION_FAILURE", NULL);
+            return 1;
+        }
+
+        /* Initialize QoS per hw unit data structures */
+        rc = ops_qos_hw_unit_init(unit);
+        if (rc) {
+            VLOG_ERR("QoS hw unit %d init failed, rc %d",
+                      unit, rc);
+            return 1;
+        }
     }
 
     return 0;

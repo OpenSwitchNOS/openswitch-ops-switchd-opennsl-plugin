@@ -25,7 +25,9 @@
 
 /* Number of RX packets per second.
  * This limit is enforced in the user space SDK. */
-#define OPS_RX_GLOBAL_PPS            10000
+#define OPS_RX_GLOBAL_PPS            30000
+
+#define OPS_RX_PRIORITY_MAX          100
 
 extern int ops_switch_main(int argc, char *argv[]);
 
