@@ -183,7 +183,7 @@ bcmsdk_datapath_version(void)
     if (NULL == rel_version) {
         // OPS_TODO: need to automate this.
         //rel_version = strdup(_build_release);
-        rel_version = strdup("6.4.5.5");
+        rel_version = xstrdup("6.4.5.5");
     }
     return rel_version;
 
@@ -1505,10 +1505,10 @@ parse_port_ids(const char *ports, mac_match_t *match)
         /* split string by commas */
         end = strchr(ptr, ',');
         if (end == NULL) {
-            working = strdup(ptr);
+            working = xstrdup(ptr);
             ptr += strlen(working);
         } else {
-            working = strndup(ptr, end - ptr);
+            working = xstrndup(ptr, end - ptr);
             ptr += strlen(working) + 1;
         }
 
@@ -1540,10 +1540,10 @@ parse_vlan_ids(const char *vlans, mac_match_t *match)
         /* split string by commas */
         end = strchr(ptr, ',');
         if (end == NULL) {
-            working = strdup(ptr);
+            working = xstrdup(ptr);
             ptr += strlen(working);
         } else {
-            working = strndup(ptr, end - ptr);
+            working = xstrndup(ptr, end - ptr);
             ptr += strlen(working) + 1;
         }
 
