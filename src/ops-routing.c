@@ -1541,7 +1541,7 @@ ops_string_to_prefix(int family, char *ip_address, void *prefix,
     int maxlen = (family == AF_INET) ? IPV4_PREFIX_LEN :
                                        IPV6_PREFIX_LEN;
     *prefixlen = maxlen;
-    tmp_ip_addr = strdup(ip_address);
+    tmp_ip_addr = xstrdup(ip_address);
 
     if ((p = strchr(tmp_ip_addr, '/'))) {
         *p++ = '\0';
