@@ -1313,13 +1313,21 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     /* sFlow config on port */
     opt_arg = smap_get(s->port_options[PORT_OTHER_CONFIG],
                        PORT_OTHER_CONFIG_SFLOW_PER_INTERFACE_KEY_STR);
-    if (opt_arg == NULL) {
-        VLOG_DBG("sflow not configured on port: %s", bundle->name);
+    if (s->name &&
+        strncmp(s->name, DEFAULT_BRIDGE_NAME, DEFAULT_BRIDGE_NAME_LEN) == 0) {
+        VLOG_DBG("sflow not configured on port: %s", s->name);
+    } else if (opt_arg == NULL) {
+        VLOG_DBG("sflow ENABLED on bundle: %s", s->name);
+        int hw_unit, hw_port;
+        netdev_bcmsdk_get_hw_info_from_name(s->name, &hw_unit, &hw_port);
+        ops_sflow_set_per_interface(hw_unit, hw_port, true);
     }
     /* if sFlow settings present on port, download it to ASIC */
     else {
         int hw_unit, hw_port;
         LIST_FOR_EACH_SAFE(port, next_port, bundle_node, &bundle->ports) {
+            VLOG_DBG("sflow %s on port: %s", s->name,
+                    strcmp(opt_arg, "false") ? "ENABLED" : "DISABLED");
             netdev_bcmsdk_get_hw_info(port->up.netdev,
                                       &hw_unit, &hw_port, NULL);
             ops_sflow_set_per_interface(hw_unit, hw_port,
