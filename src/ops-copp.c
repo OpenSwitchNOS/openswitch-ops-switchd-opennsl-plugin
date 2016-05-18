@@ -2349,7 +2349,6 @@ int ops_copp_ingress_fp_ipv4_options (
      * IPv4 options packets on the following rules:-
      * 1. The packet should be an IPv4 packet
      * 2. The IP packet should have options feild should be set.
-     * 3. The destination IP address is local to the box
      */
     retval = opennsl_field_qualify_IpType(unit, *ingress_fp_entry,
                                           opennslFieldIpTypeIpv4Any);
@@ -2364,14 +2363,6 @@ int ops_copp_ingress_fp_ipv4_options (
     if (OPENNSL_FAILURE(retval)) {
         VLOG_ERR("     Ingress: Failed to qualify on ipv4 options"
                  " %s \n", opennsl_errmsg(retval));
-        return(OPS_COPP_FAILURE_CODE);
-    }
-
-    retval = opennsl_field_qualify_DstIpLocal(unit, *ingress_fp_entry,
-                                              address_data, address_mask);
-    if (OPENNSL_FAILURE(retval)) {
-        VLOG_ERR("     Ingress: Failed to qualify on destination "
-                 "IP being Local %s \n", opennsl_errmsg(retval));
         return(OPS_COPP_FAILURE_CODE);
     }
 
@@ -2463,7 +2454,6 @@ int ops_copp_ingress_fp_ipv6_options (
      * IPv4 options packets on the following rules:-
      * 1. The packet should be an IPv6 packet
      * 2. The IPv6 packet should have options feild should be set.
-     * 3. The destination IPv6 address is local to the box
      */
     retval = opennsl_field_qualify_IpType(unit, *ingress_fp_entry,
                                           opennslFieldIpTypeIpv6);
@@ -2478,14 +2468,6 @@ int ops_copp_ingress_fp_ipv6_options (
     if (OPENNSL_FAILURE(retval)) {
         VLOG_ERR("     Ingress: Failed to qualify on ipv6 options"
                  " %s \n", opennsl_errmsg(retval));
-        return(OPS_COPP_FAILURE_CODE);
-    }
-
-    retval = opennsl_field_qualify_DstIpLocal(unit, *ingress_fp_entry,
-                                              address_data, address_mask);
-    if (OPENNSL_FAILURE(retval)) {
-        VLOG_ERR("     Ingress: Failed to qualify on destination "
-                 "IPv6 being Local %s \n", opennsl_errmsg(retval));
         return(OPS_COPP_FAILURE_CODE);
     }
 
