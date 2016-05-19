@@ -34,6 +34,7 @@
 #include <opennsl/error.h>
 #include <opennsl/types.h>
 #include <opennsl/l2.h>
+#include <sal/version.h>
 
 #include "ops-lag.h"
 #include "platform-defines.h"
@@ -86,6 +87,7 @@ char cmd_ops_usage[] =
 "ovs-appctl plugin/debug <cmds> - Run OpenSwitch BCM Plugin specific debug commands.\n"
 "\n"
 "   debug [[+/-]<option> ...] [all/none] - enable/disable debugging.\n"
+"   version - displays the opennsl version.\n"
 "   vlan <vid> - displays OpenSwitch VLAN info.\n"
 "   knet [netif | filter] - displays knet information\n"
 "   l3intf [<interface id>] - display OpenSwitch interface info.\n"
@@ -1212,6 +1214,9 @@ bcm_plugin_debug(struct unixctl_conn *conn, int argc,
                 ops_fp_show_dump(&ds);
             }
             goto done;
+        } else if (!strcmp(ch, "version")) {
+            ds_put_format(&ds, "OpenNSL version: %s\n", opennsl_version_get());
+            goto done;
         } else if (!strcmp(ch, "vlan")) {
             int vid = -1;
 
@@ -1811,7 +1816,6 @@ done:
     ds_destroy(&ds);
 } // bcm_mac_debug
 
-#define DIAGNOSTIC_BUFFER_LEN 64000
 #define L3INTERFACE "l3interface"
 #define VLANINTERFACE "vlaninterface"
 #define LAGINTERFACE "laginterface"
@@ -1945,8 +1949,8 @@ static void diag_dump_callback(const char *feature , char **buf)
         VLOG_INFO("diag-dump ds.length = %lu", ds.length);
         snprintf(*buf, ds.length, "%s", ds_cstr(&ds));
     } else {
-        VLOG_ERR("Memory allocation failed for feature %s , %d bytes",
-                feature , DIAGNOSTIC_BUFFER_LEN);
+        VLOG_ERR("Memory allocation failed for feature %s , %lu bytes",
+                feature , ds.length);
     }
     ds_destroy(&ds);
     return ;

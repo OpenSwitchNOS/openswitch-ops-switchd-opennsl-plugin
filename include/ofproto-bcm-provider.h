@@ -25,6 +25,7 @@
 #include <opennsl/l3.h>
 #include <opennsl/stat.h>
 #include <opennsl/mirror.h>
+#include <opennsl/field.h>
 
 /* No bfd/cfm status change. */
 #define NO_STATUS_CHANGE -1
