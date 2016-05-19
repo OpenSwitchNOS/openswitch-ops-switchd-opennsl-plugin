@@ -34,6 +34,7 @@
 #include <opennsl/error.h>
 #include <opennsl/types.h>
 #include <opennsl/l2.h>
+#include <sal/version.h>
 
 #include "ops-lag.h"
 #include "platform-defines.h"
@@ -86,6 +87,7 @@ char cmd_ops_usage[] =
 "ovs-appctl plugin/debug <cmds> - Run OpenSwitch BCM Plugin specific debug commands.\n"
 "\n"
 "   debug [[+/-]<option> ...] [all/none] - enable/disable debugging.\n"
+"   version - displays the opennsl version.\n"
 "   vlan <vid> - displays OpenSwitch VLAN info.\n"
 "   knet [netif | filter] - displays knet information\n"
 "   l3intf [<interface id>] - display OpenSwitch interface info.\n"
@@ -97,7 +99,7 @@ char cmd_ops_usage[] =
 "   l3ecmp [<entry>] - display an ecmp egress object info.\n"
 "   lag [<lagid>] - displays OpenSwitch LAG info.\n"
 "   stg [hw] <stgid> - displays Spanning Tree Group Info. \n"
-"   fp [<copp-ingress-group> | <copp-egress-group> | <ospf-group> | <acl-ingress-group>]- displays programmed fp rules.\n"
+"   fp [<copp-ingress-group> | <copp-egress-group> | <ospf-group> | <acl-ingress-group> | <l3-group>]- displays programmed fp rules.\n"
 "   copp-stats - displays all the CoPP configuration and statistics.\n"
 "   copp-config <packet class name> <CPU queue class> <Rate> <Burst> - Modifies the CoPP rule for a control packet class \n"
 "   cpu-queue-stats - displays the per cpu queue statistics.\n"
@@ -772,6 +774,46 @@ ops_fp_dump_ospf_rules (struct ds *ds)
 }
 
 /*
+ * ops_fp_dump_l3_rules
+ *
+ * This function dumps the "fp show" output for Subinterface and stats rules
+ * for all hardware units.
+ */
+static void
+ops_fp_dump_l3_rules (struct ds *ds)
+{
+    int                   unit = 0;
+
+    /*
+     * If "ds" is not a valid pointer, then return
+     * from this function.
+     */
+    if (!ds) {
+        return;
+    }
+
+    /*
+     * Iterate over all the hardware units available.
+     */
+    for(unit =0; unit < MAX_SWITCH_UNITS; unit++) {
+
+        /*
+         * If the group-id is invalid, then do not dump the
+         * "fp show" for that hardware unit.
+         */
+        if (l3_fp_grp_info[unit].l3_fp_grpid == -1) {
+            continue;
+        }
+
+        /*
+         * Call the "fp show" function to dump the fp rules
+         * for the given group and hardware unit.
+         */
+        fp_entries_show(unit, l3_fp_grp_info[unit].l3_fp_grpid, ds);
+    }
+}
+
+/*
  * ops_fp_dump_copp_ingress_rules
  *
  * This function dumps the "fp show" output for CoPP ingress rules
@@ -1207,10 +1249,15 @@ bcm_plugin_debug(struct unixctl_conn *conn, int argc,
                     ops_fp_dump_copp_egress_rules(&ds);
                 } else if (!strcmp(option, "acl-ingress-group")) {
                     ops_fp_dump_acl_ingress_rules(&ds);
+                } else if (!strcmp(option, "l3-group")) {
+                    ops_fp_dump_l3_rules(&ds);
                 }
             } else {
                 ops_fp_show_dump(&ds);
             }
+            goto done;
+        } else if (!strcmp(ch, "version")) {
+            ds_put_format(&ds, "OpenNSL version: %s\n", opennsl_version_get());
             goto done;
         } else if (!strcmp(ch, "vlan")) {
             int vid = -1;
@@ -1811,7 +1858,6 @@ done:
     ds_destroy(&ds);
 } // bcm_mac_debug
 
-#define DIAGNOSTIC_BUFFER_LEN 64000
 #define L3INTERFACE "l3interface"
 #define VLANINTERFACE "vlaninterface"
 #define LAGINTERFACE "laginterface"
@@ -1945,8 +1991,8 @@ static void diag_dump_callback(const char *feature , char **buf)
         VLOG_INFO("diag-dump ds.length = %lu", ds.length);
         snprintf(*buf, ds.length, "%s", ds_cstr(&ds));
     } else {
-        VLOG_ERR("Memory allocation failed for feature %s , %d bytes",
-                feature , DIAGNOSTIC_BUFFER_LEN);
+        VLOG_ERR("Memory allocation failed for feature %s , %lu bytes",
+                feature , ds.length);
     }
     ds_destroy(&ds);
     return ;
