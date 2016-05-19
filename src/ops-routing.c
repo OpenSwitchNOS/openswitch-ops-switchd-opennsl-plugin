@@ -949,6 +949,13 @@ ops_routing_enable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
     VLOG_DBG("Create knet filter\n");
     handle_bcmsdk_knet_subinterface_filters(netdev, true);
 
+    VLOG_DBG("Create FP to stop switching");
+    rc = ops_subinterface_fp_create(hw_port, hw_unit);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Fp creation failed");
+        goto failed_l3_intf_create;
+    }
+
     return l3_intf;
 
 failed_l3_intf_create:
@@ -1049,6 +1056,12 @@ ops_routing_disable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
 
     VLOG_DBG("Delete subinterface knet filter\n");
     handle_bcmsdk_knet_subinterface_filters(netdev, false);
+    rc = ops_subinterface_fp_destroy(hw_port, hw_unit);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to destroy FP : unit=%d port=%d"
+                 " rc=%s",
+                 hw_unit, hw_port, opennsl_errmsg(rc));
+    }
 }
 
 opennsl_l3_intf_t *

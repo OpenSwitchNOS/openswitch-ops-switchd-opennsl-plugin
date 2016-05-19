@@ -34,6 +34,7 @@
 #include <opennsl/error.h>
 #include <opennsl/types.h>
 #include <opennsl/l2.h>
+#include <sal/version.h>
 
 #include "ops-lag.h"
 #include "platform-defines.h"
@@ -86,6 +87,7 @@ char cmd_ops_usage[] =
 "ovs-appctl plugin/debug <cmds> - Run OpenSwitch BCM Plugin specific debug commands.\n"
 "\n"
 "   debug [[+/-]<option> ...] [all/none] - enable/disable debugging.\n"
+"   version - displays the opennsl version.\n"
 "   vlan <vid> - displays OpenSwitch VLAN info.\n"
 "   knet [netif | filter] - displays knet information\n"
 "   l3intf [<interface id>] - display OpenSwitch interface info.\n"
@@ -1189,6 +1191,9 @@ bcm_plugin_debug(struct unixctl_conn *conn, int argc,
                 ops_fp_show_dump(&ds);
             }
             goto done;
+        } else if (!strcmp(ch, "version")) {
+            ds_put_format(&ds, "OpenNSL version: %s\n", opennsl_version_get());
+            goto done;
         } else if (!strcmp(ch, "vlan")) {
             int vid = -1;
 
@@ -1803,6 +1808,9 @@ static void diag_dump_basic_cb(char *buf)
 {
     struct ds ds = DS_EMPTY_INITIALIZER;
     /* populate basic diagnostic data to buffer  */
+    ds_put_format(&ds, "OpenNSL version: %s\n", opennsl_version_get());
+    ds_put_format(&ds, "\n\n");
+
     ds_put_format(&ds, "L3 interface information: \n");
     ops_l3intf_dump(&ds, -1);
     ds_put_format(&ds, "\n\n");
