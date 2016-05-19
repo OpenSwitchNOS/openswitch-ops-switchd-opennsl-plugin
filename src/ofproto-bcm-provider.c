@@ -629,7 +629,8 @@ bundle_destroy(struct ofbundle *bundle)
                 ops_routing_disable_l3_subinterface(bundle->hw_unit,
                         bundle->hw_port,
                         bundle->l3_intf,
-                        port->up.netdev);
+                        port->up.netdev,
+                        bundle->subintf_entry_id);
                 bundle->l3_intf = NULL;
             }
 
@@ -1108,6 +1109,8 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         bundle->ip6_address = NULL;
         hmap_init(&bundle->secondary_ip4addr);
         hmap_init(&bundle->secondary_ip6addr);
+
+        bundle->subintf_entry_id = -1;
     }
 
     if (!bundle->name || strcmp(s->name, bundle->name)) {
@@ -1217,7 +1220,8 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                      }
                     ops_routing_disable_l3_subinterface(hw_unit, hw_port,
                                                         bundle->l3_intf,
-                                                        port->up.netdev);
+                                                        port->up.netdev,
+                                                        bundle->subintf_entry_id);
                     log_event("SUBINTERFACE_DELETE",
                                EV_KV("interface", "%s", bundle->name));
                 } else if (strcmp(type, OVSREC_INTERFACE_TYPE_SYSTEM) == 0) {
@@ -1260,8 +1264,8 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                 if (bundle->l3_intf) {
                     bundle->hw_unit = hw_unit;
                     bundle->hw_port = hw_port;
-                    /* Initilize FP entries for l3 interface stats */
-                    netdev_bcmsdk_l3intf_fp_stats_init(vlan_id, hw_port, hw_unit);
+                    /* Create FP group/entries for l3 interface stats */
+                    netdev_bcmsdk_l3intf_fp_stats_create(vlan_id, hw_port, hw_unit);
                     log_event("L3INTERFACE_CREATE",
                                EV_KV("interface", "%s", bundle->name));
                 }
@@ -1271,7 +1275,8 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                 int unit = 0;
                 bundle->l3_intf = ops_routing_enable_l3_subinterface(
                         unit, hw_port, ofproto->vrf_id, vlan_id,
-                        mac, port->up.netdev);
+                        mac, port->up.netdev,
+                        &bundle->subintf_entry_id);
                 if (bundle->l3_intf) {
                     bundle->hw_unit = hw_unit;
                     bundle->hw_port = hw_port;
