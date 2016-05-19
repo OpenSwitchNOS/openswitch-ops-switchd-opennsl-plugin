@@ -628,6 +628,9 @@ bundle_destroy(struct ofbundle *bundle)
                         bundle->l3_intf,
                         port->up.netdev);
                 bundle->l3_intf = NULL;
+                if (subinterface_fp_destroy(bundle->hw_port, bundle->hw_unit)) {
+                    VLOG_ERR("%s FP deletion failed", __FUNCTION__);
+                }
             }
 
         } else if (strcmp(type, OVSREC_INTERFACE_TYPE_INTERNAL) == 0) {
@@ -1215,6 +1218,9 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                                                         port->up.netdev);
                     log_event("SUBINTERFACE_DELETE",
                                EV_KV("interface", "%s", bundle->name));
+                    if (subinterface_fp_destroy(hw_port, hw_unit)) {
+                        VLOG_ERR("%s FP deletion failed", __FUNCTION__);
+                    }
                 } else if (strcmp(type, OVSREC_INTERFACE_TYPE_SYSTEM) == 0) {
                     VLOG_DBG("%s disable l3 interface %s",
                               __FUNCTION__, bundle->name);
@@ -1272,6 +1278,10 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                     bundle->hw_port = hw_port;
                     log_event("SUBINTERFACE_CREATE",
                                EV_KV("interface", "%s", bundle->name));
+                    if (subinterface_fp_create(hw_port, hw_unit)) {
+                        VLOG_ERR("%s FP creation failed", __FUNCTION__);
+                        subinterface_fp_destroy(hw_port, hw_unit);
+                    }
                 }
 
             } else if (strcmp(type, OVSREC_INTERFACE_TYPE_INTERNAL) == 0) {
