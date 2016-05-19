@@ -157,10 +157,6 @@ ops_bcm_appl_init(void)
     if(rc < 0) {
         VLOG_ERR("Event log initialization failed for SUBINTERFACE");
     }
-    rc = event_log_init("LAG");
-    if(rc < 0) {
-        VLOG_ERR("Event log initialization failed for LAG");
-    }
     rc = event_log_init("VLANINTERFACE");
     if(rc < 0) {
         VLOG_ERR("Event log initialization failed for VLANINTERFACE");
