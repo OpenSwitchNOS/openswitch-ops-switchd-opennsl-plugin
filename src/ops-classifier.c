@@ -141,7 +141,7 @@ ops_classifier_init(int unit)
     OPENNSL_FIELD_QSET_ADD(qset, opennslFieldQualifyL3Routable);
 
 
-    rc = opennsl_field_group_create(unit, qset, OPS_GROUP_PRI_IPv4, &ip_group);
+    rc = opennsl_field_group_create(unit, qset, FP_GROUP_PRIORITY_1, &ip_group);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to create group: unit=%d, group= %d,  rc=%s",
                  unit, ip_group, opennsl_errmsg(rc));
