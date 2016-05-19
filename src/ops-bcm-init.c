@@ -43,6 +43,7 @@
 #include "ops-mac-learning.h"
 #include "netdev-bcmsdk.h"
 #include "eventlog.h"
+#include "ops-fp.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
 
@@ -93,7 +94,7 @@ opennsl_rx_t opennsl_rx_callback(int unit, opennsl_pkt_t *pkt, void *cookie)
 
     /* ACL logging packet */
     if (OPENNSL_RX_REASON_GET(pkt->rx_reasons, opennslRxReasonFilterMatch)
-          && (pkt->rx_matched == ACL_LOG_RULE_ID)) {
+          /*&& (pkt->rx_matched == ACL_LOG_RULE_ID)*/) {
         /* Copy relevant parts of the metadata and header to an ACL logging
         * buffer */
         acl_log_handle_rx_event(pkt);
@@ -156,10 +157,6 @@ ops_bcm_appl_init(void)
     rc = event_log_init("SUBINTERFACE");
     if(rc < 0) {
         VLOG_ERR("Event log initialization failed for SUBINTERFACE");
-    }
-    rc = event_log_init("LAG");
-    if(rc < 0) {
-        VLOG_ERR("Event log initialization failed for LAG");
     }
     rc = event_log_init("VLANINTERFACE");
     if(rc < 0) {
@@ -250,6 +247,12 @@ ops_bcm_appl_init(void)
         rc = ops_classifier_init(unit);
         if (rc) {
             VLOG_ERR("Classifier subsystem init failed");
+            return 1;
+        }
+
+        rc = ops_fp_init(unit);
+        if (rc) {
+            VLOG_ERR("FP subsystem init failed");
             return 1;
         }
     }

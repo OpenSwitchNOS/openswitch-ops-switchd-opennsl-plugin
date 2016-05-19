@@ -125,8 +125,8 @@ extern opennsl_l3_intf_t *ops_routing_enable_l3_interface(int hw_unit,
                                                          struct netdev *netdev);
 extern opennsl_l3_intf_t *
 ops_routing_enable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
-                                 opennsl_vrf_t vrf_id, opennsl_vlan_t vlan_id,
-                                 unsigned char *mac, struct netdev *netdev);
+                                   opennsl_vrf_t vrf_id, opennsl_vlan_t vlan_id,
+                                   unsigned char *mac, struct netdev *netdev);
 
 extern void ops_routing_disable_l3_interface(int hw_unit,
                                             opennsl_port_t hw_port,
@@ -134,7 +134,8 @@ extern void ops_routing_disable_l3_interface(int hw_unit,
                                             struct netdev *netdev);
 
 extern void ops_routing_disable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
-                                  opennsl_l3_intf_t *l3_intf, struct netdev *netdev);
+                                                opennsl_l3_intf_t *l3_intf,
+                                                struct netdev *netdev);
 
 extern opennsl_l3_intf_t * ops_routing_enable_l3_vlan_interface(int hw_unit,
                                                                opennsl_vrf_t vrf_id,
@@ -185,4 +186,7 @@ extern void ops_l3_mac_move_add(int unit, opennsl_l2_addr_t *l2addr, void *userd
 extern void ops_l3_mac_move_delete(int unit, opennsl_l2_addr_t *l2addr, void *userdata);
 extern bool ops_routing_is_internal_vlan(opennsl_vlan_t vlan);
 
+extern opennsl_error_t ops_create_group_l3_feature(int hw_unit);
+extern opennsl_error_t ops_destroy_l3_feature_entry_grp(int hw_unit,
+                                                        opennsl_field_entry_t entryid);
 #endif /* __OPS_ROUTING_H__ */

@@ -1108,6 +1108,8 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         bundle->ip6_address = NULL;
         hmap_init(&bundle->secondary_ip4addr);
         hmap_init(&bundle->secondary_ip6addr);
+
+//        bundle->subintf_entry_id = -1;
     }
 
     if (!bundle->name || strcmp(s->name, bundle->name)) {
@@ -1260,8 +1262,8 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                 if (bundle->l3_intf) {
                     bundle->hw_unit = hw_unit;
                     bundle->hw_port = hw_port;
-                    /* Initilize FP entries for l3 interface stats */
-                    netdev_bcmsdk_l3intf_fp_stats_init(vlan_id, hw_port, hw_unit);
+                    /* Create FP group/entries for l3 interface stats */
+                    netdev_bcmsdk_l3intf_fp_stats_create(vlan_id, hw_port, hw_unit);
                     log_event("L3INTERFACE_CREATE",
                                EV_KV("interface", "%s", bundle->name));
                 }
