@@ -25,6 +25,7 @@
 #include <opennsl/l3.h>
 #include <opennsl/stat.h>
 #include <opennsl/mirror.h>
+#include <opennsl/fieldX.h>
 
 /* No bfd/cfm status change. */
 #define NO_STATUS_CHANGE -1
@@ -86,6 +87,7 @@ struct ofbundle {
     char *ip6_address;
     struct hmap secondary_ip4addr; /* List of secondary IP address */
     struct hmap secondary_ip6addr; /* List of secondary IPv6 address */
+    opennsl_field_entry_t subintf_entry_id;
 };
 
 struct bcmsdk_provider_ofport_node {
