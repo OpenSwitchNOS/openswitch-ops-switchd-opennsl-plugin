@@ -81,5 +81,6 @@ extern void netdev_port_name_from_hw_id(int hw_unit, int hw_id, char *str);
 extern opennsl_field_group_t ops_l3intf_ingress_stats_group_id_for_hw_unit(int unit);
 
 extern opennsl_field_group_t ops_l3intf_egress_stats_group_id_for_hw_unit(int unit);
-
+extern opennsl_error_t subinterface_fp_create(opennsl_port_t hw_port, int hw_unit);
+extern opennsl_error_t subinterface_fp_destroy(opennsl_port_t hw_port, int hw_unit);
 #endif /* netdev-bcmsdk.h */

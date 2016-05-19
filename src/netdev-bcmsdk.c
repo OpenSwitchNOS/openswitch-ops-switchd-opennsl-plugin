@@ -136,6 +136,8 @@ struct netdev_bcmsdk {
     struct ops_deleted_stats deleted_stats_counter;
 
     opennsl_field_entry_t *l3_stat_fp_entries;
+    opennsl_field_group_t fp_group_id;
+    opennsl_field_entry_t fp_entry_id;
     int *l3_stat_fp_ids;
 
     /* Store the current features of the netdev */
@@ -1861,6 +1863,145 @@ netdev_bcmsdk_register(void)
     netdev_register_provider(&bcmsdk_subintf_class);
 }
 
+/*
+ * FP creation to stop subinterface switching traffic.
+ */
+opennsl_error_t
+subinterface_fp_create(opennsl_port_t hw_port, int hw_unit)
+{
+    /* FP groups for subinterface */
+    opennsl_field_qset_t qset;
+    opennsl_error_t rc = OPENNSL_E_NONE;
+    opennsl_pbmp_t pbm;
+    opennsl_pbmp_t pbm_mask;
+
+    struct netdev_bcmsdk *netdev = netdev_from_hw_id(hw_unit, hw_port);
+
+    if (!netdev) {
+        return OPENNSL_E_NONE;
+    }
+
+    OPENNSL_FIELD_QSET_INIT(qset);
+    OPENNSL_FIELD_QSET_ADD (qset, opennslFieldQualifyMyStationHit);
+    OPENNSL_FIELD_QSET_ADD (qset, opennslFieldQualifyInPorts);
+
+    /* add hw_port to the rule */
+    OPENNSL_PBMP_CLEAR(pbm);
+    OPENNSL_PBMP_CLEAR(pbm_mask);
+    OPENNSL_PBMP_PORT_ADD(pbm, hw_port);
+    OPENNSL_PBMP_PORT_ADD(pbm_mask, hw_port);
+
+    VLOG_DBG("%s, Create FP for unit = %d, port %d",
+              __FUNCTION__, hw_unit, hw_port);
+
+    rc = opennsl_field_group_create(hw_unit, qset,
+                                    FP_STATS_GROUP_PRIORITY+1,
+                                    &netdev->fp_group_id);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to create FP group for subinterface \
+                Unit=%d port=%d rc=%s",
+                hw_unit, hw_port, opennsl_errmsg(rc));
+        return rc;
+    }
+
+    VLOG_DBG("%s, Create group success unit = %d, port %d",
+              __FUNCTION__, hw_unit, hw_port);
+    rc =  opennsl_field_entry_create(hw_unit,
+                                     netdev->fp_group_id,
+                                     &netdev->fp_entry_id);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to create FP entry for subinterface \
+                Unit=%d port=%d rc=%s",
+                hw_unit, hw_port, opennsl_errmsg(rc));
+        return rc;
+    }
+
+    VLOG_DBG("%s, Create entry success unit = %d, port %d",
+             __FUNCTION__, hw_unit, hw_port);
+    rc = opennsl_field_qualify_MyStationHit(hw_unit,
+                                            netdev->fp_entry_id,
+                                            0x0, 0x1); /* NOT hit */
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to set qualify for my station hit \
+                Unit=%d port=%d rc=%s",
+                hw_unit, hw_port, opennsl_errmsg(rc));
+        return rc;
+    }
+
+    VLOG_DBG("%s, Create qualify my station hit success unit = %d, port %d",
+             __FUNCTION__, hw_unit, hw_port);
+    rc = opennsl_field_qualify_InPorts(hw_unit,
+                                       netdev->fp_entry_id,
+                                       pbm, pbm_mask);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to set qualify for InPort \
+                Unit=%d port=%d rc=%s",
+                hw_unit, hw_port, opennsl_errmsg(rc));
+        return rc;
+    }
+
+    VLOG_DBG("%s, Create qualify in port success unit = %d, port %d",
+              __FUNCTION__, hw_unit, hw_port);
+    rc = opennsl_field_action_add(hw_unit,
+                                  netdev->fp_entry_id,
+                                  opennslFieldActionDrop, 0, 0);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to set action to drop all packets \
+                Unit=%d port=%d rc=%s",
+                hw_unit, hw_port, opennsl_errmsg(rc));
+        return rc;
+    }
+
+    VLOG_DBG("%s, Create action success unit = %d, port %d",
+              __FUNCTION__, hw_unit, hw_port);
+    rc = opennsl_field_entry_install(hw_unit, netdev->fp_entry_id);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to install group = %d entry = %d\
+                Unit=%d port=%d rc=%s",
+                netdev->fp_group_id, netdev->fp_entry_id,
+                hw_unit, hw_port, opennsl_errmsg(rc));
+        return rc;
+    }
+
+    VLOG_DBG("%s, Group entry install success unit = %d, port %d",
+               __FUNCTION__, hw_unit, hw_port);
+    return rc;
+}
+
+/*
+ * FP deletion to stop subinterface switching traffic.
+ */
+opennsl_error_t
+subinterface_fp_destroy(opennsl_port_t hw_port, int hw_unit)
+{
+    opennsl_error_t rc = OPENNSL_E_NONE;
+    struct netdev_bcmsdk *netdev = netdev_from_hw_id(hw_unit, hw_port);
+
+    if (!netdev) {
+        return OPENNSL_E_NONE;
+    }
+
+    VLOG_DBG("%s, Create group success unit = %d, port %d",
+              __FUNCTION__, hw_unit, hw_port);
+    rc =  opennsl_field_entry_destroy(hw_unit, netdev->fp_entry_id);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to create FP entry for subinterface \
+                Unit=%d port=%d rc=%s",
+                hw_unit, hw_port, opennsl_errmsg(rc));
+        return rc;
+    }
+
+    VLOG_DBG("%s, Create group success unit = %d, port %d",
+              __FUNCTION__, hw_unit, hw_port);
+    rc = opennsl_field_group_destroy(hw_unit, netdev->fp_group_id);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to create FP group for subinterface \
+                Unit=%d port=%d rc=%s",
+                hw_unit, hw_port, opennsl_errmsg(rc));
+        return rc;
+    }
+    return rc;
+}
 /* This function creates FP stat entries, which are used for various
  * IPv4/IPv6 specific statistics.
  */
