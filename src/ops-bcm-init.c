@@ -43,6 +43,7 @@
 #include "ops-mac-learning.h"
 #include "netdev-bcmsdk.h"
 #include "eventlog.h"
+#include "ops-fp.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_bcm_init);
 
@@ -141,6 +142,55 @@ ops_rx_init(int unit)
 
 } // ops_rx_init
 
+int ops_event_init(void)
+{
+    int rc = 0;
+
+    /* Event log initialization for subinterface */
+    rc = event_log_init("SUBINTERFACE");
+    if(rc < 0) {
+        VLOG_ERR("Event log initialization failed for SUBINTERFACE");
+        rc = 1;
+    }
+
+    /* Event log initialization for LAG */
+    rc = event_log_init("LAG");
+    if(rc < 0) {
+        VLOG_ERR("Event log initialization failed for LAG");
+        rc = 1;
+    }
+
+    /* Event log initialization for Vlan Interface */
+    rc = event_log_init("VLANINTERFACE");
+    if(rc < 0) {
+        VLOG_ERR("Event log initialization failed for VLANINTERFACE");
+        rc = 1;
+    }
+
+    /* Event log initialization for L3 interface */
+    rc = event_log_init("L3INTERFACE");
+    if(rc < 0) {
+        VLOG_ERR("Event log initialization failed for L3INTERFACE");
+        rc = 1;
+    }
+
+    /* Event log initialization for ECMP */
+    rc = event_log_init("ECMP");
+    if(rc < 0) {
+        VLOG_ERR("Event log initialization failed for ECMP");
+        rc = 1;
+    }
+
+    /* Event log initialization for sFlow */
+    rc = event_log_init("SFLOW");
+    if (rc < 0) {
+        VLOG_ERR("Event log initialization failed for SFLOW");
+        rc = 1;
+    }
+
+    return rc;
+}
+
 int
 ops_bcm_appl_init(void)
 {
@@ -153,25 +203,11 @@ ops_bcm_appl_init(void)
         VLOG_ERR("Mac learning init failed");
         return (1);
     }
-    rc = event_log_init("SUBINTERFACE");
-    if(rc < 0) {
-        VLOG_ERR("Event log initialization failed for SUBINTERFACE");
-    }
-    rc = event_log_init("LAG");
-    if(rc < 0) {
-        VLOG_ERR("Event log initialization failed for LAG");
-    }
-    rc = event_log_init("VLANINTERFACE");
-    if(rc < 0) {
-        VLOG_ERR("Event log initialization failed for VLANINTERFACE");
-    }
-    rc = event_log_init("L3INTERFACE");
-    if(rc < 0) {
-        VLOG_ERR("Event log initialization failed for L3INTERFACE");
-    }
-    rc = event_log_init("ECMP");
-    if(rc < 0) {
-        VLOG_ERR("Event log initialization failed for ECMP");
+
+    rc = ops_event_init();
+    if (rc) {
+        VLOG_ERR("Event log init failed");
+        return (1);
     }
 
     /* Initialize QoS global data structures */
@@ -250,6 +286,12 @@ ops_bcm_appl_init(void)
         rc = ops_classifier_init(unit);
         if (rc) {
             VLOG_ERR("Classifier subsystem init failed");
+            return 1;
+        }
+
+        rc = ops_fp_init(unit);
+        if (rc) {
+            VLOG_ERR("FP subsystem init failed");
             return 1;
         }
     }
