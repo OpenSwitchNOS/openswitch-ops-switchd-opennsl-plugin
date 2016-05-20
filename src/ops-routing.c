@@ -77,6 +77,10 @@ int default_ip4_options_profile_id = 1;
 /* Global Structure that stores OSPF related data */
 static ops_ospf_data_t *ospf_data = NULL;
 
+/* Internal default route needed for ALPM mode */
+static opennsl_l3_route_t ipv4_default_route;
+static opennsl_l3_route_t ipv6_default_route;
+
 /*
  * ops_routing_get_ospf_group_id_by_hw_unit
  *
@@ -403,6 +407,72 @@ static int l3_ingress_stats_init()
     return rc;
 }
 
+/* Function to add ipv4/ipv6 default routes to support ALPM mode.
+** This was suggestated by broadcom */
+int
+ops_add_default_routes(int unit)
+{
+    opennsl_error_t rc = OPENNSL_E_NONE;
+
+    /* Configure ipv4 default route, with vrf, addr and mask = 0 */
+    opennsl_l3_route_t_init(&ipv4_default_route);
+    ipv4_default_route.l3a_flags = OPENNSL_L3_REPLACE;
+    ipv4_default_route.l3a_vrf = 0;
+    ipv4_default_route.l3a_subnet = 0;
+    ipv4_default_route.l3a_ip_mask = 0;
+    ipv4_default_route.l3a_intf = local_nhid;
+    rc = opennsl_l3_route_add (unit, &ipv4_default_route);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Default route for IPv4 failed rc = %s",
+	         opennsl_errmsg(rc));
+        return 1; /* Return error */
+    }
+
+    /* Configure ipv6 default route, with vrf, addr and mask = 0 */
+    opennsl_l3_route_t_init(&ipv6_default_route);
+    ipv6_default_route.l3a_flags = OPENNSL_L3_IP6 | OPENNSL_L3_REPLACE;
+
+    /* TODO: Do we have to set to zero, after init */
+    ipv6_default_route.l3a_vrf = 0;
+    memset(&ipv6_default_route.l3a_ip6_net, 0,
+                               sizeof(ipv6_default_route.l3a_ip6_net));
+    memset(&ipv6_default_route.l3a_ip6_mask, 0,
+                               sizeof(ipv6_default_route.l3a_ip6_mask));
+    ipv6_default_route.l3a_intf = local_nhid;
+    rc = opennsl_l3_route_add (unit, &ipv6_default_route);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Default route for IPv6 failed rc = %s",
+	         opennsl_errmsg(rc));
+        return 1; /* Return error */
+    }
+
+    return 0;
+}
+
+/* Function to compare default 0.0.0.0 route */
+int
+ops_compare_default_route(int unit,
+                          struct ofproto_route *of_routep,
+                          opennsl_l3_route_t *route)
+{
+    /* Configure ipv4 default route, with vrf, addr and mask = 0 */
+    if (of_routep->family == OFPROTO_ROUTE_IPV4) {
+        if ( (route->l3a_vrf == ipv4_default_route.l3a_vrf) &&
+             (route->l3a_subnet == ipv4_default_route.l3a_subnet) &&
+             (route->l3a_ip_mask == ipv4_default_route.l3a_ip_mask) )
+            return 1; /* Matched v4 default route */
+    } else {
+        if ( (route->l3a_vrf == ipv6_default_route.l3a_vrf) &&
+             (memcmp(route->l3a_ip6_net, ipv6_default_route.l3a_ip6_net,
+                     sizeof(ipv6_default_route.l3a_ip6_net)) == 0) &&
+             (memcmp(route->l3a_ip6_mask, ipv6_default_route.l3a_ip6_mask,
+                     sizeof(ipv6_default_route.l3a_ip6_mask))) )
+            return 1; /* Matched v6 default route */
+    }
+
+    return 0;
+}
+
 int
 ops_l3_init(int unit)
 {
@@ -443,6 +513,15 @@ ops_l3_init(int unit)
         log_event("L3INTERFACE_ERR",
                   EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
+    }
+
+    /* adding ipv4/ipv6 default route to support ALPM mode */
+    rc = ops_add_default_routes(unit);
+
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Default route configuration failed unit=%d rc=%s",
+                 unit, opennsl_errmsg(rc));
+        return 1;
     }
 
     /* Send ARP to CPU */
@@ -1713,6 +1792,10 @@ ops_add_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
         add_route = true;
     } else {
         /* update route in local data structure */
+
+        /* TODO: If this default route make sure we update user configured
+                 default route and handle delete/reprogramming later */
+
         ops_routep = ops_route_lookup(vrf_id, of_routep);
         if (!ops_routep) {
             VLOG_ERR("Failed to find route %s", of_routep->prefix);
@@ -1799,6 +1882,7 @@ ops_delete_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
     opennsl_if_t l3_intf ;
     bool is_delete_ecmp = false;
     int rc;
+    int reprogram_def_route;
 
     assert(of_routep);
 
@@ -1816,6 +1900,11 @@ ops_delete_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
         return EINVAL;
     }
 
+    /* Check if this is same as default route */
+    reprogram_def_route = ops_compare_default_route(hw_unit, of_routep,
+                                                    routep);
+
+    /* Remove from local hash */
     ops_route_delete(ops_routep);
 
     if (routep->l3a_flags & OPENNSL_L3_MULTIPATH) {
@@ -1842,6 +1931,12 @@ ops_delete_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
         log_event("ECMP_DELETE",
                 EV_KV("route", "%s", of_routep->prefix));
     }
+
+    /* Reprogram default route for ALPM mode */
+    if (reprogram_def_route) {
+        ops_add_default_routes(hw_unit);
+    }
+
     return rc;
 } /* ops_delete_route_entry */
 
