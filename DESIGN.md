@@ -5,34 +5,35 @@
 
 - [Overview](#overview)
 - [Terminology](#terminology)
-        - [In OVSDB and ops-switchd](#in-ovsdb-and-ops-switchd)
-        - [In the switchd-opennsl-plugin](#in-the-switchd-opennsl-plugin)
-                - [In the netdev layer](#in-the-netdev-layer)
-                - [In the ofproto layer](#in-the-ofproto-layer)
-                - [In the bufmon layer](#in-the-bufmon-layer)
-                - [In OpenNSL API code](#in-opennsl-api-code)
+    - [In OVSDB and ops-switchd](#in-ovsdb-and-ops-switchd)
+    - [In the switchd-opennsl-plugin](#in-the-switchd-opennsl-plugin)
+    - [In the netdev layer](#in-the-netdev-layer)
+    - [In the ofproto layer](#in-the-ofproto-layer)
+    - [In the bufmon layer](#in-the-bufmon-layer)
+    - [In OpenNSL API code](#in-opennsl-api-code)
 - [Design](#design)
-        - [Physical interface configuration](#physical-interface-configuration)
-                - [Trunk/LAG configuration](#trunklag-configuration)
-        - [Layer 2 switching](#layer-2-switching)
-        - [Layer 2 mirroring](#layer-2-mirroring)
-        - [Layer 3 routing](#layer-3-routing)
-        - [Code details](#code-details)
-                - [Asynchronous notifications](#asynchronous-notifications)
-        - [Buffer monitoring](#buffer-monitoring)
-        - [Layer 3 loopback interface](#layer-3-loopback-interface)
-        - [Layer 3 subinterface](#layer-3-subinterface)
-        - [Layer 3 LAG interface](#layer-3-lag-interface)
-        - [Layer 3 interface statistics](#layer-3-interface-statistics)
-        - [Multicast traffic](#multicast-traffic)
-                - [OSPF](#ospf)
-        - [Control Plane Policing](#control-plane-policing)
-                - [Ingress traffic](#ingress-traffic)
-                - [Egress traffic](#egress-traffic)
-                - [CoPP classes](#copp-classes)
-                - [Policer mode](#policer-mode)
-        - [Spanning Tree Group](#spanning-tree-group)
-        - [sFlow](#sFlow)
+    - [Physical interface configuration](#physical-interface-configuration)
+        - [Trunk/LAG configuration](#trunk/lag-configuration)
+    - [Layer 2 switching](#layer-2-switching)
+    - [Layer 2 mirroring](#layer-2-mirroring)
+    - [Layer 3 routing](#layer-3-routing)
+    - [Code details](#code-details)
+        - [Asynchronous notifications](#asynchronous-notifications)
+    - [Buffer monitoring](#buffer-monitoring)
+    - [Layer 3 loopback interface](#layer-3-loopback-interface)
+    - [Layer 3 subinterface](#layer-3-subinterface)
+    - [Layer 3 LAG interface](#layer-3-lag-interface)
+    - [Layer 3 interface statistics](#layer-3-interface-statistics)
+    - [Multicast traffic](#multicast-traffic)
+        - [OSPF](#ospf)
+    - [Control Plane Policing](#control-plane-policing)
+        - [Ingress traffic](#ingress-traffic)
+        - [Egress traffic](#egress-traffic)
+        - [CoPP classes](#copp-classes)
+        - [Policer mode](#policer-mode)
+    - [Spanning Tree Group](#spanning-tree-group)
+    - [sFlow](#sflow)
+    - [MAC Learning](#/documents/dev/ops-switchd-opennsl-plugin/docs/mac-learning-design)
 - [References](#references)
 
 ## Overview
@@ -340,7 +341,7 @@ To support a new CoPP class:
 #### Policer mode
 A color blind tri-color single rate policer is used for CoPP. The committed rate is set as the rate limit numbers shown in the preceeding table. The committed burst size is currently configured to the same value as the rate limit. Packets marked red are dropped.
 
-### Spanning Tree Group(STG)
+### Spanning Tree Group
 The switchd-opennsl plugin supports spanning tree group creation/deletion/update. The ops-switchd daemon learns spanning tree instance updates(instance creation, vlan to instance mapping, instance-port states) from the OVSDB and pushes it down to the switchd opennsl plugin. Plugin intern calls the opennsl API to populate the STG table in the ASIC.
 
 
@@ -365,7 +366,7 @@ Following are the actions done on spanning tree instance port state update:
 - valid port states are Disabled(2'b00), Blocking(2'b01), Learning(2'b10), Forwarding(2'b11)
 - update the internal cache
 
-### sFlow(sFlow)
+### sFlow
 sFlow protocol samples ingress and egress packets from the physical interface
 on the switch and sends these samples as sFlow UDP datagrams to an external
 collector.
