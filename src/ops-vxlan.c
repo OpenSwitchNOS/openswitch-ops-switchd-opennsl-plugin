@@ -42,12 +42,6 @@
 #include "ops-vxlan.h"
 #include "bcm-common.h"
 
-/*
- * BCM issues are commented out using
- * #ifdef PORT_GET
- * #ifdef L2_STATION
- * When the issues are resoved, remove those #ifdef
- */
 
 /**************************************************************************/
 /*                              DECLARATIONS                              */
@@ -93,7 +87,7 @@ typedef struct vxlan_setting_t_ {
  *      egress object ID.
  */
 typedef struct bcmsdk_vxlan_egr_obj_ {
-    int gport;
+    int port;
     int egr_obj_id;
 } bcmsdk_vxlan_egr_obj_t;
 
@@ -120,15 +114,46 @@ typedef struct vxlan_logical_sw_element_t_ {
  * egr_obj_id:
  *      egress object ID.
  *
+ * vxlan_port_refcnt:
+ *      number of vxlan ports referring to this egress object.
+ *
  * node:
  *      hash node
  */
 typedef struct vxlan_egr_obj_element_t_ {
     int unit;                       /* key */
-    int gport;                      /* key */
+    int port;                       /* key */
     int egr_obj_id;                 /* value */
+    int vxlan_port_refcnt;          /* value, reference count */
     struct hmap_node node;
 } vxlan_egr_obj_element_t;
+
+/*
+ * struct vxlan_port_element_t
+ *      Structure for port hash element
+ *
+ * unit:
+ *      ASIC unit number
+ *
+ * port:
+ *      port
+ *
+ * vxlan_acc_port_refcnt:
+ *      number of vxlan access ports referring to this physical port
+ *
+ * vxlan_net_port_refcnt:
+ *      number of vxlan network ports referring to this physical port
+ *
+ * node:
+ *      hash node
+ */
+typedef struct vxlan_port_element_t_ {
+    int unit;                       /* key */
+    int port;                       /* key */
+    int vxlan_acc_port_refcnt;      /* value, reference count */
+    int vxlan_net_port_refcnt;      /* value, reference count */
+    struct hmap_node node;
+} vxlan_port_element_t;
 
 typedef struct vxlan_global_t_ {
     /* Hash vni to vpn_id for logical switch. It contains
@@ -138,6 +163,10 @@ typedef struct vxlan_global_t_ {
     /* Hash gport to L3 egress object. It contains
        vxlan_egr_obj_element_t as element */
     struct hmap egr_obj_hmap;
+
+    /* Hash port. It contains
+       vxlan_port_element_t as element */
+    struct hmap port_hmap;
 } vxlan_global_t;
 
 
@@ -156,6 +185,17 @@ static vxlan_logical_sw_element_t *vxlan_find_logical_switch_hash_element(int un
 static int vxlan_insert_egr_obj_hash_element(int unit,
                                              bcmsdk_vxlan_egr_obj_t *egr_obj_p);
 static vxlan_egr_obj_element_t *vxlan_find_egr_obj_hash_element(int unit, int gport);
+
+static vxlan_port_element_t *vxlan_get_create_port_hash_element(int unit,
+         int port);
+static vxlan_port_element_t *vxlan_insert_port_hash_element(int unit,
+         int port);
+static vxlan_port_element_t *vxlan_find_port_hash_element(int unit, int port);
+static int vxlan_update_port_refcnt(int unit, int port,
+         int vxlan_acc_port_refcnt, int vxlan_net_port_refcnt);
+static int vxlan_get_port_refcnt(int unit, int port,
+         int *vxlan_acc_port_refcnt, int *vxlan_net_port_refcnt);
+static int vxlan_clear_port_refcnt(int unit, int port);
 
 static int vxlan_create_logical_switch(int unit, bcmsdk_vxlan_logical_switch_t *logical_sw_p);
 static int vxlan_destroy_logical_switch(int unit, bcmsdk_vxlan_logical_switch_t *logical_sw_p);
@@ -536,14 +576,7 @@ vxlan_insert_logical_switch_hash_element(int unit,
     vxlan_logical_sw_element_t *logical_sw_element_p;
     uint32_t hash;
 
-    logical_sw_element_p = (vxlan_logical_sw_element_t *)calloc(1, sizeof(vxlan_logical_sw_element_t));
-
-    if (logical_sw_element_p == NULL) {
-        VLOG_ERR("Error [%s, %d], logical_sw_element_p calloc failed for unit:%d vnid:%d vpn_id:%d\n",
-                 __FUNCTION__, __LINE__, unit, logical_sw_p->vnid,
-                 logical_sw_p->vpn_id);
-        return BCMSDK_E_RESOURCE;
-    }
+    logical_sw_element_p = (vxlan_logical_sw_element_t *)xzalloc(sizeof(vxlan_logical_sw_element_t));
 
     /* Update hash element key and value */
     logical_sw_element_p->vnid = logical_sw_p->vnid;
@@ -624,23 +657,24 @@ vxlan_insert_egr_obj_hash_element(int unit,
     uint32_t hash;
 
     egr_obj_element_p = (vxlan_egr_obj_element_t *)
-        calloc(1, sizeof(vxlan_egr_obj_element_t));
+        xzalloc(sizeof(vxlan_egr_obj_element_t));
 
     if (egr_obj_element_p == NULL) {
-        VLOG_ERR("Error [%s, %d], egr_obj_element_p calloc failed for unit:%d gport:0x%x egr_obj:0x%x\n",
-                 __FUNCTION__, __LINE__, unit, egr_obj_p->gport,
+        VLOG_ERR("Error [%s, %d], egr_obj_element_p xzalloc failed for unit:%d port:0x%x egr_obj:0x%x\n",
+                 __FUNCTION__, __LINE__, unit, egr_obj_p->port,
                  egr_obj_p->egr_obj_id);
         return BCMSDK_E_RESOURCE;
     }
 
     /* Update hash element key and value */
-    egr_obj_element_p->gport = egr_obj_p->gport;
+    egr_obj_element_p->port = egr_obj_p->port;
     egr_obj_element_p->egr_obj_id = egr_obj_p->egr_obj_id;
 
     /* insert this element to egr_obj_hmap hash table */
-    hash = hash_2words((uint32_t)egr_obj_element_p->gport, unit);
+    hash = hash_2words((uint32_t)egr_obj_element_p->port, unit);
     hmap_insert(&vxlan_global.egr_obj_hmap,
                 &egr_obj_element_p->node, hash);
+    egr_obj_element_p->vxlan_port_refcnt = 1;
 
     return BCMSDK_E_NONE;
 }
@@ -663,19 +697,19 @@ vxlan_insert_egr_obj_hash_element(int unit,
  */
 static
 vxlan_egr_obj_element_t *
-vxlan_find_egr_obj_hash_element(int unit, int gport)
+vxlan_find_egr_obj_hash_element(int unit, int port)
 {
     uint32_t hash;
     vxlan_egr_obj_element_t *egr_obj_element_p;
     vxlan_egr_obj_element_t *egr_obj_element_found_p;
 
-    hash = hash_2words((uint32_t)gport, unit);
+    hash = hash_2words((uint32_t)port, unit);
 
     egr_obj_element_found_p = NULL;
     HMAP_FOR_EACH_WITH_HASH (egr_obj_element_p, node, hash,
                              &vxlan_global.egr_obj_hmap) {
         if ((egr_obj_element_p->unit == unit) &&
-            (egr_obj_element_p->gport == gport)) {
+            (egr_obj_element_p->port == port)) {
             egr_obj_element_found_p = egr_obj_element_p;
             break;
         }
@@ -683,6 +717,298 @@ vxlan_find_egr_obj_hash_element(int unit, int gport)
 
     return  egr_obj_element_found_p;
 }
+
+
+/*
+ * Function: vxlan_port_get_create_hash_element
+ *      Given unit and port, get the port hash element.
+ *      If the port element does not exist yet, create a new one.
+ *      This API will initialize acc_refcnt = 0 and net_refcnt = 0.
+ *      It is important to set them to proper values after calling
+ *      this API.
+ */
+static
+vxlan_port_element_t *
+vxlan_get_create_port_hash_element(int unit, int port)
+{
+    vxlan_port_element_t *port_element_p;
+
+    port_element_p = vxlan_find_port_hash_element(unit, port);
+
+    if (port_element_p) {
+        return port_element_p;
+    }
+
+    /* If port_element_p not exist yet, create one */
+    port_element_p = vxlan_insert_port_hash_element(unit, port);
+    if (port_element_p == NULL) {
+        VLOG_ERR("Error [%s, %d], failed to create port hash element "
+                 "unit:%d port:0x%x\n",
+                 __FUNCTION__, __LINE__, unit, port);
+        return NULL;
+    }
+
+    return port_element_p;
+}
+
+/*
+ * Function: vxlan_insert_port_hash_element
+ *      Insert port pair to hash map.
+ *      Caller must check if the port does not
+ *      exist first using vxlan_find_port_hash_element().
+ *
+ * [In] unit
+ *      HW unit
+ *
+ * [In] port
+ *      Physical port
+ *
+ * [In] acc_refcnt
+ *      access port reference count
+ *
+ * [In] net_refcnt
+ *      network port reference count
+ *
+ * [Out] return
+ *       vxlan_port_element *
+ *         return NULL if failed to insert
+ */
+static
+vxlan_port_element_t *
+vxlan_insert_port_hash_element(int unit, int port)
+{
+    vxlan_port_element_t *port_element_p;
+    uint32_t hash;
+
+    port_element_p = (vxlan_port_element_t *)
+        xzalloc(sizeof(vxlan_port_element_t));
+
+    if (port_element_p == NULL) {
+        VLOG_ERR("Error [%s, %d], port_element_p xzalloc failed for unit:%d port:%d\n",
+                 __FUNCTION__, __LINE__, unit, port);
+        return NULL;
+    }
+
+    /* Update hash element key */
+    port_element_p->port = port;
+
+    /* insert this element to port_hmap hash table */
+    hash = hash_2words((uint32_t)port_element_p->port, unit);
+    hmap_insert(&vxlan_global.port_hmap,
+                &port_element_p->node, hash);
+
+    return port_element_p;
+}
+
+
+
+/*
+ * Function: vxlan_find_port_hash_element
+ *      Find port from hash map
+ *
+ * [In] unit
+ *      HW unit
+ *
+ * [In] port
+ *      Physical port
+ *
+ * [Out] return vxlan_port_element_t *
+ *       Not found - NULL
+ *       Found - Return Not NULL
+ */
+static
+vxlan_port_element_t *
+vxlan_find_port_hash_element(int unit, int port)
+{
+    uint32_t hash;
+    vxlan_port_element_t *port_element_p;
+    vxlan_port_element_t *port_element_found_p;
+
+    hash = hash_2words((uint32_t)port, unit);
+
+    port_element_found_p = NULL;
+    HMAP_FOR_EACH_WITH_HASH (port_element_p, node, hash,
+                             &vxlan_global.port_hmap) {
+        if ((port_element_p->unit == unit) &&
+            (port_element_p->port == port)) {
+            port_element_found_p = port_element_p;
+            break;
+        }
+    }
+
+    return  port_element_found_p;
+}
+
+
+
+/*
+ * Function: vxlan_update_port_refcnt
+ *      Update the port reference count
+ *
+ * [In] unit
+ *      HW unit
+ *
+ * [In] port
+ *      Physical port to update reference count
+ *
+ * [In] vxlan_acc_port_refcnt
+ *      access port reference count update value
+ *
+ * [In] vxlan_net_port_refcnt
+ *      network port reference count update value
+ */
+static
+int
+vxlan_update_port_refcnt(int unit, int port,  int vxlan_acc_port_refcnt,
+                         int vxlan_net_port_refcnt)
+{
+    vxlan_port_element_t *port_element_p;
+
+    port_element_p = vxlan_get_create_port_hash_element(unit, port);
+    if (!port_element_p) {
+        /* port_element_p does not exist. Error */
+        VLOG_ERR("Error [%s, %d], failed to get port hash element "
+                 "unit:%d port:0x%x\n",
+                     __FUNCTION__, __LINE__, unit, port);
+        return BCMSDK_E_FAIL;
+    }
+
+    port_element_p->vxlan_acc_port_refcnt += vxlan_acc_port_refcnt;
+    port_element_p->vxlan_net_port_refcnt += vxlan_net_port_refcnt;
+
+    VLOG_DBG("[%s, %d], update port refcnt unit:%d port:%d "
+             "vxlan_acc_port_refcnt:%d vxlan_net_port_refcnt:%d\n",
+             __FUNCTION__, __LINE__, unit, port, vxlan_acc_port_refcnt,
+             vxlan_net_port_refcnt);
+
+    return BCMSDK_E_NONE;
+}
+
+
+/*
+ * Function: vxlan_get_port_refcnt
+ *      Get the port reference count
+ *
+ * [In] unit
+ *      HW unit
+ *
+ * [In] port
+ *      Physical port to get reference count
+ *
+ * [Out] vxlan_acc_port_refcnt
+ *      access port reference count value
+ *
+ * [Out] vxlan_net_port_refcnt
+ *      network port reference count value
+ */
+static
+int
+vxlan_get_port_refcnt(int unit, int port, int *vxlan_acc_port_refcnt,
+                      int *vxlan_net_port_refcnt)
+{
+    vxlan_port_element_t *port_element_p;
+
+    if (!vxlan_acc_port_refcnt) {
+        VLOG_ERR("Error [%s, %d], vxlan_acc_port_refcnt is NULL unit:%d "
+                 "port:0x%x\n",
+                 __FUNCTION__, __LINE__, unit, port);
+        return BCMSDK_E_PARAM;
+    }
+
+    if (!vxlan_net_port_refcnt) {
+        VLOG_ERR("Error [%s, %d], vxlan_net_port_refcnt is NULL unit:%d "
+                 "port:0x%x\n",
+                 __FUNCTION__, __LINE__, unit, port);
+        return BCMSDK_E_PARAM;
+    }
+
+    port_element_p = vxlan_get_create_port_hash_element(unit, port);
+    if (!port_element_p) {
+        /* port_element_p does not exist. Error */
+        VLOG_ERR("Error [%s, %d], failed to get port hash element "
+                 "unit:%d port:0x%x\n",
+                     __FUNCTION__, __LINE__, unit, port);
+        return BCMSDK_E_FAIL;
+    }
+
+    *vxlan_acc_port_refcnt = port_element_p->vxlan_acc_port_refcnt;
+    *vxlan_net_port_refcnt = port_element_p->vxlan_net_port_refcnt;
+
+    VLOG_DBG("[%s, %d], get port refcnt unit:%d port:%d "
+             "vxlan_acc_port_refcnt:%d vxlan_net_port_refcnt:%d\n",
+             __FUNCTION__, __LINE__, unit, port,
+             *vxlan_acc_port_refcnt, *vxlan_net_port_refcnt);
+
+    return BCMSDK_E_NONE;
+}
+
+
+/*
+ * Function: vxlan_clear_port_refcnt
+ *      Clean up the port reference count when needed
+ *
+ * [In] unit
+ *      HW unit
+ *
+ * [In] port
+ *      Physical port to clear reference count
+ */
+static
+int
+vxlan_clear_port_refcnt(int unit, int port)
+{
+    int rc = BCMSDK_E_NONE;
+    vxlan_port_element_t *port_element_p;
+    int vxlan_acc_port_refcnt;
+    int vxlan_net_port_refcnt;
+
+    port_element_p = vxlan_find_port_hash_element(unit, port);
+    if (!port_element_p) {
+        return BCMSDK_E_NONE;
+    }
+
+    if (port_element_p->vxlan_acc_port_refcnt < 0) {
+        /* Error, try to fix it */
+        VLOG_ERR("Error [%s, %d], vxlan_acc_port_refcnt < 0 "
+                 "unit:%d port:%d vxlan_acc_port_refcnt:%d\n",
+                 __FUNCTION__, __LINE__, unit, port,
+                 port_element_p->vxlan_acc_port_refcnt);
+        port_element_p->vxlan_acc_port_refcnt = 0;
+        rc = BCMSDK_E_FAIL;
+    }
+
+    if (port_element_p->vxlan_net_port_refcnt < 0) {
+        /* Error, try to fix it */
+        VLOG_ERR("Error [%s, %d], vxlan_net_port_refcnt < 0 "
+                 "unit:%d port:0x%x vxlan_net_port_refcnt:%d\n",
+                 __FUNCTION__, __LINE__, unit, port,
+                 port_element_p->vxlan_net_port_refcnt);
+        port_element_p->vxlan_net_port_refcnt = 0;
+        rc = BCMSDK_E_FAIL;
+    }
+
+    vxlan_acc_port_refcnt = port_element_p->vxlan_acc_port_refcnt;
+    vxlan_net_port_refcnt = port_element_p->vxlan_net_port_refcnt;
+
+    if ((port_element_p->vxlan_acc_port_refcnt == 0) &&
+        (port_element_p->vxlan_net_port_refcnt == 0)) {
+        /* no one use this port map any more, delete the element */
+        hmap_remove(&vxlan_global.port_hmap, &port_element_p->node);
+    }
+
+
+    VLOG_DBG("[%s, %d], cleanup port refcnt rc:%d unit:%d port:%d "
+             "acc_refcnt:%d net_refcnt:%d\n",
+             __FUNCTION__, __LINE__, rc, unit, port, vxlan_acc_port_refcnt,
+             vxlan_net_port_refcnt);
+
+    if (rc) {
+        return rc;
+    }
+
+    return BCMSDK_E_NONE;
+}
+
 
 /*
  * Function: vxlan_create_logical_switch
@@ -752,6 +1078,11 @@ vxlan_create_logical_switch(int unit, bcmsdk_vxlan_logical_switch_t *logical_sw_
             }
             return rc;
         }
+    } else {
+        VLOG_ERR("Error [%s, %d] rc:%d logical switch exist unit:%d vnid:0x%x\n",
+                 __FUNCTION__, __LINE__, rc, unit, logical_sw_p->vnid);
+
+        return BCMSDK_E_PARAM;
     }
 
     VLOG_DBG("[%s, %d] exit rc:%d unit:%d vnid:%d broadcast_group:%d unknown_multicast_group:%d unknown_unicast_group:%d vpn:0x%x\n",
@@ -1534,6 +1865,39 @@ vxlan_access_port_configure(int unit, int port)
 {
     int rc;
     bool flag;
+    int vxlan_acc_port_refcnt;
+    int vxlan_net_port_refcnt;
+
+    /* increase vxlan_acc_port_refcnt by 1 */
+    rc = vxlan_update_port_refcnt(unit, port, 1, 0);
+    if (rc) {
+        return rc;
+    }
+
+    rc = vxlan_get_port_refcnt(unit, port, &vxlan_acc_port_refcnt,
+                               &vxlan_net_port_refcnt);
+    if (rc) {
+        return rc;
+    }
+
+    if (vxlan_acc_port_refcnt <= 0) {
+
+        VLOG_ERR("Error [%s, %d], Bad vxlan_acc_port_refcnt unit:%d port:%d "
+                 "vxlan_acc_port_refcnt:%d vxlan_net_port_refcnt:%d\n",
+                 __FUNCTION__, __LINE__, unit, port,
+                 vxlan_acc_port_refcnt,
+                 vxlan_net_port_refcnt);
+
+        return BCMSDK_E_FAIL;
+
+    } else if (vxlan_acc_port_refcnt > 1) {
+        /* vxlan_acc_port_refcnt > 1 means we have already configured
+           this port, no need to do again */
+        return BCMSDK_E_NONE;
+    }
+
+
+    /* vxlan_acc_port_refcnt == 1, first time configure this port */
 
     /* Default is FALSE.
        Explicitly disable Vxlan processing on access port in case
@@ -1586,6 +1950,44 @@ vxlan_access_port_unconfigure(int unit, int port)
 {
     int rc;
     bool flag;
+    int vxlan_acc_port_refcnt;
+    int vxlan_net_port_refcnt;
+
+    rc = vxlan_get_port_refcnt(unit, port, &vxlan_acc_port_refcnt,
+                               &vxlan_net_port_refcnt);
+    if (rc) {
+        return rc;
+    }
+
+    if (vxlan_acc_port_refcnt > 1) {
+
+        /* If there is more than one Vxlan port refers to this
+           physical port, decrement the reference count and return ok,
+           we are cannot uncofigure this port yet as other Vxlan port
+           still using it. */
+        rc = vxlan_update_port_refcnt(unit, port, -1, 0);
+
+        return BCMSDK_E_NONE;
+
+    } else if (vxlan_acc_port_refcnt <= 0) {
+        /* clean up the port element if needed */
+        rc = vxlan_clear_port_refcnt(unit, port);
+        return rc;
+    }
+
+    /* Only 1 Vxlan port is referring to this port now, we can unconfigure
+       it now */
+    rc = vxlan_update_port_refcnt(unit, port, -1, 0);
+    if (rc) {
+        return rc;
+    }
+
+    /* clean up the port element if needed */
+    rc = vxlan_clear_port_refcnt(unit, port);
+    if (rc) {
+        return rc;
+    }
+
 
     /* Changed back default which is FALSE */
     flag = FALSE;
@@ -1691,14 +2093,14 @@ vxlan_bind_access_port(int unit, bcmsdk_vxlan_port_t *acc_port_p)
     memcpy(l3_egr.mac_addr, VXLAN_DUMMY_MAC,
            ETH_ALEN);
     l3_egr.vlan = acc_port_p->vlan;
-    l3_egr.port = gport;
+    l3_egr.port = acc_port_p->port;
     rc = opennsl_l3_egress_create(unit, 0, &l3_egr,
                                   &(acc_port_p->egr_obj_id));
     if (rc) {
-        VLOG_ERR("Error [%s, %d], opennsl_l3_egress_create rc:%d unit:%d next_hop_mac:%s vlan:%d vrf:%d\n",
+        VLOG_ERR("Error [%s, %d], opennsl_l3_egress_create rc:%d unit:%d next_hop_mac:%s vlan:%d vrf:%d port:%d\n",
                  __FUNCTION__, __LINE__, rc, unit,
                  VXLAN_DUMMY_MAC, acc_port_p->vlan,
-                 acc_port_p->vrf);
+                 acc_port_p->vrf, acc_port_p->port);
         goto CLEANUP_L3_INTF;
     }
 
@@ -2008,6 +2410,38 @@ vxlan_network_port_configure(int unit, int port)
 {
     int rc;
     bool flag;
+    int vxlan_acc_port_refcnt;
+    int vxlan_net_port_refcnt;
+
+    /* increase vxlan_net_port_refcnt by 1 */
+    rc = vxlan_update_port_refcnt(unit, port, 0, 1);
+    if (rc) {
+        return rc;
+    }
+
+    rc = vxlan_get_port_refcnt(unit, port, &vxlan_acc_port_refcnt,
+                               &vxlan_net_port_refcnt);
+    if (rc) {
+        return rc;
+    }
+
+    if (vxlan_net_port_refcnt <= 0) {
+
+        VLOG_ERR("Error [%s, %d], Bad vxlan_net_port_refcnt unit:%d port:%d "
+                 "vxlan_acc_port_refcnt:%d vxlan_net_port_refcnt:%d\n",
+                 __FUNCTION__, __LINE__, unit, port,
+                 vxlan_acc_port_refcnt, vxlan_net_port_refcnt);
+
+        return BCMSDK_E_FAIL;
+
+    } else if (vxlan_net_port_refcnt > 1) {
+
+        /* vxlan_net_port_refcnt > 1 means we have already configured
+           this port, no need to do again */
+        return BCMSDK_E_NONE;
+    }
+
+
 
     flag = TRUE;
     rc = opennsl_port_control_set(unit, port, opennslPortControlVxlanEnable,
@@ -2069,6 +2503,45 @@ vxlan_network_port_unconfigure(int unit, int port)
 {
     int rc;
     bool flag;
+    int vxlan_acc_port_refcnt;
+    int vxlan_net_port_refcnt;
+
+    rc = vxlan_get_port_refcnt(unit, port, &vxlan_acc_port_refcnt,
+                               &vxlan_net_port_refcnt);
+    if (rc) {
+        return rc;
+    }
+
+    if (vxlan_net_port_refcnt > 1) {
+
+        /* If there is more than one Vxlan port refers to this
+           physical port, decrement the reference count and return ok,
+           we are cannot uncofigure this port yet as other Vxlan port
+           still using it. */
+        rc = vxlan_update_port_refcnt(unit, port, 0, -1);
+
+        return BCMSDK_E_NONE;
+
+    } else if (vxlan_net_port_refcnt <= 0) {
+
+        /* clean up the port element if needed */
+        rc = vxlan_clear_port_refcnt(unit, port);
+        return rc;
+    }
+
+    /* Only 1 Vxlan port is referring to this port now, we can unconfigure
+       it now */
+    rc = vxlan_update_port_refcnt(unit, port, 0, -1);
+    if (rc) {
+        return rc;
+    }
+
+    /* clean up the port element if needed */
+    rc = vxlan_clear_port_refcnt(unit, port);
+    if (rc) {
+        return rc;
+    }
+
 
     /* Default is FALSE */
     flag = FALSE;
@@ -2142,10 +2615,8 @@ vxlan_bind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
     opennsl_vxlan_port_t vxlan_port;
     opennsl_gport_t gport;
     opennsl_l3_egress_t l3_egr;
-#ifdef L2_STATION
     opennsl_l2_station_t l2_station;
     int i;
-#endif
     vxlan_logical_sw_element_t *logical_sw_element_p;
     vxlan_egr_obj_element_t *egr_obj_element_p;
     bcmsdk_vxlan_egr_obj_t egr_obj;
@@ -2172,44 +2643,48 @@ vxlan_bind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
 
     /* Check if egress object for this gport already exist,
        if not, create a new one. Otherwise, re-use the existing one */
-    egr_obj_element_p = vxlan_find_egr_obj_hash_element(unit, gport);
+    egr_obj_element_p = vxlan_find_egr_obj_hash_element(unit,
+                                                        net_port_p->port);
+
     if (!egr_obj_element_p) {
         opennsl_l3_egress_t_init(&l3_egr);
         l3_egr.flags = OPENNSL_L3_VXLAN_ONLY;
         l3_egr.intf = net_port_p->l3_intf_id;
         memcpy(l3_egr.mac_addr, net_port_p->next_hop_mac, ETH_ALEN);
         l3_egr.vlan = net_port_p->vlan;
-        l3_egr.port = gport;
+        l3_egr.port = net_port_p->port;
         rc = opennsl_l3_egress_create(unit, 0, &l3_egr,
                                       &(net_port_p->egr_obj_id));
         if (rc) {
-            VLOG_ERR("Error [%s, %d], opennsl_l3_egress_create rc:%d unit:%d next_hop_mac:%02x%02x%02x%02x%02x%02x vlan:%d vrf:%d\n",
+            VLOG_ERR("Error [%s, %d], opennsl_l3_egress_create rc:%d unit:%d next_hop_mac:%02x%02x%02x%02x%02x%02x vlan:%d vrf:%d port:%d\n",
                      __FUNCTION__, __LINE__, rc, unit,
                      net_port_p->next_hop_mac[0], net_port_p->next_hop_mac[1],
                      net_port_p->next_hop_mac[2], net_port_p->next_hop_mac[3],
                      net_port_p->next_hop_mac[4], net_port_p->next_hop_mac[5],
-                     net_port_p->vlan, net_port_p->vrf);
+                     net_port_p->vlan, net_port_p->vrf, net_port_p->port);
             goto CLEANUP_EGRESS_OBJ;
         }
 
-        egr_obj.gport = gport;
+        egr_obj.port = net_port_p->port;
         egr_obj.egr_obj_id = net_port_p->egr_obj_id;
         rc = vxlan_insert_egr_obj_hash_element(unit, &egr_obj);
         if (rc) {
-            VLOG_ERR("Error [%s, %d],  vxlan_insert_egr_obj_hash_element rc:%d unit:%d gport:0x%x egr_obj_id:0x%x\n",
+            VLOG_ERR("Error [%s, %d],  vxlan_insert_egr_obj_hash_element rc:%d unit:%d port:0x%x egr_obj_id:0x%x\n",
                      __FUNCTION__, __LINE__, rc, unit,
-                     egr_obj.gport, egr_obj.egr_obj_id);
+                     egr_obj.port, egr_obj.egr_obj_id);
             goto CLEANUP_EGRESS_OBJ;
         }
     } else {
         /* If egress object already exist, re-use it */
         net_port_p->egr_obj_id = egr_obj_element_p->egr_obj_id;
+        egr_obj_element_p->vxlan_port_refcnt++;
     }
 
     logical_sw_element_p = vxlan_find_logical_switch_hash_element(unit, net_port_p->vnid);
     if (logical_sw_element_p == NULL) {
         VLOG_ERR("Error [%s, %d], invalid vnid unit:%d vnid:%d\n",
                  __FUNCTION__, __LINE__, unit, net_port_p->vnid);
+        rc = BCMSDK_E_PARAM;
         goto CLEANUP_EGRESS_OBJ;
     }
 
@@ -2243,10 +2718,6 @@ vxlan_bind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
 
     net_port_p->vxlan_port_id = vxlan_port.vxlan_port_id;
 
-    // jin, the opennsl 3.1.0.7 does not support opennsl_l2_station_t
-    // with vlan and vlan_mask fields. We will need to communicate
-    // with Broadcom about this issue.
-#ifdef L2_STATION
     opennsl_l2_station_t_init(&l2_station);
     memcpy(l2_station.dst_mac, net_port_p->local_mac, ETH_ALEN);
     for (i = 0; i < ETH_ALEN; i++) {
@@ -2264,7 +2735,6 @@ vxlan_bind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
                  net_port_p->local_mac[4], net_port_p->local_mac[5]);
         goto CLEANUP_VXLAN_VPORT;
     }
-#endif
 
     VLOG_DBG("[%s, %d], exit rc:%d unit:%d port:0x%x l3_intf_id:0x%x egr_obj_id:0x%x vlan:%d vnid:%d vpn_id:0x%x local_mac:%02x%02x%02x%02x%02x%02x next_hop_mac:%02x%02x%02x%02x%02x%02x station_id:0x%x vxlan_port_id:0x%x\n",
              __FUNCTION__, __LINE__, rc, unit,
@@ -2286,14 +2756,7 @@ vxlan_bind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
 
 
     /* Error return */
-    // jin, temporary comment out due to above opennsl_l2_station_t
-    // related block being comment out as CLEANUP_VXLAN_VPORT
-    // only defined in above block, without that block of codes
-    // enable, it will have compilation error saying that
-    // CLEANUP_VXLAN_VPORT is defined but not used
-#ifdef L2_STATION
  CLEANUP_VXLAN_VPORT:
-#endif
     rc = opennsl_vxlan_port_delete(unit, logical_sw_element_p->vpn_id,
                                    net_port_p->vxlan_port_id);
     if (rc) {
@@ -2348,26 +2811,23 @@ int
 vxlan_unbind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
 {
     int rc;
-    opennsl_gport_t gport;
     opennsl_vxlan_port_t vxlan_port;
     opennsl_l3_egress_t l3_egr;
     vxlan_logical_sw_element_t *logical_sw_element_p;
-    vxlan_egr_obj_element_t * egr_obj_element_p;
+    vxlan_egr_obj_element_t *egr_obj_element_p;
 
     if (net_port_p == NULL) {
         VLOG_ERR("Error [%s, %d], net_port_p is NULL unit:%d\n",
                  __FUNCTION__, __LINE__, unit);
         return BCMSDK_E_PARAM;
     }
-    // opennsl 3.1.0.7 does not support opennsl_l2_station_t
-#ifdef L2_STATION
+
     rc = opennsl_l2_station_delete(unit, net_port_p->station_id);
     if (rc) {
         VLOG_ERR("Error [%s, %d], opennsl_l2_station_delete rc:%d unit:%d station_id:0x%x\n",
                  __FUNCTION__, __LINE__, rc, unit, net_port_p->station_id);
         return rc;
     }
-#endif
     logical_sw_element_p = vxlan_find_logical_switch_hash_element(unit, net_port_p->vnid);
     if (logical_sw_element_p == NULL) {
         VLOG_ERR("Error [%s, %d], invalid vnid unit:%d vnid:%d\n",
@@ -2388,25 +2848,7 @@ vxlan_unbind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
 
     net_port_p->egr_obj_id = vxlan_port.egress_if;
 
-    /*
-     * BCM issue: opennsl_vxlan_port_get() above returns
-     * vxlan_port.match_port = 0 causing failure in
-     * opennsl_port_local_get().
-     * Work around: upper layer passes correct port in
-     * net_port_p->port
-     * Broadcom case # 1027384 for further reference.
-     */
-#ifdef PORT_GET
-    rc = opennsl_port_local_get(unit, vxlan_port.match_port,
-                                &net_port_p->port);
-    if (rc) {
-        VLOG_ERR("Error [%s, %d], opennsl_port_local_get rc:%d unit:%d gport:0x%x vxlan_port_id:0x%x\n",
-                 __FUNCTION__, __LINE__, rc, unit,
-                 vxlan_port.match_port,
-                 net_port_p->vxlan_port_id);
-        return rc;
-    }
-#endif
+
     rc = vxlan_network_port_unconfigure(unit, net_port_p->port);
     if (rc) {
         VLOG_ERR("Error [%s, %d], vxlan_network_port_unconfigure rc:%d unit:%d port:0x%x\n",
@@ -2434,28 +2876,43 @@ vxlan_unbind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
 
     net_port_p->l3_intf_id = l3_egr.intf;
 
-    /* Destroy the egress object.
-       Note: Only unused egress object can be destroyed.
-       Attempt to destroy an egress object that use being used by
-       forwarding path will result in BCMSDK_E_BUSY error. */
-    rc = opennsl_l3_egress_destroy(unit, net_port_p->egr_obj_id);
-    if (rc) {
-        VLOG_ERR("Error [%s, %d], opennsl_l3_egress_destroy rc:%d unit:%d egr_obj_id:0x%x\n",
-                 __FUNCTION__, __LINE__, rc, unit, net_port_p->egr_obj_id);
-        return rc;
+    egr_obj_element_p = vxlan_find_egr_obj_hash_element(unit, l3_egr.port);
+    if (egr_obj_element_p) {
+
+        /* When there is one 1 reference, we can destroy the
+           egress object */
+        if (egr_obj_element_p->vxlan_port_refcnt == 1) {
+            /* Destroy the egress object.
+               Note: Only unused egress object can be destroyed.
+               Attempt to destroy an egress object that use being used by
+               forwarding path will result in BCMSDK_E_BUSY error. */
+            rc = opennsl_l3_egress_destroy(unit, net_port_p->egr_obj_id);
+            if (rc) {
+                VLOG_ERR("Error [%s, %d], opennsl_l3_egress_destroy rc:%d unit:%d egr_obj_id:0x%x\n",
+                         __FUNCTION__, __LINE__, rc, unit, net_port_p->egr_obj_id);
+                return rc;
+            }
+            hmap_remove(&vxlan_global.egr_obj_hmap, &egr_obj_element_p->node);
+        } else if (egr_obj_element_p->vxlan_port_refcnt > 1) {
+            /* If there are still more than 1 reference to the egress object,
+               decrement the reference count by 1 */
+            egr_obj_element_p->vxlan_port_refcnt--;
+        } else {
+            /* We should never come to here. If we do, give a warning. */
+            VLOG_WARN("[%s, %d], Bad l3 egress element refcnt rc:%d unit:%d "
+                      "egr_obj_id:0x%x refcnt:%d\n",
+                      __FUNCTION__, __LINE__, rc, unit,
+                      net_port_p->egr_obj_id,
+                      egr_obj_element_p->vxlan_port_refcnt);
+        }
+    } else {
+        /* We should never come to here. If we do, give a warning. */
+        VLOG_WARN("[%s, %d], l3 egress element is NULL rc:%d unit:%d "
+                  "egr_obj_id:0x%x\n",
+                  __FUNCTION__, __LINE__, rc, unit,
+                  net_port_p->egr_obj_id);
     }
-#if 1 //MBUI
-    rc = opennsl_port_gport_get(unit, net_port_p->port, &gport);
-    if (rc) {
-        VLOG_ERR("Error [%s, %d], opennsl_port_gport_get rc:%d unit:%d port:0x%x gport:0x%x\n",
-                 __FUNCTION__, __LINE__, rc, unit, net_port_p->port, gport);
-        return rc;
-    }
-    egr_obj_element_p = vxlan_find_egr_obj_hash_element(unit, gport);
-    if(egr_obj_element_p) {
-        hmap_remove(&vxlan_global.egr_obj_hmap, &egr_obj_element_p->node);
-    }
-#endif
+
     VLOG_DBG("[%s, %d], exit rc:%d unit:%d port:0x%x vxlan_port_id:0x%x vnid:%d vpn_id:0x%x\n",
              __FUNCTION__, __LINE__, rc, unit,
              net_port_p->port, net_port_p->vxlan_port_id,
