@@ -1753,8 +1753,9 @@ ops_add_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
     struct ops_route *ops_routep;
     struct ops_nexthop *ops_nh;
     opennsl_if_t l3_intf;
-    int rc;
+    int rc, i;
     bool add_route = false;
+    struct ofproto_route_nexthop *of_nh;
 
     /* assert for zero nexthop */
     assert(of_routep && (of_routep->n_nexthops > 0));
@@ -1788,6 +1789,21 @@ ops_add_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
             }
         }
         add_route = true;
+
+        /* Go through the list of nexthops and if the arp is unresolved,
+         * set the OPENNSL_L3_RPE flag and set the priority in the l3a_pri
+         * field to 15. (This is used by copp to identify if the packet is
+         * destined to unknown IP cpu queue or not)
+         */
+        for (i = 0; i < of_routep->n_nexthops; i++) {
+            of_nh = &of_routep->nexthops[i];
+            VLOG_INFO("i =  %d, of_nh->state = %d", i, of_nh->state);
+            if (of_nh->state != OFPROTO_NH_RESOLVED) {
+                routep->l3a_flags |= OPENNSL_L3_RPE;
+                routep->l3a_pri = OPS_MAX_PACKET_COS;
+            }
+        }
+
     } else {
         /* update route in local data structure */
         ops_routep = ops_route_lookup(vrf_id, of_routep);

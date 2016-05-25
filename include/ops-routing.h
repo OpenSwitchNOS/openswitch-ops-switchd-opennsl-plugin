@@ -42,6 +42,11 @@
 
 #define OPS_FAILURE(rc) (((rc) < 0 ) || ((rc) == EINVAL))
 
+/*
+ * Maximum value of packet COS
+ */
+#define OPS_MAX_PACKET_COS                         15
+
 /* l3 ingress stats related globals */
 extern uint32_t l3_stats_mode_id;
 

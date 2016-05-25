@@ -235,6 +235,10 @@ enum ops_copp_packet_class_code_t
                                                          storing the packet
                                                          class name */
 
+/*
+ * Maximum value of COS  for CoPP
+ */
+#define COPP_MAX_PACKET_COS                         15
 
 /*
  * Declarations of the qualifier functions for different control plane
