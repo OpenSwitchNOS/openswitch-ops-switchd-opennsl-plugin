@@ -1798,6 +1798,7 @@ done:
 #define LOOPBACK "loopback"
 #define COPP "copp"
 #define SFLOW "sflow"
+#define QOS "qos"
 
 static void diag_dump_basic_cb(char *buf)
 {
@@ -1891,6 +1892,20 @@ lag_diag_dump_basic_cb(char *buf)
 }
 
 
+static void
+qos_diag_dump_basic_cb(char *buf)
+{
+    struct ds ds = DS_EMPTY_INITIALIZER;
+
+    /* Populate basic QoS diagnostic data to buffer */
+    ds_put_format(&ds, "QoS information:\n");
+    ops_qos_dump_all(&ds);
+    ds_put_format(&ds, "\n\n");
+
+    snprintf(buf, ds.length, "%s", ds_cstr(&ds));
+
+}
+
 /* _diag_dump_callback */
 /**
  * callback handler function for diagnostic dump basic
@@ -1917,6 +1932,8 @@ static void diag_dump_callback(const char *feature , char **buf)
             sflow_diag_dump_basic_cb(*buf);
         } else if (!strncmp(feature, LAGINTERFACE, strlen(LAGINTERFACE))) {
             lag_diag_dump_basic_cb(*buf);
+        } else if (!strncmp(feature, QOS, strlen(QOS))) {
+            qos_diag_dump_basic_cb(*buf);
         }
     } else {
         VLOG_ERR("Memory allocation failed for feature %s , %d bytes",
