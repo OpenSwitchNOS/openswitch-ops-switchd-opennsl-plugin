@@ -27,7 +27,7 @@
 #include <netinet/ether.h>
 
 VLOG_DEFINE_THIS_MODULE(ops_mac_learning);
-
+static struct vlog_rate_limit mac_learning_rl = VLOG_RATE_LIMIT_INIT(5, 20);
 /*
  * The buffers are defined as 2 because:
  *    To allow simultaneous read access to bridge.c and ops-mac-learning.c code
@@ -390,4 +390,200 @@ ops_mac_learning_init()
     }
 
     return (0);
+}
+
+/*
+ * Function: ops_l2_addr_get
+ *
+ * This function is invoked to get l2 mac entry from the ASIC MAC table.
+ *
+ */
+int
+ops_l2_addr_get(l2mac_addr_t *addr)
+{
+    int unit = 0;
+    opennsl_l2_addr_t l2addr;
+    int rc = OPENNSL_E_FAIL;
+
+    rc = opennsl_l2_addr_get(unit, &addr->mac[0], (opennsl_vlan_t)addr->vid,
+                             &l2addr);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_DBG("%s: %s failed ", __FUNCTION__,
+                 ether_ntoa((struct ether_addr*)&addr->mac[0]));
+        return rc;
+    }
+
+    if  (l2addr.flags & OPENNSL_L2_STATIC)  {
+        addr->flags = L2MAC_STATIC_MAC;
+    }
+
+    addr->tgid = l2addr.tgid;
+
+    return rc;
+}
+
+/*
+ * Function: ops_l2_addr_add
+ *
+ * This function is invoked to add new l2 mac entry to the ASIC MAC table.
+ *
+ */
+int
+ops_l2_addr_add(unsigned char mac[6], int vlan_id, unsigned int flags)
+{
+    opennsl_l2_addr_t l2addr;
+    int unit = 0, rc = OPENNSL_E_FAIL;
+
+    for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
+        opennsl_l2_addr_t_init(&l2addr, mac, vlan_id);
+
+        if (flags & L2MAC_STATIC_MAC)  {
+            l2addr.flags |= OPENNSL_L2_STATIC;
+        }
+
+        rc = opennsl_l2_addr_add(unit, &l2addr);
+
+        if (OPENNSL_FAILURE(rc)) {
+            VLOG_ERR_RL(&mac_learning_rl, "%s: %s failed flags %u",
+                        __FUNCTION__, ether_ntoa((struct ether_addr*)&mac),
+                        flags);
+            return rc;
+        }
+    }
+
+    return rc;
+}
+
+/*
+ * Function: ops_l2_addr_delete_by_mac
+ *
+ * This function is invoked to delete l2 mac entry from the ASIC MAC table.
+ *
+ */
+int
+ops_l2_addr_delete_by_mac(unsigned char mac[6],
+                            int vlan_id,
+                            unsigned int flags)
+{
+    int unit = 0;
+    uint32 opennsl_flags = 0;
+    int rc = OPENNSL_E_FAIL;
+
+    if (L2MAC_STATIC_MAC & flags)   {
+        opennsl_flags = OPENNSL_L2_STATIC;
+    }
+
+    if (L2MAC_NO_CALLBACKS & flags)   {
+         opennsl_flags |= OPENNSL_L2_DELETE_NO_CALLBACKS;
+     }
+
+    rc = opennsl_l2_addr_delete_by_mac(unit, mac, opennsl_flags);
+
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR_RL(&mac_learning_rl, "%s: %s failed flags %u",
+                    __FUNCTION__, ether_ntoa((struct ether_addr*)&mac),
+                    flags);
+    }
+
+    return rc;
+}
+
+/*
+ * Function: ops_l2_age_timer_set
+ *
+ * This function is invoked to set MAC table.ageout time
+ *
+ */
+int
+ops_l2_age_timer_set(int seconds)
+{
+    int unit = 0, rc = OPENNSL_E_FAIL;
+
+    for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
+        rc = opennsl_l2_age_timer_set(unit, seconds);
+        if (OPENNSL_FAILURE(rc)) {
+            VLOG_ERR_RL(&mac_learning_rl, "%s:  %d",
+                        __FUNCTION__, seconds);
+        }
+    }
+    return rc;
+}
+
+/*
+ * Function: ops_l2_addr_flush_handler
+ *
+ * This function is invoked to flush MAC table entries on VLAN/PORT
+ *
+ */
+int
+ops_l2_addr_flush_handler(mac_flush_params_t *settings)
+{
+    int rc = OPENNSL_E_FAIL;
+    uint32 flags = 0;
+    int unit = 0;
+    opennsl_port_t port = 0;
+    opennsl_module_t mod = -1;
+
+    if (settings->flags& L2MAC_STATIC_MAC) {
+        flags |= OPENNSL_L2_DELETE_STATIC;
+    }
+
+    if (settings->flags & L2MAC_NO_CALLBACKS) {
+        flags |= OPENNSL_L2_DELETE_NO_CALLBACKS;
+    }
+
+    /* Get Harware Port */
+    if (settings->port_name != NULL) {
+        rc = netdev_hw_id_from_name(settings->port_name, &unit, &port);
+        if (rc == false) {
+            VLOG_ERR_RL(&mac_learning_rl, "%s: %s name not found flags %u mode %d",
+                        __FUNCTION__, settings->port_name,
+                        settings->flags,
+                        settings->options);
+
+            return rc; /* Return error */
+        }
+    }
+
+    switch (settings->options) {
+    case L2MAC_FLUSH_BY_VLAN:
+        rc =  opennsl_l2_addr_delete_by_vlan(unit, settings->vlan, flags);
+        if (OPENNSL_FAILURE(rc)) {
+            VLOG_ERR_RL(&mac_learning_rl, "%s: vlan %d flags %u rc %d",
+                        __FUNCTION__, settings->vlan,
+                        settings->flags, rc);
+
+            return rc; /* Return error */
+        }
+        break;
+    case L2MAC_FLUSH_BY_PORT:
+        rc = opennsl_l2_addr_delete_by_port(unit, mod, port, flags);
+        if (OPENNSL_FAILURE(rc)) {
+            VLOG_ERR_RL(&mac_learning_rl, "%s: port: %d name %s flags %u rc %d",
+                        __FUNCTION__, port, settings->port_name,
+                        settings->flags, rc);
+
+            return rc; /* Return error */
+        }
+        break;
+    case L2MAC_FLUSH_BY_PORT_VLAN:
+            rc = opennsl_l2_addr_delete_by_vlan_port(unit, settings->vlan,
+                                                     mod, port, flags);
+            if (OPENNSL_FAILURE(rc)) {
+                VLOG_ERR_RL(&mac_learning_rl, "%s: port: %d name %s vlan %d flags %u",
+                            __FUNCTION__, port, settings->port_name, settings->vlan,
+                            settings->flags);
+
+                return rc; /* Return error */
+            }
+        break;
+    case L2MAC_FLUSH_BY_TRUNK:
+        /* TODO: */
+        break;
+     default:
+        VLOG_ERR("%s: Unknown flush mode %d", __FUNCTION__, settings->options);
+        return EINVAL;
+    }
+
+    return rc;
 }
