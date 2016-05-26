@@ -67,6 +67,8 @@
 #define SFLOW_CNTR_SAMPLE_ADMIN_STATE_UP        1
 #define SFLOW_CNTR_SAMPLE_OPER_STATE_UP         2
 
+#define SFLOW_VLAN_INDEX_IN_SAMPLED_PKT         14
+
 struct ops_sflow_port_stats {
     uint64_t in_octets;
     uint32_t in_ucastpkts;
