@@ -237,6 +237,16 @@ void ops_sflow_write_sampled_pkt(opennsl_pkt_t *pkt)
      */
     header->frame_length = pkt->tot_len;
 
+    if (ops_routing_check_is_internal_vlan(pkt->vlan)) {
+        VLOG_DBG("Internal VLAN from sampled packet (in hex): %02X%02X",
+                 pkt->pkt_data[0].data[SFLOW_VLAN_INDEX_IN_SAMPLED_PKT],
+                 pkt->pkt_data[0].data[SFLOW_VLAN_INDEX_IN_SAMPLED_PKT+1]);
+        /* Set the VLAN field to 0 (i.e.) remove the internal VLAN ID
+         * from the packet */
+        bzero(&pkt->pkt_data[0].data[SFLOW_VLAN_INDEX_IN_SAMPLED_PKT],
+              sizeof(opennsl_vlan_t));
+    }
+
     /* Ethernet FCS stripped off. */
     header->stripped = 4;
     header->header_length = MIN(header->frame_length,
