@@ -1377,6 +1377,12 @@ bool netdev_hw_id_from_name(const char *name, int *hw_unit, int *hw_id)
     }
 }
 
+struct netdev * netdev_fr_hw_id(int hw_unit, int hw_id)
+{
+    struct netdev_bcmsdk *netdev = netdev_from_hw_id(hw_unit, hw_id);
+    return netdev? &netdev->up: NULL;
+}
+
 /* populate sflow related netdev info */
 void
 netdev_bcmsdk_get_sflow_intf_info(int hw_unit, int hw_id, uint32_t *index,

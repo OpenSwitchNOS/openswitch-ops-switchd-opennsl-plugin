@@ -49,6 +49,7 @@ extern void netdev_bcmsdk_set_vport_id(int hw_unit, int port, int vport_id);
 extern bool netdev_bcmsdk_get_vport_id(int hw_unit, int port, int *vport_id);
 extern bool netdevv_bcmsdk_get_link_status(int hw_unit, int port);
 extern bool netdev_hw_id_from_name(const char *name, int *hw_unit, int *hw_id);
+extern struct netdev * netdev_fr_hw_id(int hw_unit, int hw_id);
 extern void netdev_bcmsdk_populate_sflow_stats(bool ingress, const char *name, uint64_t bytes);
 
 extern void netdev_bcmsdk_get_sflow_intf_info(int hw_unit, int hw_id,

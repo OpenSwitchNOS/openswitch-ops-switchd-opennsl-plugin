@@ -57,5 +57,5 @@ int   ops_vport_bind_mac(int hw_unit, char *vport, int ptype, int vni,
                          struct eth_addr *ether_mac);
 int   ops_vport_unbind_mac(int hw_unit, int vni, struct eth_addr *ether_mac);
 int   ops_vport_unbind_all(struct netdev *netdev);
-
+int   ops_vport_update_egr(struct netdev *netdev, int egr_id);
 #endif /* __OPS_VPORT_H__ */

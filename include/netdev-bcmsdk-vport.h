@@ -58,7 +58,9 @@ enum tnl_state {
     TNL_UNDEFINED,       /* After successful malloc */
     TNL_INIT,            /* When configuration is set */
     TNL_CREATED,         /* When tunnel is created */
-    TNL_BOUND            /* When bind successful, vxlan port is created */
+    TNL_DOWN,            /* Tunnel is bound but route is down */
+    TNL_UP,              /* When tunnel is successfully bound to net port,
+                          * and vxlan port is created */
 };
 
 /*
@@ -72,7 +74,7 @@ typedef struct carrier_t_ {
     int l3_intf_id;          /* l3 intf id  */
     uint8_t local_mac[6];    /* local MAC */
     uint8_t next_hop_mac[6]; /* MAC of neighbor */
-    int status;              /* link status */
+    bool status;             /* link status */
 } carrier_t;
 
 /* BCM provider API. */

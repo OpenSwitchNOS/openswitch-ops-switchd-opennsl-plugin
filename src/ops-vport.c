@@ -85,7 +85,7 @@ struct hmap vport_hmap = HMAP_INITIALIZER(&vport_hmap);
 
 static void vxlan_tunnel_dump(bcmsdk_vxlan_tunnel_t *tunnel);
 static void opennsl_l2_addr_dump(opennsl_l2_addr_t *l2_addr);
-static void bcm_vport_dump(bcm_vport_t *vport);
+static void bcm_vport_dump(bcm_vport_t *vport, int vni);
 static void ops_vport_dump(bcmsdk_vxlan_port_t *vport);
 static void hmap_vnode_print(struct ds *ds);
 /*
@@ -247,7 +247,7 @@ get_vni(struct netdev *netdev)
 {
     const struct netdev_tunnel_config *tnl_cfg;
     tnl_cfg = netdev_get_tunnel_config(netdev);
-    if(tnl_cfg && tnl_cfg->in_key_present) {
+    if(tnl_cfg && tnl_cfg->in_key_present && !tnl_cfg->in_key_flow) {
         return ntohll(tnl_cfg->in_key);
     }
     return -1;
@@ -473,7 +473,7 @@ ops_vport_create_tunnel(struct netdev *netdev)
 
     if (!tnl_cfg || !carrier) {
         VLOG_ERR("%s Invalid tnl_cfg", __func__);
-        return 1;
+        return EINVAL;
     }
     netdev_bcmsdk_vport_get_hw_info(netdev, &unit, NULL, NULL);
     /*
@@ -490,14 +490,16 @@ ops_vport_create_tunnel(struct netdev *netdev)
                      tunnel.local_ip, carrier->port);
         } else {
             VLOG_ERR("Can't find src IP for port %d", carrier->port);
-            return 1;
+            return EINVAL;
         }
     } else {
         ipv4 =  in6_addr_get_mapped_ipv4(&tnl_cfg->ipv6_src);
         if(!ipv4) {
             /* TODO: support IPV6 */
-            VLOG_INFO("Invalid IP\n");
-            return 1;
+            char ipv6[INET6_ADDRSTRLEN];
+            ipv6_string_mapped(ipv6, &tnl_cfg->ipv6_src);
+            VLOG_INFO("Invalid source IP %s\n",ipv6);
+            return EINVAL;
         }
         tunnel.local_ip  = ntohl(ipv4);
         VLOG_DBG("Find given source IPP 0x%x\n", tunnel.local_ip);
@@ -506,7 +508,7 @@ ops_vport_create_tunnel(struct netdev *netdev)
     if(!ipv4) {
         /* TODO: support IPV6 */
         VLOG_INFO("Invalid IP\n");
-        return 1;
+        return EINVAL;
     }
     tunnel.remote_ip = ntohl(ipv4);
     tunnel.ttl = tnl_cfg->ttl;
@@ -537,20 +539,20 @@ ops_vport_bind_net_port(struct netdev *netdev, int vni)
     vxlan_port.vnid = vni != -1? vni: get_vni(netdev);
     if(!VALID_TUNNEL_KEY(vxlan_port.vnid)) {
         VLOG_ERR("Not ready to bind: Invalid vni\n");
-        return 1;
+        return EINVAL;
     }
 
     vnode = vport_lookup(netdev, vxlan_port.vnid);
     if(vnode) {
         VLOG_ERR("Already bound\n");
-        return 1;
+        return 0;
     }
     carrier = netdev_bcmsdk_vport_get_carrier(netdev);
 
     if (carrier) {
         if(!is_ready_to_bind(carrier)) {
-            VLOG_ERR("Not ready to bind, carrier invalid\n");
-            return 1;
+            VLOG_ERR("Not ready to bind, net port or next hop MAC invalid\n");
+            return EINVAL;
         }
         vxlan_port.port = carrier->port;
         vxlan_port.port_type = BCMSDK_VXLAN_PORT_TYPE_NETWORK;
@@ -572,7 +574,7 @@ ops_vport_bind_net_port(struct netdev *netdev, int vni)
         VLOG_INFO("\n--- Successfully binding net port %d"
                   " to vpn with vxlan port id 0x%x ---\n",
                   vxlan_port.port, vxlan_port.vxlan_port_id);
-        netdev_bcmsdk_vport_set_tunnel_state(netdev, TNL_BOUND);
+        netdev_bcmsdk_vport_set_tunnel_state(netdev, TNL_UP);
         vport_insert(netdev, vxlan_port.vnid, &vxlan_port);
         ops_vport_dump(&vxlan_port);
     }
@@ -594,7 +596,7 @@ ops_vport_unbind_net_port(struct netdev *netdev, int vni)
     vxlan_port.vnid = vni != -1? vni: get_vni(netdev);
     if(!VALID_TUNNEL_KEY(vxlan_port.vnid)) {
         VLOG_ERR("Unable to unbind: Invalid vni\n");
-        return 1;
+        return EINVAL;
     }
 
     vnode = vport_lookup(netdev, vxlan_port.vnid);
@@ -649,16 +651,50 @@ ops_vport_unbind_all(struct netdev *netdev)
 }
 
 int
+ops_vport_update_egr(struct netdev *netdev, int egr_id)
+{
+    int unit, rc = 0;
+    const carrier_t *carrier;
+    opennsl_l3_egress_t egress_object;
+    int flags = 0;
+
+    NULL_CHECK(netdev)
+
+    netdev_bcmsdk_vport_get_hw_info(netdev, &unit, NULL, NULL);
+    carrier = netdev_bcmsdk_vport_get_carrier(netdev);
+
+    opennsl_l3_egress_t_init(&egress_object);
+    rc = opennsl_l3_egress_get(unit, egr_id, &egress_object);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Egress object not found in ASIC for given id rc=%s "
+                 " egr-id: %d", opennsl_errmsg(rc), egr_id);
+        return rc;
+    }
+    flags = (OPENNSL_L3_REPLACE | OPENNSL_L3_WITH_ID);
+    memcpy(egress_object.mac_addr, carrier->next_hop_mac, ETH_ALEN);
+    rc = opennsl_l3_egress_create(unit, flags, &egress_object, &egr_id);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("%s failed creat egress object, egr id %d rc=%s", __func__,
+                  egr_id, opennsl_errmsg(rc));
+        return rc;
+    }
+    VLOG_INFO("\n--- Successfully update egress obj");
+    netdev_bcmsdk_vport_set_tunnel_state(netdev, TNL_UP);
+    return rc;
+}
+
+int
 ops_vport_bind_access_port(int hw_unit, opennsl_pbmp_t pbm, int vni, int vlan)
 {
     bcmsdk_vxlan_port_t port;
+    struct netdev *netdev;
     int rc, aport;
 
     VLOG_DBG("%s entered vlan %d, vni %d",__func__, vlan, vni);
 
     if(!VALID_TUNNEL_KEY(vni)) {
         VLOG_ERR("Invalid vni %d, ", vni);
-        return 1;
+        return EINVAL;
     }
     port.port_type = BCMSDK_VXLAN_PORT_TYPE_ACCESS;
     port.vlan = vlan;
@@ -675,6 +711,9 @@ ops_vport_bind_access_port(int hw_unit, opennsl_pbmp_t pbm, int vni, int vlan)
         }
         netdev_bcmsdk_set_vport_id(hw_unit, port.port, port.vxlan_port_id);
     }
+    netdev = netdev_fr_hw_id(hw_unit, port.port);
+    if(netdev)
+        vport_insert(netdev, port.vnid, &port);
     VLOG_DBG("\n--- Successully bind access port, vxlan port id 0x%x ---\n",
               port.vxlan_port_id);
     return 0;
@@ -684,12 +723,13 @@ int
 ops_vport_unbind_access_port(int hw_unit, opennsl_pbmp_t pbm, int vni)
 {
     bcmsdk_vxlan_port_t port;
+    struct netdev *netdev;
     int rc, aport;
 
     VLOG_DBG("%s entered vni %d",__func__, vni);
     if(!VALID_TUNNEL_KEY(vni)) {
         VLOG_ERR("%s Invalid vni %d, ", __func__, vni);
-        return 1;
+        return EINVAL;
     }
     port.vnid = vni;
     port.port_type = BCMSDK_VXLAN_PORT_TYPE_ACCESS;
@@ -707,6 +747,10 @@ ops_vport_unbind_access_port(int hw_unit, opennsl_pbmp_t pbm, int vni)
             netdev_bcmsdk_set_vport_id(hw_unit, port.port, INVALID_VALUE);
         }
     }
+    netdev = netdev_fr_hw_id(hw_unit, port.port);
+    if(netdev)
+        vport_remove(netdev, port.vnid);
+    VLOG_DBG("\n--- Successully unbind access port %d vni %d\n", port.port, vni);
     return 0;
 }
 
@@ -817,11 +861,11 @@ vxlan_vport_print(struct ds *ds, bcmsdk_vxlan_port_t *vport)
         return;
     }
     ds_put_format(ds, "\nVXLAN PORT:\n");
-    ds_put_format(ds, "port %d          port_type %d     vlan %d\n"
+    ds_put_format(ds, "Net port %d       vlan %d\n"
                   "vnid %d       vrf %d           tunnel_id 0x%x\n"
-                  "vxlan_port_id 0x%x             l3_intf_id %d\n"
-                  "egr_obj_id    0x%x             station_id %d\n"
-                  "port type %s\n", vport->port, vport->port_type,
+                  "vxlan_port_id 0x%x         l3_intf_id %d\n"
+                  "egr_obj_id    0x%x            station_id %d\n"
+                  "port type %s\n", vport->port,
                   vport->vlan, vport->vnid, vport->vrf, vport->tunnel_id,
                   vport->vxlan_port_id, vport->l3_intf_id,
                   vport->egr_obj_id, vport->station_id,
@@ -867,27 +911,27 @@ vxlan_tunnel_dump(bcmsdk_vxlan_tunnel_t *tunnel)
 }
 
 static void
-bcm_vport_print(struct ds *ds, bcm_vport_t *vport)
+bcm_vport_print(struct ds *ds, bcm_vport_t *vport, int vni)
 {
     if (!vport || !ds) {
         ds_put_format(ds, "%s ERR: vport is NULL", __func__);
         return;
     }
-    ds_put_format(ds, "vxlan_port_id = 0x%x\n"
-                      "egr_obj_id    = 0x%x\n"
-                      "station_id    = %d\n"
-                      "tunnel_id     = 0x%x\n",
+    ds_put_format(ds, "Vport ID       Egr ID     Tunnel ID   Tunnel Key   Station ID\n");
+    ds_put_format(ds, "-----------------------------------------------------------\n");
+    ds_put_format(ds, "0x%-10x   0x%-6x   0x%-8x  %-10d   %-13d\n",
                       vport->vxlan_port_id,
                       vport->egr_obj_id,
-                      vport->station_id,
-                      vport->tunnel_id);
+                      vport->tunnel_id,
+                      vni,
+                      vport->station_id);
 }
 
 OVS_UNUSED static void
-bcm_vport_dump(bcm_vport_t *vport)
+bcm_vport_dump(bcm_vport_t *vport, int vni)
 {
     struct ds ds = DS_EMPTY_INITIALIZER;
-    bcm_vport_print(&ds, vport);
+    bcm_vport_print(&ds, vport, vni);
     VLOG_DBG("%s",ds_cstr(&ds));
     ds_destroy(&ds);
 }
@@ -926,9 +970,8 @@ hmap_vnode_print(struct ds *ds)
     ds_put_format(ds, "*** VXLAN PORTS ***:\n");
     HMAP_FOR_EACH_SAFE(vnode, next, node, &vport_hmap) {
         count++;
-        ds_put_format(ds, "VNI %d\n", vnode->vni);
-        bcm_vport_print(ds, &vnode->vport);
+        bcm_vport_print(ds, &vnode->vport, vnode->vni);
         ds_put_format(ds, "\n");
     }
-    ds_put_format(ds, "Total %d vxlan ports:\n",count);
+    ds_put_format(ds, "Total %d vxlan port(s)\n",count);
 }

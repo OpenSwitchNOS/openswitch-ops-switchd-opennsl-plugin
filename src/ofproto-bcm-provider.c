@@ -666,7 +666,9 @@ bundle_destroy(struct ofbundle *bundle)
                 bundle->l3_intf = NULL;
             }
         }
-        netdev_bcmsdk_l3_global_stats_destroy(port->up.netdev);
+        if (strcmp(type, OVSREC_INTERFACE_TYPE_VXLAN) != 0) {
+            netdev_bcmsdk_l3_global_stats_destroy(port->up.netdev);
+        }
         bundle_del_port(port);
     }
 

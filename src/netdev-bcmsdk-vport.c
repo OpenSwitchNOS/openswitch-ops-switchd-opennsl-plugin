@@ -63,10 +63,10 @@ VLOG_DEFINE_THIS_MODULE(netdev_bcmsdk_vport);
          mac[0], mac[1], mac[2], mac[3], mac[4], mac[5] \
 
 #define TUNNEL_UNBIND(event, state) \
-        ((event == HOST_DELETE || event == ROUTE_DELETE) && state == TNL_BOUND)
+        ((event == HOST_DELETE || event == ROUTE_DELETE) && state == TNL_UP)
 
 #define TUNNEL_BIND(event, state) \
-        ((event == HOST_ADD || event == ROUTE_ADD)  && state < TNL_BOUND)
+        ((event == HOST_ADD || event == ROUTE_ADD)  && state < TNL_UP)
 
 #define TUNNEL_ACTION(event, state) \
         (TUNNEL_UNBIND(event, state) || TUNNEL_BIND(event, state))
@@ -98,7 +98,8 @@ static char *tnl_state_str[] = {
     "UNDEFINED",
     "INIT",
     "CREATED",
-    "BOUND"
+    "DOWN"
+    "UP"
 };
 struct vport_class {
     const char *dpif_port;
@@ -235,7 +236,6 @@ netdev_vport_construct(struct netdev *netdev_)
     dev->tnl_cfg.dont_fragment = true;
     dev->tnl_cfg.ttl = DEFAULT_TTL;
 
-    dev->carrier.status = false;
     dev->hw_unit = 0;
     dev->tnl_state = TNL_UNDEFINED;
     dev->tunnel_id = INVALID_VALUE;
@@ -279,14 +279,16 @@ static int
 netdev_vport_get_status(const struct netdev *netdev_, struct smap *smap) {
     struct netdev_vport *netdev = netdev_vport_cast(netdev_);
     char buf[20];
-    /* TODO, Get the status of the carrier port */
-    VLOG_DBG("%s carrier is %d", __func__, netdev->carrier.port);
-    if (VALID_PORT(netdev->carrier.port)) {
+
+    tunnel_check_status_change__(netdev);
+    if(VALID_PORT(netdev->carrier.port)) {
         sprintf(buf, "%d", netdev->carrier.port);
         smap_add(smap, "tunnel_egress_iface", buf);
 
         smap_add(smap, "tunnel_egress_iface_carrier",
-        netdev->carrier.status ? "up" : "down");
+                 netdev->carrier.status ? "up" : "down");
+    } else {
+        smap_add(smap, "tunnel_egress_iface", "0");
     }
     return 0;
 }
@@ -862,9 +864,6 @@ netdev_bcmsdk_vport_set_tunnel_state(struct netdev *netdev, int state)
     struct netdev_vport *dev  = netdev_vport_cast(netdev);
     ovs_mutex_lock(&dev->mutex);
     dev->tnl_state = state;
-    if(state == TNL_CREATED) {
-        dev->carrier.port = INVALID_VALUE;
-    }
     ovs_mutex_unlock(&dev->mutex);
 }
 
@@ -884,8 +883,6 @@ tunnel_check_status_change__(struct netdev_vport *dev)
                                                 dev->carrier.port);
         if(dev->carrier.status != status) {
             dev->carrier.status = status;
-            VLOG_DBG("%s port %d status %s", __func__,dev->carrier.port,
-                      status? "up":"down");
             change = true;
         }
     }
@@ -907,6 +904,9 @@ create_tunnel(struct netdev_vport *netdev, int l3_egress_id)
             /*Tunnel exists and not bound.  Bind it to this net port*/
             ops_vport_bind_net_port(&netdev->up, -1);
             break;
+        case TNL_DOWN:
+            ops_vport_update_egr(&netdev->up, l3_egress_id);
+            break;
         default:
             break;
     }
@@ -919,7 +919,7 @@ static void
 upon_host_chg(int event, struct netdev_vport *dev, int l3_egr_id)
 {
     if((TUNNEL_BIND(event, dev->tnl_state)) &&
-             set_tunnel_nexthop(dev, l3_egr_id)) {
+        set_tunnel_nexthop(dev, l3_egr_id)) {
         create_tunnel(dev, l3_egr_id);
     }
 }
@@ -1004,6 +1004,9 @@ upon_route_chg(struct netdev_vport *dev, int event, char *route_prefix)
                 */
             }
         }
+    } else if(TUNNEL_UNBIND(event, dev->tnl_state)) {
+        VLOG_DBG("Tunnel going down\n");
+        netdev_bcmsdk_vport_set_tunnel_state(&dev->up, TNL_DOWN);
     }
 }
 /*

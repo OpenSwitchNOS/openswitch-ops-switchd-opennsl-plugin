@@ -1706,6 +1706,7 @@ vxlan_bind_access_port(int unit, bcmsdk_vxlan_port_t *acc_port_p)
     if (logical_sw_element_p == NULL) {
         VLOG_ERR("Error [%s, %d], invalid vnid unit:%d vnid:%d\n",
                  __FUNCTION__, __LINE__, unit, acc_port_p->vnid);
+        rc = BCMSDK_E_PARAM;
         goto CLEANUP_EGRESS_OBJ;
     }
 
@@ -2347,9 +2348,11 @@ int
 vxlan_unbind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
 {
     int rc;
+    opennsl_gport_t gport;
     opennsl_vxlan_port_t vxlan_port;
     opennsl_l3_egress_t l3_egr;
     vxlan_logical_sw_element_t *logical_sw_element_p;
+    vxlan_egr_obj_element_t * egr_obj_element_p;
 
     if (net_port_p == NULL) {
         VLOG_ERR("Error [%s, %d], net_port_p is NULL unit:%d\n",
@@ -2441,7 +2444,18 @@ vxlan_unbind_network_port(int unit, bcmsdk_vxlan_port_t *net_port_p)
                  __FUNCTION__, __LINE__, rc, unit, net_port_p->egr_obj_id);
         return rc;
     }
-
+#if 1 //MBUI
+    rc = opennsl_port_gport_get(unit, net_port_p->port, &gport);
+    if (rc) {
+        VLOG_ERR("Error [%s, %d], opennsl_port_gport_get rc:%d unit:%d port:0x%x gport:0x%x\n",
+                 __FUNCTION__, __LINE__, rc, unit, net_port_p->port, gport);
+        return rc;
+    }
+    egr_obj_element_p = vxlan_find_egr_obj_hash_element(unit, gport);
+    if(egr_obj_element_p) {
+        hmap_remove(&vxlan_global.egr_obj_hmap, &egr_obj_element_p->node);
+    }
+#endif
     VLOG_DBG("[%s, %d], exit rc:%d unit:%d port:0x%x vxlan_port_id:0x%x vnid:%d vpn_id:0x%x\n",
              __FUNCTION__, __LINE__, rc, unit,
              net_port_p->port, net_port_p->vxlan_port_id,
