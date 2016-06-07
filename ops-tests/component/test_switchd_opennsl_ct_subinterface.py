@@ -81,7 +81,7 @@ def test_switchd_opennsl_plugin_subinterface_creation(topology, step):
         "table" : "Interface",
         "row" : {
             "type" : "vlansubint",
-            "name" : "1.10",
+            "name" : "%s.10",
             "subintf_parent" : [
                 "map",
             [
@@ -107,7 +107,7 @@ def test_switchd_opennsl_plugin_subinterface_creation(topology, step):
         "op" : "insert",
         "table" : "Port",
         "row" : {
-            "name": "1.10",
+            "name": "%s.10",
             "interfaces" : [
                 "set",
             [
@@ -137,14 +137,15 @@ def test_switchd_opennsl_plugin_subinterface_creation(topology, step):
                 ]
         }
     }
-    ]'""" % (interface_1_uuid[0], port_1_uuid[0])
+    ]'""" % (sw1p1, interface_1_uuid[0], sw1p1, port_1_uuid[0])
 
     # Create subinterface interface with port1 uuid and add to vrf
     sw1(subinterface_command, shell='bash')
+    print(subinterface_command)
 
     step("### Configuring ipv4 address 2.2.2.1 on subinterface ###")
     sw1('configure terminal')
-    sw1('interface 1.10')
+    sw1('interface {sw1p1}.10'.format(**locals()))
     sw1('ip address 2.2.2.1/24')
     sw1('end')
 
@@ -188,7 +189,7 @@ def test_switchd_opennsl_plugin_subinterface_creation(topology, step):
     # Disable the subinterface
     step("### Disable the subinterface 1.10 ###")
     sw1('configure terminal')
-    sw1('interface 1.10')
+    sw1('interface {sw1p1}.10'.format(**locals()))
     sw1('shutdown')
     sw1('end')
 
@@ -202,7 +203,7 @@ def test_switchd_opennsl_plugin_subinterface_creation(topology, step):
     # Enable the subinterface
     step("### Enable subinterface 1.10 ###")
     sw1('configure terminal')
-    sw1('interface 1.10')
+    sw1('interface {sw1p1}.10'.format(**locals()))
     sw1('no shutdown')
     sw1('end')
 
@@ -222,7 +223,7 @@ def test_switchd_opennsl_plugin_subinterface_creation(topology, step):
     # Shut the parent interface, verify if the bitmap for subinterface changes
     step("### Disable parent interface 1 ###")
     sw1('configure terminal')
-    sw1('interface 1')
+    sw1('interface {sw1p1}'.format(**locals()))
     sw1('shutdown')
     sw1('end')
 
@@ -243,7 +244,7 @@ def test_switchd_opennsl_plugin_subinterface_creation(topology, step):
     # subinterface changes
     step("### Enable parent interface 1 ###")
     sw1('configure terminal')
-    sw1('interface 1')
+    sw1('interface {sw1p1}'.format(**locals()))
     sw1('no shutdown')
     sw1('end')
 
@@ -268,7 +269,7 @@ def test_switchd_opennsl_plugin_subinterface_creation(topology, step):
     {
         "op" : "update",
         "table" : "Interface",
-        "where":[["name","==","1.10"]],
+        "where":[["name","==","%s.10"]],
         "row" : {
             "subintf_parent" : [
                 "map",
@@ -281,9 +282,10 @@ def test_switchd_opennsl_plugin_subinterface_creation(topology, step):
                 ]
         }
     }
-    ]'""" % (interface_1_uuid[0])
+    ]'""" % (sw1p1, interface_1_uuid[0])
 
     # Modify subinterface with new vlan tag 30
+    print(subinterface_command)
     sw1(subinterface_command, shell='bash')
 
     # Verify vlan 10 has been deleted and vlan 30 created with bit map
@@ -314,6 +316,7 @@ def test_switchd_opennsl_plugin_subinterface_creation(topology, step):
     sw1('vlan 20')
     sw1('no shutdown')
 
+    # Interface hardcode but no links created with them
     # Associate l2 interface 2 to the vlan 20
     step("### Associate interface 2 to vlan 20 ###")
     sw1('interface 2')
@@ -332,7 +335,7 @@ def test_switchd_opennsl_plugin_subinterface_creation(topology, step):
     # Create subinterface associated with Vlan 20
     # Get port 1.10 uuid
     step("### Create subinterface 1.20 using ovs command ###")
-    command = "ovs-vsctl get port 1.10 _uuid"
+    command = "ovs-vsctl get port {sw1p1}.10 _uuid".format(**locals())
     bufferout = sw1(command, shell='bash')
     port_110_uuid = bufferout.splitlines()
 
@@ -342,7 +345,7 @@ def test_switchd_opennsl_plugin_subinterface_creation(topology, step):
         "table" : "Interface",
         "row" : {
             "type" : "vlansubint",
-            "name" : "1.20",
+            "name" : "%s.20",
             "subintf_parent" : [
                 "map",
             [
@@ -368,7 +371,7 @@ def test_switchd_opennsl_plugin_subinterface_creation(topology, step):
         "op" : "insert",
         "table" : "Port",
         "row" : {
-            "name": "1.20",
+            "name": "%s.20",
             "interfaces" : [
                 "set",
             [
@@ -399,7 +402,11 @@ def test_switchd_opennsl_plugin_subinterface_creation(topology, step):
                 ]
         }
     }
-    ]'""" % (interface_1_uuid[0], port_1_uuid[0], port_110_uuid[0])
+    ]'""" % (sw1p1,
+             interface_1_uuid[0],
+             sw1p1,
+             port_1_uuid[0],
+             port_110_uuid[0])
 
     # Create subinterface interface with port1 uuid and add to vrf
     sw1(subinterface_command, shell='bash')
@@ -495,7 +502,7 @@ def test_switchd_opennsl_plugin_subinterface_creation(topology, step):
     {
         "op" : "delete",
         "table" : "Port",
-        "where":[["name","==","1.20"]]
+        "where":[["name","==","%s.20"]]
     },
     {
         "op" : "update",
@@ -511,7 +518,7 @@ def test_switchd_opennsl_plugin_subinterface_creation(topology, step):
                 ]
         }
     }
-    ]'""" % (port_1_uuid[0], port_110_uuid[0])
+    ]'""" % (sw1p1, port_1_uuid[0], port_110_uuid[0])
 
     # Create subinterface interface with port1 uuid and add to vrf
     sw1(subinterface_command, shell='bash')
