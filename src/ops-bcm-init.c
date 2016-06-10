@@ -226,13 +226,6 @@ ops_bcm_appl_init(void)
             return 1;
         }
 
-        rc = ops_copp_init();
-        if (rc) {
-            VLOG_ERR("COPP subsystem init failed");
-            log_event("COPP_INITIALIZATION_FAILURE", NULL);
-            return 1;
-        }
-
         /* Initialize QoS per hw unit data structures */
         rc = ops_qos_hw_unit_init(unit);
         if (rc) {
@@ -252,6 +245,13 @@ ops_bcm_appl_init(void)
             VLOG_ERR("Classifier subsystem init failed");
             return 1;
         }
+    }
+
+    rc = ops_copp_init();
+    if (rc) {
+        VLOG_ERR("COPP subsystem init failed");
+        log_event("COPP_INITIALIZATION_FAILURE", NULL);
+        return 1;
     }
 
     return 0;
