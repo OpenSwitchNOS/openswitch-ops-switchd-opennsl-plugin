@@ -68,6 +68,8 @@ struct hmap classifier_map;
 /* IFP slice for ipv4 ACL */
 opennsl_field_group_t ip_group;
 
+int cls_rule_count;
+
 /*
  * ops_cls_get_ingress_group_id_for_hw_unit
  *
@@ -140,7 +142,7 @@ ops_classifier_init(int unit)
     OPENNSL_FIELD_QSET_ADD(qset, opennslFieldQualifyL4DstPort);
     OPENNSL_FIELD_QSET_ADD(qset, opennslFieldQualifyRangeCheck);
     OPENNSL_FIELD_QSET_ADD(qset, opennslFieldQualifyL3Routable);
-
+    OPENNSL_FIELD_QSET_ADD(qset, opennslFieldQualifyEtherType);
 
     rc = opennsl_field_group_create(unit, qset, OPS_GROUP_PRI_IPv4, &ip_group);
     if (OPENNSL_FAILURE(rc)) {
@@ -156,6 +158,8 @@ ops_classifier_init(int unit)
 
     /* Initialize the classifier hash map */
     hmap_init(&classifier_map);
+
+    cls_rule_count = 0;
 
     return rc;
 }
@@ -798,6 +802,7 @@ ops_cls_install_rule_in_asic(int                            unit,
 
     struct ops_cls_list_entry_match_fields *match = &cls_entry->entry_fields;
 
+
     if (intf_info && (intf_info->flags & OPS_CLS_INTERFACE_L3ONLY)) {
         hw_info = &cls->route_cls;
     } else {
@@ -811,6 +816,11 @@ ops_cls_install_rule_in_asic(int                            unit,
         return rc;
     }
 
+    if (cls_rule_count >= MAX_ACL_RULES) {
+        VLOG_ERR("ACEs max entry count reached");
+        return OPS_CLS_FAIL;
+    }
+
     rc = opennsl_field_entry_create(unit, ip_group, &entry);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to create entry for classifier %s rc=%s", cls->name,
@@ -819,6 +829,13 @@ ops_cls_install_rule_in_asic(int                            unit,
     }
 
     VLOG_DBG("Classifier %s entry id 0x%x", cls->name, entry);
+
+    rc = opennsl_field_qualify_EtherType(unit, entry, OPS_ETHER_TYPE_IP,
+                                         OPS_ETHER_TYPE_MASK);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to set Ether Type IP rc=%s", opennsl_errmsg(rc));
+        return rc;
+    }
 
     if (intf_info && (intf_info->flags & OPS_CLS_INTERFACE_L3ONLY)) {
         rc = opennsl_field_qualify_L3Routable(unit, entry, 0x01, 0x01);
@@ -1061,6 +1078,8 @@ ops_cls_install_rule_in_asic(int                            unit,
                         : &hw_info->rule_index_list;
     list_push_back(listp, &rulep->node);
 
+    cls_rule_count++;
+
     return rc;
 
 cleanup:
@@ -1228,6 +1247,7 @@ ops_cls_delete_rules_in_asic(int                             hw_unit,
                                    : &hw_info->stats_index_list;
 
     LIST_FOR_EACH_SAFE(rule_entry, next_rule_entry, node, rule_index_list) {
+        cls_rule_count-- ;
         entry = rule_entry->index;
         rc =  opennsl_field_entry_destroy(hw_unit, entry);
         if (OPENNSL_FAILURE(rc)) {
