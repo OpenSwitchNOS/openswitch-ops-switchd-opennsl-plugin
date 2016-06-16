@@ -102,6 +102,9 @@ ops_routing_is_internal_vlan (opennsl_vlan_t vlan)
     return false;
 }
 
+struct hmap ecmp_map;
+bool delete_ecmp_object_flag = false;
+
 /*
  * ops_routing_get_ospf_group_id_by_hw_unit
  *
@@ -774,6 +777,7 @@ ops_l3_init(int unit)
 
     /* initialize route table hash map */
     hmap_init(&ops_rtable.routes);
+    hmap_init(&ecmp_map);
 
     /* Initialize egress-id hash map. Used only during mac-move. */
     hmap_init(&ops_mac_move_egress_id_map);
@@ -1684,6 +1688,15 @@ ops_string_to_prefix(int family, char *ip_address, void *prefix,
     return 0;
 } /* ops_string_to_prefix */
 
+static void ecmp_group_flags_set(opennsl_l3_egress_ecmp_t *ecmp_grp) {
+
+    if (ecmp_resilient_flag) {
+        ecmp_grp->flags = (OPENNSL_L3_ECMP_RH_REPLACE | OPENNSL_L3_WITH_ID);
+    } else {
+        ecmp_grp->flags = (OPENNSL_L3_REPLACE | OPENNSL_L3_WITH_ID);
+    }
+}
+
 /* Find or create and ecmp egress object */
 static int
 ops_create_or_update_ecmp_object(int hw_unit, struct ops_route *routep,
@@ -1694,6 +1707,9 @@ ops_create_or_update_ecmp_object(int hw_unit, struct ops_route *routep,
     opennsl_if_t egress_obj[MAX_NEXTHOPS_PER_ROUTE];
     opennsl_error_t rc = OPENNSL_E_NONE;
     opennsl_l3_egress_ecmp_t ecmp_grp;
+    char ecmp_str[ECMP_ID_MAX_LENGTH];
+    struct ecmp_node_data *ecmp_node;
+    int ecmp_object_found_flag = 0;
 
     if(!routep) {
         return EINVAL;
@@ -1706,46 +1722,90 @@ ops_create_or_update_ecmp_object(int hw_unit, struct ops_route *routep,
             break;
         }
     }
+    opennsl_l3_egress_ecmp_t_init(&ecmp_grp);
+    ops_update_ecmp_resilient(&ecmp_grp);
 
-    if (update){
-        opennsl_l3_egress_ecmp_t_init(&ecmp_grp);
-        if (ecmp_resilient_flag) {
-            ecmp_grp.flags = (OPENNSL_L3_ECMP_RH_REPLACE | OPENNSL_L3_WITH_ID);
-        } else {
-            ecmp_grp.flags = (OPENNSL_L3_REPLACE | OPENNSL_L3_WITH_ID);
+    /* Checking the availability of an ecmp group */
+    rc = opennsl_l3_egress_ecmp_find( hw_unit, nh_count, egress_obj, &ecmp_grp);
+
+    if (rc == OPENNSL_E_NONE) {
+        /* There is an ecmp egress object with same next hop interfaces */
+
+        VLOG_DBG("ECMP group available %d", ecmp_grp.ecmp_intf);
+        if (update) {
+            snprintf(ecmp_str, ECMP_ID_MAX_LENGTH, "%d%d", hw_unit, ecmp_grp.ecmp_intf);
+            HMAP_FOR_EACH_WITH_HASH(ecmp_node, node, hash_string(ecmp_str, 0),
+                                    &ecmp_map) {
+                if (ecmp_node->hw_unit == hw_unit) {
+                    ecmp_node->ref_count  -= 1;
+                    VLOG_DBG("referance count decremented for %d", *ecmp_intfp);
+                    if (ecmp_node->ref_count == 0) {
+                        /*
+                         * as reference count is 0  setting the
+                         * delete_ecmp_object_flag to true  which removes
+                         * the ecmp object after the route gets updated
+                         * the reference is removed from the hashmaps as well
+                         */
+                         delete_ecmp_object_flag = true;
+                         hmap_remove(&ecmp_map, &ecmp_node->node);
+                    }
+                }
+            }
         }
-        ecmp_grp.ecmp_intf = *ecmp_intfp;
-        ops_update_ecmp_resilient(&ecmp_grp);
-        rc = opennsl_l3_egress_ecmp_create(hw_unit, &ecmp_grp, nh_count,
-                                           egress_obj);
-        if (OPENNSL_FAILURE(rc)) {
-            VLOG_ERR("Failed to update ecmp object for route %s: rc=%s",
-                     routep->prefix, opennsl_errmsg(rc));
-            log_event("ECMP_CREATE_ERR",
-                      EV_KV("route", "%s", routep->prefix),
-                      EV_KV("err", "%s", opennsl_errmsg(rc)));
-            return rc;
-        } else {
-            log_event("ECMP_CREATE",
-                      EV_KV("route", "%s", routep->prefix));
-        }
+        ecmp_group_flags_set(&ecmp_grp);
     } else {
-        opennsl_l3_egress_ecmp_t_init(&ecmp_grp);
-        ops_update_ecmp_resilient(&ecmp_grp);
-        rc = opennsl_l3_egress_ecmp_create(hw_unit, &ecmp_grp, nh_count,
-                                           egress_obj);
-        if (OPENNSL_FAILURE(rc)) {
-            VLOG_ERR("Failed to create ecmp object for route %s: rc=%s",
-                     routep->prefix, opennsl_errmsg(rc));
-            log_event("ECMP_CREATE_ERR",
-                      EV_KV("route", "%s", routep->prefix),
-                      EV_KV("err", "%s", opennsl_errmsg(rc)));
-            return rc;
-        } else {
-            log_event("ECMP_CREATE",
-                      EV_KV("route", "%s", routep->prefix));
+        if (update) {
+            snprintf(ecmp_str, ECMP_ID_MAX_LENGTH, "%d%d", hw_unit, ecmp_grp.ecmp_intf);
+            HMAP_FOR_EACH_WITH_HASH(ecmp_node, node, hash_string(ecmp_str, 0),
+                                    &ecmp_map) {
+                if (ecmp_node->hw_unit == hw_unit) {
+                    ecmp_node->ref_count  -= 1;
+                    VLOG_DBG("referance count decremented for %d", *ecmp_intfp);
+                    if (ecmp_node->ref_count == 0) {
+                        /*
+                         * In this case we update the existing ecmp object as the
+                         * referance count is 0 and set the flags as update case
+                         */
+                        ecmp_grp.ecmp_intf = *ecmp_intfp;
+                        ecmp_group_flags_set(&ecmp_grp);
+                    }
+                }
+            }
         }
-        *ecmp_intfp = ecmp_grp.ecmp_intf;
+    }
+
+    rc = opennsl_l3_egress_ecmp_create(hw_unit, &ecmp_grp, nh_count,
+                                       egress_obj);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to create ecmp object for route %s: rc=%s",
+                 routep->prefix, opennsl_errmsg(rc));
+        log_event("ECMP_CREATE_ERR",
+                  EV_KV("route", "%s", routep->prefix),
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
+        delete_ecmp_object_flag = false;
+        return rc;
+    } else {
+        log_event("ECMP_CREATE",
+                  EV_KV("route", "%s", routep->prefix));
+    }
+
+    *ecmp_intfp = ecmp_grp.ecmp_intf;
+    snprintf(ecmp_str, ECMP_ID_MAX_LENGTH, "%d%d", hw_unit, ecmp_grp.ecmp_intf);
+    HMAP_FOR_EACH_WITH_HASH(ecmp_node, node, hash_string(ecmp_str, 0),
+                            &ecmp_map) {
+        if (ecmp_node->hw_unit == hw_unit) {
+            ecmp_object_found_flag++;
+            ecmp_node->ref_count  += 1;
+            VLOG_DBG("referance count = %d for group :%d\n",ecmp_node->ref_count
+                                                           ,*ecmp_intfp);
+        }
+    }
+    if (ecmp_object_found_flag == 0) {
+        ecmp_node = (struct ecmp_node_data *) xmalloc (sizeof(struct ecmp_node_data));
+        hmap_insert(&ecmp_map, &ecmp_node->node, hash_string(ecmp_str, 0));
+        ecmp_node->ref_count = 1;
+        ecmp_node->hw_unit   = hw_unit;
+        VLOG_DBG("New ecmp egress object %d hw_unit %d", *ecmp_intfp, hw_unit);
     }
     return rc;
 } /* ops_create_or_update_ecmp_object */
@@ -1756,22 +1816,33 @@ ops_delete_ecmp_object(int hw_unit, opennsl_if_t ecmp_intf)
 {
     opennsl_error_t rc = OPENNSL_E_NONE;
     opennsl_l3_egress_ecmp_t ecmp_grp;
+    char ecmp_str[ECMP_ID_MAX_LENGTH];
+    struct ecmp_node_data  *ecmp_node;
 
     opennsl_l3_egress_ecmp_t_init(&ecmp_grp);
     ecmp_grp.ecmp_intf = ecmp_intf;
 
-    rc = opennsl_l3_egress_ecmp_destroy(hw_unit, &ecmp_grp);
-    if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("Failed to delete ecmp egress object %d: %s",
-                ecmp_intf, opennsl_errmsg(rc));
-        log_event("ECMP_DELETE_ERR",
-                EV_KV("egressid", "%d", ecmp_intf),
-                EV_KV("err", "%s", opennsl_errmsg(rc)));
-        return rc;
+    snprintf(ecmp_str, ECMP_ID_MAX_LENGTH, "%d%d", hw_unit, ecmp_grp.ecmp_intf);
+    HMAP_FOR_EACH_WITH_HASH(ecmp_node, node, hash_string(ecmp_str, 0),
+                            &ecmp_map) {
+        if (ecmp_node->hw_unit == hw_unit) {
+            ecmp_node->ref_count  -= 1;
+            if (ecmp_node->ref_count == 0) {
+                rc = opennsl_l3_egress_ecmp_destroy(hw_unit, &ecmp_grp);
+                if (OPENNSL_FAILURE(rc)) {
+                    VLOG_ERR("Failed to delete ecmp egress object %d: %s %d",
+                             ecmp_intf, opennsl_errmsg(rc), __LINE__);
+                     log_event("ECMP_DELETE_ERR",
+                               EV_KV("egressid", "%d", ecmp_intf),
+                               EV_KV("err", "%s", opennsl_errmsg(rc)));
+                     return rc;
+                }
+                VLOG_DBG("ECMP egress object deleted  %d", ecmp_grp.ecmp_intf);
+                log_event("ECMP_DELETE",
+                          EV_KV("egressid", "%d", ecmp_intf));
+            }
+        }
     }
-    log_event("ECMP_DELETE",
-            EV_KV("egressid", "%d", ecmp_intf));
-
     return rc;
 } /* ops_delete_ecmp_object */
 
@@ -1787,6 +1858,7 @@ ops_add_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
     int rc;
     bool add_route = false;
     struct ofproto_route_nexthop *of_nh;
+    opennsl_l3_egress_ecmp_t ecmp_grp;
 
     /* assert for zero nexthop */
     assert(of_routep && (of_routep->n_nexthops > 0));
@@ -1878,8 +1950,17 @@ ops_add_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
             if (OPS_FAILURE(rc)) {
                 VLOG_ERR("Failed to update ecmp object for route %s: %s",
                          ops_routep->prefix, opennsl_errmsg(rc));
+                delete_ecmp_object_flag = false;
                 return rc;
             }
+            /*
+             * In the update case where the route is updated to a new l3 egress ecmp object
+             */
+	    if (delete_ecmp_object_flag) {
+                opennsl_l3_egress_ecmp_t_init(&ecmp_grp);
+                ecmp_grp.ecmp_intf = routep->l3a_intf;
+	    }
+            routep->l3a_intf = l3_intf;
             routep->l3a_flags |= (OPENNSL_L3_MULTIPATH |
                                   OPENNSL_L3_REPLACE);
             break;
@@ -1912,6 +1993,18 @@ ops_add_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
                      ((ops_routep->n_nexthops > 1) ?
                                    "update route state as ECMP" :
                                    "update route state as NON ECMP"))));
+    }
+    /* need to check if ecmp object needs to be deleted */
+    if (delete_ecmp_object_flag) {
+        rc = opennsl_l3_egress_ecmp_destroy(hw_unit, &ecmp_grp);
+        if( OPENNSL_FAILURE(rc)) {
+            VLOG_ERR("Failed to delete ecmp egress object %d: %s %d",
+                     ecmp_grp.ecmp_intf, opennsl_errmsg(rc), __LINE__);
+            delete_ecmp_object_flag = false;
+	    return rc;
+        }
+        VLOG_DBG("ecmp egress object deleted %d", ecmp_grp.ecmp_intf);
+        delete_ecmp_object_flag = false;
     }
     return rc;
 } /* ops_add_route_entry */
@@ -1951,9 +2044,12 @@ ops_delete_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
     /* Remove from local hash */
     ops_route_delete(ops_routep);
 
+    /* Deleting an ecmp object only when it becomes a non ecmp case */
     if (routep->l3a_flags & OPENNSL_L3_MULTIPATH) {
         l3_intf = routep->l3a_intf;
-        is_delete_ecmp = true;
+        if (ops_routep->n_nexthops < 2){
+            is_delete_ecmp = true;
+        }
     }
 
     rc = opennsl_l3_route_delete(hw_unit, routep);
@@ -1994,6 +2090,7 @@ ops_delete_nh_entry(int hw_unit, opennsl_vrf_t vrf_id,
     struct ops_nexthop *ops_nh;
     opennsl_if_t l3_intf;
     bool is_delete_ecmp = false;
+    opennsl_l3_egress_ecmp_t ecmp_grp;
     int rc;
 
     /* assert for zero nexthop */
@@ -2047,8 +2144,14 @@ ops_delete_nh_entry(int hw_unit, opennsl_vrf_t vrf_id,
             if (OPS_FAILURE(rc)) {
                 VLOG_ERR("Failed to update ecmp object for route %s: %s",
                               ops_routep->prefix, opennsl_errmsg(rc));
+                    delete_ecmp_object_flag = false;
                     return rc;
                 }
+	        if (delete_ecmp_object_flag) {
+                    opennsl_l3_egress_ecmp_t_init(&ecmp_grp);
+                    ecmp_grp.ecmp_intf = routep->l3a_intf;
+	        }
+                routep->l3a_intf = l3_intf;
                 routep->l3a_flags |= (OPENNSL_L3_MULTIPATH |
                                       OPENNSL_L3_REPLACE);
             }
@@ -2066,6 +2169,7 @@ ops_delete_nh_entry(int hw_unit, opennsl_vrf_t vrf_id,
         log_event("L3INTERFACE_ROUTE_ADD_ERR",
                   EV_KV("prefix", "%s", of_routep->prefix),
                   EV_KV("err", "%s", opennsl_errmsg(rc)));
+        delete_ecmp_object_flag = false;
         return rc;
     } else {
         VLOG_DBG("Success to (delete NH) update route %s: %s",
@@ -2079,6 +2183,18 @@ ops_delete_nh_entry(int hw_unit, opennsl_vrf_t vrf_id,
 
     if (is_delete_ecmp) {
         rc = ops_delete_ecmp_object(hw_unit, l3_intf);
+    }
+    /* need to check if ecmp object needs to be deleted */
+    if (delete_ecmp_object_flag) {
+        rc = opennsl_l3_egress_ecmp_destroy(hw_unit, &ecmp_grp);
+        if( OPENNSL_FAILURE(rc)) {
+            VLOG_ERR("Failed to delete ecmp egress object %d: %s %d",
+                     ecmp_grp.ecmp_intf, opennsl_errmsg(rc), __LINE__);
+            delete_ecmp_object_flag = false;
+            return rc;
+        }
+        VLOG_ERR("ecmp egress object deleted %d", ecmp_grp.ecmp_intf);
+        delete_ecmp_object_flag = false;
     }
     return rc;
 } /* ops_delete_nh_entry */
