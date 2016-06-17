@@ -43,6 +43,8 @@
 
 #define OPS_FAILURE(rc) (((rc) < 0 ) || ((rc) == EINVAL))
 
+#define ECMP_ID_MAX_LENGTH 6
+
 /* l3 ingress stats related globals */
 extern uint32_t l3_stats_mode_id;
 
@@ -107,6 +109,13 @@ struct ops_switch_mac_info {
     struct hmap_node node;
     char *mac;
     int station_id;
+};
+
+struct ecmp_node_data {
+    struct hmap_node node;
+    int ref_count;
+    int hw_unit;
+    opennsl_if_t ecmp_grpid;
 };
 
 /* Hashmap of egress object ID's. Only used for mac-moves.
