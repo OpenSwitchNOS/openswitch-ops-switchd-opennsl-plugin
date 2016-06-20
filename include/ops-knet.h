@@ -23,6 +23,7 @@
 #include <ovs/dynamic-string.h>
 #include <netinet/ether.h>
 #include <opennsl/types.h>
+#include <opennsl/knet.h>
 
 /* BCM PRIORITY
  * The order in which knet filters are arranged.
@@ -47,11 +48,22 @@ enum knet_filter_prio_e
     KNET_FILTER_PRIO_HIGHEST = 2,
     KNET_FILTER_PRIO_ACL_LOGGING,
     KNET_FILTER_PRIO_SFLOW,
+
+    KNET_FILTER_PRIO_SFLOW_BPDU,
     KNET_FILTER_PRIO_BPDU,
+
+    KNET_FILTER_PRIO_SFLOW_PORT,
     KNET_FILTER_PRIO_PORT,
+
+    KNET_FILTER_PRIO_SFLOW_VLAN,
     KNET_FILTER_PRIO_VLAN,
+
+    KNET_FILTER_PRIO_SFLOW_SUBINTF,
     KNET_FILTER_PRIO_SUBINTF,
+
+    KNET_FILTER_PRIO_SFLOW_BRIDGE_NORMAL,
     KNET_FILTER_PRIO_BRIDGE_NORMAL,
+
     KNET_FILTER_PRIO_LOWEST = 255
 };
 
@@ -84,7 +96,7 @@ extern void bcmsdk_knet_bridge_normal_filter_create(char *knet_dst_if_name,
         int *knet_filter_id);
 extern void ops_knet_dump(struct ds *ds, knet_debug_type_t debug_type);
 
-extern void bcmsdk_knet_sflow_filter_create(int *knet_filter_id, int reason, char *desc);
+extern void bcmsdk_knet_sflow_filter_create(opennsl_knet_filter_t *filter, int prio, char *desc);
 
 extern void bcmsdk_knet_acl_logging_filter_create(char *knet_dst_if_name,
         int *knet_filter_id);
