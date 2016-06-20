@@ -147,11 +147,39 @@ int bcmsdk_knet_ifid_get_by_name(char *if_name, int hw_unit)
 }
 
 void
+bcmsdk_knet_sflow_filter_create(opennsl_knet_filter_t   *filter, int priority, char *desc)
+{
+    opennsl_knet_filter_t   knet_filter;
+    opennsl_error_t rc = OPENNSL_E_NONE;
+
+    if (filter == NULL || desc == NULL) {
+        VLOG_ERR("Invalid params passed in creating sFlow KNET filter");
+        return;
+    }
+
+    opennsl_knet_filter_t_init(&knet_filter);
+
+    memcpy(&knet_filter, filter, sizeof(opennsl_knet_filter_t));
+    snprintf(knet_filter.desc, OPENNSL_KNET_FILTER_DESC_MAX, desc);
+    knet_filter.priority = priority;
+    knet_filter.match_flags |= OPENNSL_KNET_FILTER_M_REASON;
+    knet_filter.mirror_type = OPENNSL_KNET_DEST_T_OPENNSL_RX_API;
+
+    OPENNSL_RX_REASON_SET(knet_filter.m_reason, opennslRxReasonSampleSource);
+
+    rc = opennsl_knet_filter_create(0, &knet_filter);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Error creating sFlow KNET filter rule. rc=%s", opennsl_errmsg(rc));
+    }
+}
+
+void
 bcmsdk_knet_port_bpdu_filter_create(char *name, int hw_unit, opennsl_port_t hw_port,
                                int knet_if_id, int *knet_filter_id)
 {
     opennsl_knet_filter_t knet_filter;
     opennsl_error_t rc = OPENNSL_E_NONE;
+    char    desc[OPENNSL_KNET_FILTER_DESC_MAX];
 
     /* Create filter for BPDU */
 
@@ -197,6 +225,10 @@ bcmsdk_knet_port_bpdu_filter_create(char *name, int hw_unit, opennsl_port_t hw_p
     /* Store the filter ID. */
     *knet_filter_id = knet_filter.id;
 
+    /* sFlow filter */
+    snprintf(desc, OPENNSL_KNET_FILTER_DESC_MAX, "sflow_knet_filter_bpdu_%s", name);
+    bcmsdk_knet_sflow_filter_create(&knet_filter, KNET_FILTER_PRIO_SFLOW_BPDU, desc);
+
 } /* bcmsdk_knet_port_bpdu_filter_create */
 
 void
@@ -205,6 +237,7 @@ bcmsdk_knet_l3_port_filter_create(int hw_unit, int vid, opennsl_port_t hw_port,
 {
     opennsl_knet_filter_t knet_filter;
     opennsl_error_t rc = OPENNSL_E_NONE;
+    char    desc[OPENNSL_KNET_FILTER_DESC_MAX];
 
     /* Create BCM KNET network filter.
      * BCM diag commands:
@@ -235,6 +268,9 @@ bcmsdk_knet_l3_port_filter_create(int hw_unit, int vid, opennsl_port_t hw_port,
     /* Store the filter ID. */
     *knet_filter_id = knet_filter.id;
 
+    /* Create sFlow KNET filter for l3 interface. */
+    snprintf(desc, OPENNSL_KNET_FILTER_DESC_MAX, "sflow_knet_filter_l3_%d", vid);
+    bcmsdk_knet_sflow_filter_create(&knet_filter, KNET_FILTER_PRIO_SFLOW_PORT, desc);
 } /* bcmsdk_knet_port_filter_create */
 
 void
@@ -287,6 +323,7 @@ bcmsdk_knet_filter_delete(char *name, int hw_unit, int knet_filter_id)
     }
 } /* bcmsdk_knet_filter_delete */
 
+#if 0
 void bcmsdk_knet_sflow_filter_create(int *knet_filter_id, int reason, char *desc)
 {
     opennsl_error_t rc;
@@ -323,11 +360,13 @@ void bcmsdk_knet_sflow_filter_create(int *knet_filter_id, int reason, char *desc
     }
     return;
 }
+#endif
 
 void bcmsdk_knet_bridge_normal_filter_create(char *knet_dst_if_name,
         int *knet_filter_id)
 {
     opennsl_knet_filter_t knet_filter;
+    char    desc[OPENNSL_KNET_FILTER_DESC_MAX+1];
 
     opennsl_knet_filter_t_init(&knet_filter);
 
@@ -342,6 +381,10 @@ void bcmsdk_knet_bridge_normal_filter_create(char *knet_dst_if_name,
     knet_filter.dest_id = knet_dst_id;
 
     opennsl_knet_filter_create(0, &knet_filter);
+
+    /* sFlow */
+    snprintf(desc, OPENNSL_KNET_FILTER_DESC_MAX, "sflow_knet_filter_bridge_normal");
+    //bcmsdk_knet_sflow_filter_create(&knet_filter, KNET_FILTER_PRIO_SFLOW_BRIDGE_NORMAL, desc);
     return;
 }
 
