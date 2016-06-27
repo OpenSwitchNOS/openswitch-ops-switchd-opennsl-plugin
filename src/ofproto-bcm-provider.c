@@ -1312,23 +1312,50 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     }
 
     /* sFlow config on port. true - enable sFlow; false - disable sFlow */
-    bool conf = smap_get_bool(s->port_options[PORT_OTHER_CONFIG],
-                       PORT_OTHER_CONFIG_SFLOW_PER_INTERFACE_KEY_STR, true);
+    bool sflow_enabled = smap_get_bool(s->port_options[PORT_OTHER_CONFIG],
+                             PORT_OTHER_CONFIG_SFLOW_PER_INTERFACE_KEY_STR,
+                             true);
     if (s->name &&
         strncmp(s->name, DEFAULT_BRIDGE_NAME, strlen(DEFAULT_BRIDGE_NAME)) == 0) {
-        VLOG_DBG("sflow will not be configured on bridge_normal");
+        VLOG_DBG("sFlow will not be configured on bridge_normal");
+    }
+    /* bundle_set() gets called for any port configuration change.
+     * We must ensure that we only apply sFlow configuration
+     * if it has changed since the last time. (i.e) sFlow was previously
+     * enabled and is now being disabled or vice-versa.
+     * */
+    else if ((!sflow_enabled &&
+             ops_sflow_check_disabled_ports_list(bundle->name)) ||
+            (sflow_enabled &&
+             !ops_sflow_check_disabled_ports_list(bundle->name))) {
+        VLOG_DBG("No sFlow configuration change on port %s : %s", bundle->name,
+                   (sflow_enabled)?"ENABLED":"DISABLED");
     }
     /* if sFlow settings present on port, download it to ASIC */
     else {
+        bool system_interface = false;
         int hw_unit, hw_port;
+        /* Loop through all the 'ports' under a 'bundle' and
+           enable/disable sFlow sampling on all of them. */
         LIST_FOR_EACH_SAFE(port, next_port, bundle_node, &bundle->ports) {
-            VLOG_DBG("sflow on port %s is %s", bundle->name,
-                    (conf)?"ENABLED":"DISABLED");
-            netdev_bcmsdk_get_hw_info(port->up.netdev,
-                                      &hw_unit, &hw_port, NULL);
-            ops_sflow_set_per_interface(hw_unit, hw_port, conf);
-
-            sflow_options_update_ports_list(bundle->name, conf);
+            type = netdev_get_type(port->up.netdev);
+            /* sFlow is only supported on physical(system) interfaces */
+            if (strcmp(type, OVSREC_INTERFACE_TYPE_SYSTEM) == 0) {
+                system_interface = true;
+                VLOG_DBG("sflow on port %s is %s", bundle->name,
+                         (sflow_enabled)?"ENABLED":"DISABLED");
+                netdev_bcmsdk_get_hw_info(port->up.netdev,
+                                          &hw_unit, &hw_port, NULL);
+                ops_sflow_set_per_interface(hw_unit, hw_port, sflow_enabled);
+            } else {
+                system_interface = false;
+                VLOG_DBG("sFlow is not applicable for port %s of type %s",
+                         bundle->name, type);
+                break;
+            }
+        }
+        if (system_interface) {
+            sflow_options_update_ports_list(bundle->name, sflow_enabled);
         }
     }
 
