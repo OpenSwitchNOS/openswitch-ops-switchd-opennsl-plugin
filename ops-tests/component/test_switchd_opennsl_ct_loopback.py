@@ -136,13 +136,13 @@ def test_switchd_opennsl_plugin_loopback_creation(topology, step):
 
     # TEST: IPv4 ping from host1 to interface 1 ip
     step("\n\n\nTEST: IPv4 ping from host1 to interface 1")
-    out = h1.libs.ping.ping(1, "10.0.10.1")
-    assert out['transmitted'] == out['received']
+    out = h1.libs.ping.ping(5, "10.0.10.1")
+    assert out['transmitted'] <= out['received'] + 2
 
     # TEST: IPv4 ping from host1 to loopback interface ip
     step("\n\n\nTEST: IPv4 ping from host1 to loopback interface")
-    out = h1.libs.ping.ping(1, "2.2.2.1")
-    assert out['transmitted'] == out['received']
+    out = h1.libs.ping.ping(5, "2.2.2.1")
+    assert out['transmitted'] <= out['received'] + 2
 
     # Delete loopback interface
     step("Deleting loopback interface lo:1")
