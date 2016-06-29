@@ -43,6 +43,8 @@
 
 #define OPS_FAILURE(rc) (((rc) < 0 ) || ((rc) == EINVAL))
 
+#define MAX_ECMP_ROUTE_HASH_LENGTH 128
+
 /* l3 ingress stats related globals */
 extern uint32_t l3_stats_mode_id;
 
@@ -67,6 +69,8 @@ struct ops_route {
     struct hmap nexthops;           /* list of selected next hops */
     enum ops_route_state rstate;     /* state of route */
     int  nh_index;                  /* next hop index ecmp*/
+    unsigned long int hashkey;      /* ecmp nexthop key */
+    struct ecmp_route_nh_hash_node *route_nh_info; /* pointer to the ecmp_route_info */
 };
 
 struct ops_nexthop {
@@ -201,4 +205,21 @@ extern opennsl_error_t ops_create_l3_fp_group(int hw_unit);
 extern opennsl_error_t ops_destroy_l3_fp_entry(int hw_unit,
                                                         opennsl_field_entry_t entryid);
 extern int ops_l3_fp_init(int hw_unit);
+
+struct ecmp_route_nh_hash_node
+{
+    struct hmap hmap;
+    struct hmap_node hmap_node;
+    struct ecmp_route_nh_hash_node *next;
+    struct ecmp_route_nh_hash_node *prev;
+    opennsl_if_t ecmp_grpid;
+    uint32_t referance_count;
+    uint32_t n_nexthops;
+};
+
+struct ecmp_route_hash_node {
+    struct hmap_node node;
+    struct ecmp_route_nh_hash_node *head;
+    uint32_t collision_count;
+};
 #endif /* __OPS_ROUTING_H__ */
