@@ -36,6 +36,7 @@ ops1:if02 -- hs2:eth0
 """
 
 
+@mark.gate
 @mark.timeout(500)
 @mark.platform_incompatible(['docker'])
 def test_fastpath_routed(topology, step):
