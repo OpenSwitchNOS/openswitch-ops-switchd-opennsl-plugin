@@ -100,6 +100,7 @@ void (*acl_pd_log_pkt_data_set)(struct acl_log_info *);
 static struct ops_cls_plugin_interface ops_cls_plugin = {
     ops_cls_opennsl_apply,
     ops_cls_opennsl_remove,
+    ofproto_ops_cls_lag_update,
     ops_cls_opennsl_replace,
     ops_cls_opennsl_list_update,
     ops_cls_opennsl_statistics_get,
@@ -1505,6 +1506,21 @@ ops_cls_opennsl_remove(const struct uuid                *list_id,
 remove_fail:
     ops_cls_set_pd_status(rc, fail_index, pd_status);
     return OPS_CLS_FAIL;
+}
+
+int
+ofproto_ops_cls_lag_update(const struct uuid         *list_id,
+                            const char                      *list_name,
+                            enum ops_cls_type               list_type,
+                            struct ofproto                  *ofproto,
+                            void                            *aux,
+                            ofp_port_t                      ofp_port,
+                            int                             action,
+                            struct ops_cls_interface_info   *interface_info,
+                            enum ops_cls_direction          direction,
+                            struct ops_cls_pd_status        *pd_status)
+{
+    return 0;
 }
 
 /*
