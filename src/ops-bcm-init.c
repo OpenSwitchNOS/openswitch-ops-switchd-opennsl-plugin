@@ -153,9 +153,17 @@ ops_bcm_appl_init(void)
         VLOG_ERR("Mac learning init failed");
         return (1);
     }
+    rc = event_log_init("LOOPBACK");
+    if(rc < 0) {
+        VLOG_ERR("Event log initialization failed for LOOPBACK");
+    }
     rc = event_log_init("SUBINTERFACE");
     if(rc < 0) {
         VLOG_ERR("Event log initialization failed for SUBINTERFACE");
+    }
+    rc = event_log_init("OSPFv2");
+    if(rc < 0) {
+        VLOG_ERR("Event log initialization failed for OSPFv2");
     }
     rc = event_log_init("LAG");
     if(rc < 0) {
