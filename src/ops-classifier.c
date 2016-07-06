@@ -466,6 +466,29 @@ ops_cls_get_port_bitmap(struct ofproto *ofproto_,
     return OPS_CLS_OK;
 }
 
+static int
+ops_cls_get_pmb_from_port(struct ofproto *ofproto_,
+                          int *hw_unit,
+                          opennsl_pbmp_t *pbmp,
+                          ofp_port_t port)
+{
+    const struct ofport *ofport;
+    int ofp_port, unit, hw_id;
+
+    ofport = ofproto_get_port(ofproto_, port);
+    ofp_port = ofport ? ofport->ofp_port : OFPP_NONE;
+    if (ofp_port == OFPP_NONE) {
+        VLOG_WARN("Null ofport for port list member# %d", port);
+        return OPS_CLS_FAIL;
+    }
+    netdev_bcmsdk_get_hw_info(ofport->netdev, &unit, &hw_id, NULL);
+    OPENNSL_PBMP_PORT_ADD(*pbmp, hw_id);
+    VLOG_DBG("member# port %s internal port# %d, hw_unit# %d, hw_id# %d",
+             netdev_get_name(ofport->netdev), ofp_port, unit, hw_id);
+    *hw_unit = unit;
+    return OPS_CLS_OK;
+}
+
 /*
  * Set rule action
  */
@@ -1509,9 +1532,7 @@ remove_fail:
 }
 
 int
-ofproto_ops_cls_lag_update(const struct uuid         *list_id,
-                            const char                      *list_name,
-                            enum ops_cls_type               list_type,
+ofproto_ops_cls_lag_update(struct ops_cls_list              *list,
                             struct ofproto                  *ofproto,
                             void                            *aux,
                             ofp_port_t                      ofp_port,
@@ -1520,7 +1541,73 @@ ofproto_ops_cls_lag_update(const struct uuid         *list_id,
                             enum ops_cls_direction          direction,
                             struct ops_cls_pd_status        *pd_status)
 {
-    return 0;
+    opennsl_error_t rc = OPENNSL_E_NONE;
+    int hw_unit;
+    opennsl_pbmp_t port_bmp;
+    struct ops_classifier *cls = NULL;
+    char pbmp_string[200];
+    int fail_index = 0; /* rule index to PI on failure */
+    bool in_asic;
+    enum ops_update_pbmp ops_update_pbmp_action;
+
+    VLOG_DBG("Apply classifier "UUID_FMT" (%s)",
+              UUID_ARGS(&list->list_id), list->list_name);
+
+    OPENNSL_PBMP_CLEAR(port_bmp);
+    cls = ops_cls_lookup(&list->list_id);
+    if (!cls) {
+        cls = ops_cls_add(list);
+        if (!cls) {
+            VLOG_ERR ("Failed to add classifier "UUID_FMT" (%s) in hashmap",
+                       UUID_ARGS(&list->list_id), list->list_name);
+            rc = OPS_CLS_FAIL;
+            goto lag_update_fail;
+        }
+    } else {
+        VLOG_DBG("Classifier %s exist in hashmap", list->list_name);
+    }
+
+    /* get the port bits_map */
+    if (ops_cls_get_pmb_from_port(ofproto, &hw_unit, &port_bmp, ofp_port)) {
+        rc = OPS_CLS_FAIL;
+        goto lag_update_fail;
+    }
+
+    VLOG_DBG("Apply classifier %s on port(s) [ %s ]", cls->name,
+              ops_cls_display_port_bit_map(&port_bmp, pbmp_string, 200));
+
+    if (interface_info && (interface_info->flags & OPS_CLS_INTERFACE_L3ONLY)) {
+        VLOG_DBG("Apply %s as routed classifier", cls->name);
+        in_asic = cls->route_cls.in_asic;
+    } else {
+        VLOG_DBG("Apply %s as port classifier", cls->name);
+        in_asic = cls->port_cls.in_asic;
+    }
+
+    if (action & OPS_CLS_LAG_MEMBER_INTF_ADD) {
+       ops_update_pbmp_action = OPS_PBMP_ADD;
+    } else {
+        ops_update_pbmp_action = OPS_PBMP_DEL;
+    }
+
+    if (!in_asic) {
+        rc = OPS_CLS_FAIL;
+        goto lag_update_fail;
+    } else {
+        /* already in asic update port bitmap */
+        rc = ops_cls_update_classifier_in_asic(hw_unit, cls, &port_bmp,
+                                               ops_update_pbmp_action,
+                                               &fail_index,
+                                               interface_info);
+        if(OPENNSL_FAILURE(rc)) {
+            goto lag_update_fail;
+        }
+    }
+    return OPS_CLS_OK;
+
+lag_update_fail:
+    ops_cls_set_pd_status(rc, fail_index, pd_status);
+    return OPS_CLS_FAIL;
 }
 
 /*

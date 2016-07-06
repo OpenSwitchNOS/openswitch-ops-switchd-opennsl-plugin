@@ -57,9 +57,7 @@ int ops_cls_opennsl_remove(const struct uuid                *list_id,
                            struct ops_cls_pd_status         *pd_status);
 
 int
-ofproto_ops_cls_lag_update(const struct uuid         *list_id,
-                            const char                      *list_name,
-                            enum ops_cls_type               list_type,
+ofproto_ops_cls_lag_update(struct ops_cls_list              *list,
                             struct ofproto                  *ofproto,
                             void                            *aux,
                             ofp_port_t                      ofp_port,
