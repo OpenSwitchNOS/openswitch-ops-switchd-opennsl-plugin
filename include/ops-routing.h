@@ -43,6 +43,8 @@
 
 #define OPS_FAILURE(rc) (((rc) < 0 ) || ((rc) == EINVAL))
 
+#define MAX_ECMP_ROUTE_HASH_LENGTH 128
+
 /* l3 ingress stats related globals */
 extern uint32_t l3_stats_mode_id;
 
@@ -67,6 +69,8 @@ struct ops_route {
     struct hmap nexthops;           /* list of selected next hops */
     enum ops_route_state rstate;     /* state of route */
     int  nh_index;                  /* next hop index ecmp*/
+    unsigned long int hashkey;      /* ecmp nexthop key */
+    struct ecmp_route_nh_hash_node *route_nh_info; /* pointer to the ecmp_route_info */
 };
 
 struct ops_nexthop {
@@ -185,4 +189,25 @@ extern void ops_l3_mac_move_add(int unit, opennsl_l2_addr_t *l2addr, void *userd
 extern void ops_l3_mac_move_delete(int unit, opennsl_l2_addr_t *l2addr, void *userdata);
 extern bool ops_routing_is_internal_vlan(opennsl_vlan_t vlan);
 
+struct ecmp_route_nh_hash_node
+{
+    struct hmap hmap;
+    struct hmap_node hmap_node;
+    struct ovs_list nh_combination_node;
+    opennsl_if_t ecmp_grpid;
+    uint32_t referance_count;
+    uint32_t n_nexthops;
+};
+
+struct ecmp_route_hash_node {
+    struct hmap_node node;
+    struct ovs_list head_node;
+    struct ecmp_route_nh_hash_node *head;
+    uint32_t collision_count;
+};
+
+struct ecmp_nexthop_node {
+    struct hmap_node node;
+    unsigned long int nexthop_lkup_id;
+};
 #endif /* __OPS_ROUTING_H__ */
