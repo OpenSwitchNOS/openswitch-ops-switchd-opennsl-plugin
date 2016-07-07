@@ -43,6 +43,8 @@
 
 #define OPS_FAILURE(rc) (((rc) < 0 ) || ((rc) == EINVAL))
 
+#define MAX_ECMP_ROUTE_HASH_LENGTH 128
+
 /* l3 ingress stats related globals */
 extern uint32_t l3_stats_mode_id;
 
@@ -67,6 +69,8 @@ struct ops_route {
     struct hmap nexthops;           /* list of selected next hops */
     enum ops_route_state rstate;     /* state of route */
     int  nh_index;                  /* next hop index ecmp*/
+    unsigned long int hashkey;      /* ecmp nexthop key */
+    struct ecmp_egress_nexthops_info *route_nh_info; /* pointer to the ecmp_route_info */
 };
 
 struct ops_nexthop {
@@ -185,4 +189,36 @@ extern void ops_l3_mac_move_add(int unit, opennsl_l2_addr_t *l2addr, void *userd
 extern void ops_l3_mac_move_delete(int unit, opennsl_l2_addr_t *l2addr, void *userdata);
 extern bool ops_routing_is_internal_vlan(opennsl_vlan_t vlan);
 
+struct ecmp_egress_nexthop_hmap_info
+{
+    struct hmap_node ecmp_egress_nexthops_hmap_node;
+    unsigned long nexthop_id;
+};
+
+/* every ecmp egress is mapped to an uniques set of nexthops */
+struct ecmp_egress_nexthops_info
+{
+    struct hmap ecmp_egress_nexthops_hmap;
+    struct ecmp_egress_nexthop_hmap_info ecmp_egress_nexthops_hash_node;
+    struct ovs_list nexthop_combinations_list; /* the list of nodes pointing to same combined nexthop*/
+    opennsl_if_t ecmp_grpid;
+    uint32_t referance_count; /* refernece count per ecmp group */
+    uint32_t n_nexthops;      /* number of nexthops */
+};
+
+/* the combined nexthop structure conatining list of ecmp egress nexthops
+ *colliding at same combined nexthop
+ */
+struct ecmp_combined_nexthop_info {
+    struct hmap_node ecmp_combined_nh_hmap_node;
+    struct ovs_list list_head;           /* the list head of ecmp egress list nodes*/
+    uint32_t collision_count;            /* number of collision nodes */
+    char ecmp_combined_nexthop_str[MAX_ECMP_ROUTE_HASH_LENGTH];
+};
+
+struct ecmp_nexthop_node {
+    struct hmap_node nexthop_node;
+    unsigned long int nexthop_lkup_id;
+    char nexthop_str[MAX_ECMP_ROUTE_HASH_LENGTH];
+};
 #endif /* __OPS_ROUTING_H__ */
