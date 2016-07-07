@@ -50,6 +50,7 @@
 #include "ops-sflow.h"
 #include "ops-classifier.h"
 #include "netdev-bcmsdk.h"
+#include "ops-classifier-private.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_debug);
 
@@ -1059,6 +1060,7 @@ hw_resource_show (int unit, opennsl_field_group_t group, struct ds *ds)
 {
     int ret          = 0;
     opennsl_field_group_status_t status;
+    opennsl_field_group_t aclv4_ingress_group;
 
     /* Retrieving status from field group */
     ret = opennsl_field_group_status_get(unit, group, &status);
@@ -1066,6 +1068,14 @@ hw_resource_show (int unit, opennsl_field_group_t group, struct ds *ds)
         VLOG_ERR("Error getting hw resources for unit %d, group %d\n", unit, group);
         ds_put_format(ds, "Error getting hw resources for unit %d, group %d\n", unit, group);
         return;
+    }
+
+    /* Check if field group is aclv4 ingress group. If so, temporarily display
+     * classifier rules maximum with restricted value MAX_INGRESS_IPv4_ACL_RULES
+     */
+    aclv4_ingress_group = ops_cls_get_ingress_group_id_for_hw_unit(unit);
+    if (group == aclv4_ingress_group) {
+        (&status)->entries_total = MAX_INGRESS_IPv4_ACL_RULES;
     }
 
     /* Print out current hw resources rows. Group required is one per feature for now.
