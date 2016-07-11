@@ -82,4 +82,6 @@ extern opennsl_field_group_t ops_l3intf_ingress_stats_group_id_for_hw_unit(int u
 
 extern opennsl_field_group_t ops_l3intf_egress_stats_group_id_for_hw_unit(int unit);
 
+extern void netdev_bcmsdk_set_l3_intf_id(struct netdev *netdev, opennsl_vlan_t vlan);
+
 #endif /* netdev-bcmsdk.h */

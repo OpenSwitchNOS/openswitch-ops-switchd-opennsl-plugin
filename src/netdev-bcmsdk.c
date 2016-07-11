@@ -270,6 +270,16 @@ netdev_bcmsdk_get_subintf_vlan(struct netdev *netdev, opennsl_vlan_t *vlan)
     *vlan = nb->subintf_vlan_id;
 }
 
+void
+netdev_bcmsdk_set_l3_intf_id(struct netdev *netdev, opennsl_vlan_t vlan)
+{
+    struct netdev_bcmsdk *nb = netdev_bcmsdk_cast(netdev);
+    ovs_assert(is_bcmsdk_class(netdev_get_class(netdev)));
+    ovs_mutex_lock(&nb->mutex);
+    nb->l3_intf_id = vlan;
+    ovs_mutex_unlock(&nb->mutex);
+}
+
 static struct netdev_bcmsdk *
 netdev_from_hw_id(int hw_unit, int hw_id)
 {
@@ -1245,6 +1255,171 @@ netdev_bcmsdk_get_l3_stats(const struct netdev *netdev_,
 }
 
 static int
+netdev_bcmsdk_init_l3_ingress_stats(struct netdev *netdev_, opennsl_vlan_t vlan_id)
+{
+    int rc = 0;
+    uint32_t ing_stat_id = 0;
+    uint32_t ing_num_id = 0;
+
+    /* Create Ingress stat object using the vlan id */
+    rc = opennsl_stat_group_create(0, opennslStatObjectIngL3Intf,
+            opennslStatGroupModeTrafficType, &ing_stat_id,
+            &ing_num_id);
+    if (rc) {
+        VLOG_ERR("Failed to create bcm stat group for ingress id %d",
+                vlan_id);
+        return 1; /* Return error */
+    }
+
+    /* Attach stat to customized group mode */
+    rc = opennsl_stat_custom_group_create(0, l3_stats_mode_id,
+            opennslStatObjectIngL3Intf, &ing_stat_id, &ing_num_id);
+    if (rc) {
+        VLOG_ERR("Failed to create custom stat group for ing id %d",
+                vlan_id);
+        return 1; /* Return error */
+    }
+
+    rc = opennsl_l3_ingress_stat_attach(0, vlan_id, ing_stat_id);
+    if (rc) {
+        VLOG_ERR("Failed to attach stat obj, for ingress id %d, %s",
+                vlan_id, opennsl_errmsg(rc));
+        return 1; /* Return error */
+    }
+
+    rc = netdev_bcmsdk_set_l3_ingress_stat_obj(netdev_,
+            vlan_id,
+            ing_stat_id,
+            ing_num_id);
+    if (rc) {
+        VLOG_ERR("Failed to set l3 ingress stats obj for vlanid %d",
+                vlan_id);
+        return 1; /* Return error */
+    }
+    return 0;
+}
+
+static int
+netdev_bcmsdk_set_l3_egress_id_after_clear(struct netdev_bcmsdk *netdev,
+                                           uint32_t egr_stat_id,
+                                           uint32_t egr_num_id,
+                                           int l3_egress_id)
+{
+    int rc = 0;
+    rc = opennsl_stat_group_create(netdev->hw_unit, opennslStatObjectEgrL3Intf,
+                                   opennslStatGroupModeTrafficType,
+                                   &egr_stat_id, &egr_num_id);
+    if (rc) {
+        VLOG_ERR("Failed to create bcm stat group for egress object %d",
+                  l3_egress_id);
+        return 1; /* Return error */
+    }
+
+    rc = opennsl_l3_egress_stat_attach(netdev->hw_unit, l3_egress_id,
+                                       egr_stat_id);
+    if (rc) {
+        VLOG_ERR("Failed to attach bcm stat object, for egress object %d",
+                  l3_egress_id);
+        return 1; /* Return error */
+    }
+    return rc;
+}
+
+/* This function clears all the global statistics counters associated with
+ * L3 interfaces. These do not include the FP stat entries, which are used
+ * for counting IPv4/IPv6 specific counters.
+ */
+int
+netdev_bcmsdk_clear_l3_global_stats(struct netdev *netdev_)
+{
+    struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
+    opennsl_error_t rc = OPENNSL_E_NONE;
+    struct ops_stats_egress_id *egress_id_node;
+
+    if(!netdev) {
+        return OPENNSL_E_NONE;
+    }
+    /* Iterate through egress object hashmap and get all stats object
+     * to be removed. */
+    HMAP_FOR_EACH(egress_id_node, egress_node, &(netdev->egress_id_map)) {
+        VLOG_DBG("Iterating through hmap for id: %d",
+                  egress_id_node->egress_object_id);
+        /* Make sure we detach the egress stats objects. */
+
+        rc = opennsl_l3_egress_stat_detach(netdev->hw_unit, egress_id_node->egress_object_id);
+        if (rc) {
+            VLOG_ERR("Failed to detach stats from egress object id : %d",
+                      egress_id_node->egress_object_id);
+        }
+
+        rc = opennsl_stat_group_destroy(netdev->hw_unit, egress_id_node->egress_stat_id);
+        if (rc) {
+            VLOG_ERR("Failed to destroy stats group for egress object id : %d",
+                      egress_id_node->egress_object_id);
+        }
+        netdev_bcmsdk_set_l3_egress_id_after_clear(netdev,
+        egress_id_node->egress_stat_id, egress_id_node->egress_num_id,
+        egress_id_node->egress_object_id);
+    }
+
+    if(netdev->ingress_stats_object.ingress_stat_id ||
+            netdev->ingress_stats_object.ingress_vlan_id)
+    {
+        /* Now detach the ingress stats object and destroy it */
+
+        rc = opennsl_l3_ingress_stat_detach(netdev->hw_unit,
+                netdev->ingress_stats_object.ingress_vlan_id);
+        if (rc) {
+            VLOG_ERR("Failed to detach stats from ingress vlan id : %d",
+                    netdev->ingress_stats_object.ingress_vlan_id);
+        }
+
+        rc = opennsl_stat_group_destroy(netdev->hw_unit,
+                netdev->ingress_stats_object.ingress_stat_id);
+        if (rc) {
+            VLOG_ERR("Failed to destroy stats group for ingress vlan id : %d",
+                    netdev->ingress_stats_object.ingress_vlan_id);
+        }
+        memset(&netdev->ingress_stats_object, 0, sizeof(netdev->ingress_stats_object));
+        /* Initialize l3 ingress stats. */
+        netdev_bcmsdk_init_l3_ingress_stats(netdev_, netdev->l3_intf_id);
+    }
+
+    return OPENNSL_E_NONE;
+}
+
+static void
+netdev_bcmsdk_clear_l3_stats(struct netdev *netdev_)
+{
+    struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
+
+    /* Clear fp stats. */
+    netdev_bcmsdk_l3intf_fp_stats_destroy(netdev->hw_unit, netdev->hw_id);
+    netdev_bcmsdk_l3intf_fp_stats_init(netdev->l3_intf_id, netdev->hw_id, netdev->hw_unit);
+
+    /* Clear global stats. */
+    netdev_bcmsdk_clear_l3_global_stats(netdev_);
+
+    /* Clear deleted stats counter */
+    ovs_mutex_lock(&netdev->mutex);
+    netdev->deleted_stats_counter.del_uc_packets = 0;
+    netdev->deleted_stats_counter.del_mc_packets = 0;
+    netdev->deleted_stats_counter.del_uc_bytes = 0;
+    netdev->deleted_stats_counter.del_mc_bytes = 0;
+    ovs_mutex_unlock(&netdev->mutex);
+}
+
+
+static int
+netdev_bcmsdk_clear_stats(struct netdev *netdev_)
+{
+    struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
+    /* Call the function to clear interface statistics */
+    netdev_bcmsdk_clear_l3_stats(netdev_);
+    return bcmsdk_clear_port_stats(netdev->hw_unit, netdev->hw_id);
+}
+
+static int
 netdev_bcmsdk_get_features(const struct netdev *netdev_,
                            enum netdev_features *current,
                            enum netdev_features *advertised,
@@ -1465,6 +1640,7 @@ static const struct netdev_class bcmsdk_class = {
     netdev_bcmsdk_get_carrier_resets,
     NULL,                       /* get_miimon */
     netdev_bcmsdk_get_stats,
+    netdev_bcmsdk_clear_stats,  /*clear statistics*/
 
     netdev_bcmsdk_get_features,
     NULL,                       /* set_advertisements */
@@ -1694,6 +1870,7 @@ static const struct netdev_class bcmsdk_internal_class = {
     NULL,                       /* get_carrier_resets */
     NULL,                       /* get_miimon */
     netdev_bcmsdk_get_l3_stats, /* get_stats */
+    NULL,                       /* clear statistics */
 
     NULL,                       /* get_features */
     NULL,                       /* set_advertisements */
@@ -1761,6 +1938,7 @@ static const struct netdev_class bcmsdk_l3_loopback_class = {
     NULL,                       /* get_carrier_resets */
     NULL,                       /* get_miimon */
     NULL,                       /* get_stats */
+    NULL,                       /* clear statistics */
     NULL,                       /* get_features */
     NULL,                       /* set_advertisements */
     NULL,                       /* set_policing */
@@ -1826,6 +2004,7 @@ static const struct netdev_class bcmsdk_subintf_class = {
     NULL,                       /* get_carrier_resets */
     NULL,                       /* get_miimon */
     netdev_bcmsdk_get_l3_stats, /* get_stats */
+    NULL,                       /* clear statistics */
 
     NULL,                       /* get_features */
     NULL,                       /* set_advertisements */
@@ -1943,6 +2122,7 @@ netdev_bcmsdk_l3intf_fp_stats_init(opennsl_vlan_t vlan_id, opennsl_port_t hw_por
         netdev_bcmsdk_l3intf_fp_stats_destroy(hw_port, hw_unit);
         return rc;
     }
+
     rc = netdev_bcmsdk_qualify_ingress_mcast_entries(hw_unit, fp_entries,
             stat_ids, &(stat_ifp[0]), vlan_id);
     if (OPENNSL_FAILURE(rc)) {
@@ -1952,6 +2132,7 @@ netdev_bcmsdk_l3intf_fp_stats_init(opennsl_vlan_t vlan_id, opennsl_port_t hw_por
         netdev_bcmsdk_l3intf_fp_stats_destroy(hw_port, hw_unit);
         return rc;
     }
+
     rc = netdev_bcmsdk_qualify_egress_unicast_entries(hw_unit, fp_entries,
             stat_ids, &(stat_ifp[0]), hw_port);
     if (OPENNSL_FAILURE(rc)) {
@@ -1961,6 +2142,7 @@ netdev_bcmsdk_l3intf_fp_stats_init(opennsl_vlan_t vlan_id, opennsl_port_t hw_por
         netdev_bcmsdk_l3intf_fp_stats_destroy(hw_port, hw_unit);
         return rc;
     }
+
     rc = netdev_bcmsdk_qualify_egress_mcast_entries(hw_unit, fp_entries,
             stat_ids, &(stat_ifp[0]), hw_port);
     if (OPENNSL_FAILURE(rc)) {
