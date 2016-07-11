@@ -267,3 +267,16 @@ bcmsdk_get_sflow_port_stats(int hw_unit, int hw_port,
     return 0;
 
 } // bcmsdk_get_sflow_port_stats
+
+int
+bcmsdk_clear_port_stats(int hw_unit, int hw_port)
+{
+    opennsl_error_t rc = OPENNSL_E_NONE;
+    rc = opennsl_stat_clear(hw_unit, hw_port);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to clear interface statistics. Unit=%d port=%d. rc=%s",
+                 hw_unit, hw_port, opennsl_errmsg(rc));
+        return -1;
+    }
+    return 0;
+} //bcmsdk_clear_port_stats

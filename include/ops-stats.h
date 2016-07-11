@@ -71,6 +71,7 @@ struct ops_deleted_stats {
 
 
 extern int bcmsdk_get_port_stats(int hw_unit, int hw_port, struct netdev_stats *stats);
+extern int bcmsdk_clear_port_stats(int hw_unit, int hw_port);
 extern int bcmsdk_get_sflow_port_stats(int hw_unit, int hw_port,
                                        struct ops_sflow_port_stats *stats);
 

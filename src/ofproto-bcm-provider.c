@@ -1256,7 +1256,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                 bundle->l3_intf = ops_routing_enable_l3_interface(
                             hw_unit, hw_port, ofproto->vrf_id, vlan_id,
                             mac, port->up.netdev);
-
+                netdev_bcmsdk_set_l3_intf_id(port->up.netdev, vlan_id);
                 if (bundle->l3_intf) {
                     bundle->hw_unit = hw_unit;
                     bundle->hw_port = hw_port;
