@@ -109,6 +109,13 @@ struct ops_switch_mac_info {
     int station_id;
 };
 
+struct ecmp_egress_info {
+    struct hmap_node node;   /* ecmp egress value */
+    int ref_count;           /* reference count */
+    int hw_unit;             /* hw_unit */
+    opennsl_if_t ecmp_grpid; /* ecmp egress ID */
+};
+
 /* Hashmap of egress object ID's. Only used for mac-moves.
  * key = vlan_id + mac_addr
  * val = ID of the row in Egress table (in ASIC) for given vlan_id and mac_addr.
