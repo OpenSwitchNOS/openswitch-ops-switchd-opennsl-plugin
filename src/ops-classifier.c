@@ -1591,8 +1591,25 @@ ofproto_ops_cls_lag_update(struct ops_cls_list              *list,
     }
 
     if (!in_asic) {
-        rc = OPS_CLS_FAIL;
-        goto lag_update_fail;
+        /* first binding of classifier. The action cannot be delete */
+        if (ops_update_pbmp_action == OPS_PBMP_DEL) {
+            rc = OPS_CLS_FAIL;
+            goto lag_update_fail;
+        }
+
+        rc = ops_cls_install_classifier_in_asic(hw_unit, cls,
+                                                &cls->cls_entry_list,
+                                                &port_bmp, &fail_index, FALSE,
+                                                interface_info);
+        if (ops_cls_error(rc)) {
+            int index = 0;
+            ops_cls_delete_rules_in_asic(hw_unit, cls, &index,
+                                         interface_info, FALSE);
+            if (!cls->route_cls.in_asic && !cls->port_cls.in_asic) {
+                ops_cls_delete(cls);
+            }
+            goto lag_update_fail;
+        }
     } else {
         /* already in asic update port bitmap */
         rc = ops_cls_update_classifier_in_asic(hw_unit, cls, &port_bmp,
