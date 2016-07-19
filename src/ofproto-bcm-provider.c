@@ -1065,6 +1065,8 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     const char *type = NULL;
     struct bcmsdk_provider_ofport_node *next_port;
     bool ok;
+    bool new_bundle = false;
+    bool l3_vlan_id_changed = false;
 
     VLOG_DBG("%s: entry, ofproto_=%p, aux=%p, s=%p",
              __FUNCTION__, ofproto_, aux, s);
@@ -1082,6 +1084,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     if (!bundle) {
         VLOG_DBG("%s creating NEW bundle %s", __FUNCTION__, s->name);
 
+        new_bundle = true;
         bundle = xmalloc(sizeof *bundle);
 
         bundle->enable = true;
@@ -1206,6 +1209,13 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                 VLOG_DBG("%s call disable s-enable = %d or vid(%d) != vlan_id(%d)",
                            __FUNCTION__, s->enable,
                            bundle->l3_intf->l3a_vid, vlan_id);
+
+                if (bundle->l3_intf->l3a_vid != vlan_id) {
+                    /* Destroy l3 stats */
+                    netdev_bcmsdk_l3_global_stats_destroy(port->up.netdev);
+                    l3_vlan_id_changed = true;
+                }
+
                 if (strcmp(type, OVSREC_INTERFACE_TYPE_VLANSUBINT) == 0) {
                     VLOG_DBG("%s disable l3 subinterface", __FUNCTION__);
                      if (bundle->l3_intf->l3a_vid != vlan_id) {
@@ -1240,7 +1250,6 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                 } else if (strcmp(type, OVSREC_INTERFACE_TYPE_INTERNAL) == 0) {
                     opennsl_l3_intf_delete(hw_unit, bundle->l3_intf);
                 }
-                netdev_bcmsdk_l3_global_stats_destroy(port->up.netdev);
                 bundle->l3_intf = NULL;
                 bundle->hw_unit = 0;
                 bundle->hw_port = -1;
@@ -1294,6 +1303,9 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                     }
                 }
             }
+        }
+
+        if (vlan_id && (new_bundle || l3_vlan_id_changed)) {
             /* Initialize L3 ingress flex counters. The L3 egress flex counters are
              * installed dynamically per egress object at creation time. */
             init_l3_ingress_stats(port, vlan_id);
