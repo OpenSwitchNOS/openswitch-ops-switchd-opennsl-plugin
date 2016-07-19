@@ -380,7 +380,7 @@ netdev_bcmsdk_construct(struct netdev *netdev_)
     netdev->link_state = 0;
 
     hmap_init(&netdev->egress_id_map);
-
+    memset(&netdev->ingress_stats_object, 0, sizeof(netdev->ingress_stats_object));
     netdev->l3_stat_fp_entries = NULL;
     netdev->l3_stat_fp_ids = NULL;
     netdev->current_features = 0;

@@ -1240,7 +1240,6 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                 } else if (strcmp(type, OVSREC_INTERFACE_TYPE_INTERNAL) == 0) {
                     opennsl_l3_intf_delete(hw_unit, bundle->l3_intf);
                 }
-                netdev_bcmsdk_l3_global_stats_destroy(port->up.netdev);
                 bundle->l3_intf = NULL;
                 bundle->hw_unit = 0;
                 bundle->hw_port = -1;
