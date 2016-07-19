@@ -380,7 +380,7 @@ netdev_bcmsdk_construct(struct netdev *netdev_)
     netdev->link_state = 0;
 
     hmap_init(&netdev->egress_id_map);
-
+    memset(&netdev->ingress_stats_object, 0, sizeof(netdev->ingress_stats_object));
     netdev->l3_stat_fp_entries = NULL;
     netdev->l3_stat_fp_ids = NULL;
     netdev->current_features = 0;
@@ -427,6 +427,8 @@ netdev_bcmsdk_dealloc(struct netdev *netdev_)
     }
 
     netdev_bcmsdk_l3_global_stats_destroy(netdev_);
+    hmap_destroy(&netdev->egress_id_map);
+
     netdev_bcmsdk_l3intf_fp_stats_destroy(netdev->hw_id, netdev->hw_unit);
 
     free(netdev);
@@ -2022,9 +2024,6 @@ netdev_bcmsdk_l3_global_stats_destroy(struct netdev *netdev_)
         hmap_remove(&(netdev->egress_id_map), &(egress_id_node->egress_node));
         free(egress_id_node);
     }
-
-    /* Destroy the hashmap once all of the entries are removed  and freed. */
-    hmap_destroy(&netdev->egress_id_map);
 
     if(netdev->ingress_stats_object.ingress_stat_id ||
             netdev->ingress_stats_object.ingress_vlan_id)
