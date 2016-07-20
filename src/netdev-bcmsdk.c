@@ -181,9 +181,21 @@ netdev_bcmsdk_qualify_ingress_entry(int unit, opennsl_field_entry_t *entry_id, i
 
 static int netdev_bcmsdk_construct(struct netdev *);
 
+static int
+netdev_bcmsdk_populate_l3_stats(struct netdev_bcmsdk *netdev,
+                                struct netdev_stats *stats);
+
+
 /* FP groups for l3 intf stats */
 opennsl_field_group_t l3intf_ingress_stats_fp_group = 0;
 opennsl_field_group_t l3intf_egress_stats_fp_group = 0;
+
+/* Global struct to keep track of L3 ingress stats mode */
+struct l3_stats_mode_t {
+    uint32_t mode_id;
+    uint32_t ref_count;
+};
+struct l3_stats_mode_t l3_ingress_stats_mode = {0};
 
 /*
 * ops_l3intf_ingress_stats_group_id_for_hw_unit
@@ -1048,9 +1060,7 @@ netdev_bcmsdk_remove_l3_egress_id(const struct netdev *netdev_,
     ovs_mutex_unlock(&netdev->mutex);
 
     if (egress_id_node == NULL) {
-        VLOG_ERR("Failed to retrieve hashmap node for l3 egress id: %d",
-                 l3_egress_id);
-        return 1; /* Return error */
+        return rc;
     }
 
     memset(counter_index, 0 , 10);
@@ -1207,10 +1217,28 @@ netdev_bcmsdk_get_sflow_stats(const struct netdev_bcmsdk *netdev_bcm,
 static int
 netdev_bcmsdk_get_stats(const struct netdev *netdev_, struct netdev_stats *stats)
 {
+    int rc = 0;
     struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
     /* Call the function to populate sFlow statistics */
     netdev_bcmsdk_get_sflow_stats(netdev, stats);
-    return bcmsdk_get_port_stats(netdev->hw_unit, netdev->hw_id, stats);
+
+    /* Base interface stats */
+    rc = bcmsdk_get_port_stats(netdev->hw_unit, netdev->hw_id, stats);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to get L3 interface statistics. Unit=%d port=%d. rc=%s",
+                 netdev->hw_unit, netdev->hw_id, opennsl_errmsg(rc));
+        return -1;
+    }
+
+    /* L3 stats */
+    rc = netdev_bcmsdk_populate_l3_stats(netdev, stats);
+    if (OPENNSL_FAILURE(rc)) {
+        VLOG_ERR("Failed to get L3 interface statistics. Unit=%d port=%d. rc=%s",
+                 netdev->hw_unit, netdev->hw_id, opennsl_errmsg(rc));
+        return -1;
+    }
+
+    return 0;
 }
 
 static int
@@ -1884,14 +1912,116 @@ netdev_bcmsdk_register(void)
     netdev_register_provider(&bcmsdk_subintf_class);
 }
 
+static int
+netdev_bcmsdk_create_ingress_stat_mode(uint32_t *l3_ingress_stats_mode_id)
+{
+    int total_counters=2;
+    int num_selectors=4;
+    uint32_t flags = OPENNSL_STAT_GROUP_MODE_INGRESS;
+    opennsl_stat_group_mode_attr_selector_t attr_selectors[4];
+
+    /* Selector0 for KNOWN_L3UC_PKT. Assigned to 1st counter. */
+    opennsl_stat_group_mode_attr_selector_t_init(&attr_selectors[0]);
+    attr_selectors[0].counter_offset = L3_UCAST_STAT_GROUP_COUNTER_OFFSET;
+    attr_selectors[0].attr = opennslStatGroupModeAttrPktType;
+    attr_selectors[0].attr_value = opennslStatGroupModeAttrPktTypeKnownL3UC;
+
+    /* Selector1 for UNKNOWN_L3UC_PKT. Assigned to 1st counter. */
+    opennsl_stat_group_mode_attr_selector_t_init(&attr_selectors[1]);
+    attr_selectors[1].counter_offset = L3_UCAST_STAT_GROUP_COUNTER_OFFSET;
+    attr_selectors[1].attr = opennslStatGroupModeAttrPktType;
+    attr_selectors[1].attr_value = opennslStatGroupModeAttrPktTypeUnknownL3UC;
+
+    /* Selector2 for KNOWN_IPMC. Assigned to 2nd counter. */
+    opennsl_stat_group_mode_attr_selector_t_init(&attr_selectors[2]);
+    attr_selectors[2].counter_offset = L3_MCAST_STAT_GROUP_COUNTER_OFFSET;
+    attr_selectors[2].attr = opennslStatGroupModeAttrPktType;
+    attr_selectors[2].attr_value = opennslStatGroupModeAttrPktTypeKnownIPMC;
+
+    /* Selector3 for UNKNOWN_IPMC. Assigned to 2nd counter. */
+    opennsl_stat_group_mode_attr_selector_t_init(&attr_selectors[3]);
+    attr_selectors[3].counter_offset = L3_MCAST_STAT_GROUP_COUNTER_OFFSET;
+    attr_selectors[3].attr = opennslStatGroupModeAttrPktType;
+    attr_selectors[3].attr_value = opennslStatGroupModeAttrPktTypeUnknownIPMC;
+
+    /* Create customized stat mode */
+    return opennsl_stat_group_mode_id_create(0, flags,
+                                             total_counters,
+                                             num_selectors, attr_selectors,
+                                             l3_ingress_stats_mode_id);
+}
+
+/* Initialize L3 ingress flex counters. The L3 egress flex counters are
+ * installed dynamically per egress object at creation time.
+*/
+int
+netdev_bcmsdk_init_global_l3_ingress_stats(const struct netdev *netdev_,
+                                           opennsl_vlan_t vlan_id)
+{
+    int rc = 0;
+    uint32_t ing_stat_id = 0;
+    uint32_t ing_num_id = 0;
+
+    /* Create Ingress stat object using the vlan id */
+    rc = opennsl_stat_group_create(0, opennslStatObjectIngL3Intf,
+            opennslStatGroupModeTrafficType, &ing_stat_id,
+            &ing_num_id);
+    if (rc) {
+        VLOG_ERR("Failed to create bcm stat group for ingress id %d",
+                vlan_id);
+        return 1; /* Return error */
+    }
+
+    /* Create ingress stats group mode */
+    if(l3_ingress_stats_mode.mode_id == 0 || l3_ingress_stats_mode.ref_count == 0) {
+        rc = netdev_bcmsdk_create_ingress_stat_mode(&l3_ingress_stats_mode.mode_id);
+        if (rc) {
+            VLOG_ERR("Failed to create L3 ingress stat group mode id");
+            return 1; /* Return error */
+        }
+    }
+
+    /* Attach stat to customized group mode */
+    rc = opennsl_stat_custom_group_create(0, l3_ingress_stats_mode.mode_id,
+            opennslStatObjectIngL3Intf, &ing_stat_id, &ing_num_id);
+
+    if (rc) {
+        VLOG_ERR("Failed to create custom stat group for ingress id %d",
+                 vlan_id);
+        return 1; /* Return error */
+    }
+
+    rc = opennsl_l3_ingress_stat_attach(0, vlan_id, ing_stat_id);
+    if (rc) {
+        VLOG_ERR("Failed to attach stat obj, for ingress id %d, %s",
+                vlan_id, opennsl_errmsg(rc));
+        return 1; /* Return error */
+    }
+
+    rc = netdev_bcmsdk_set_l3_ingress_stat_obj(netdev_,
+            vlan_id,
+            ing_stat_id,
+            ing_num_id);
+    if (rc) {
+        VLOG_ERR("Failed to set l3 ingress stats obj for vlanid %d",
+                vlan_id);
+        return 1; /* Return error */
+    }
+
+    l3_ingress_stats_mode.ref_count++;
+    return 0;
+}
+
 /* This function creates FP stat entries, which are used for various
  * IPv4/IPv6 specific statistics.
  */
 int
-netdev_bcmsdk_l3intf_fp_stats_init(opennsl_vlan_t vlan_id, opennsl_port_t hw_port, int hw_unit)
+netdev_bcmsdk_l3intf_fp_stats_init(const struct netdev *netdev_, opennsl_vlan_t vlan_id)
 {
     opennsl_error_t rc = OPENNSL_E_NONE;
-    struct netdev_bcmsdk *netdev = netdev_from_hw_id(hw_unit, hw_port);
+    struct netdev_bcmsdk *netdev = netdev_bcmsdk_cast(netdev_);
+    opennsl_port_t hw_port = netdev->hw_id;
+    int hw_unit = netdev->hw_unit;
 
     if (!netdev) {
         return OPENNSL_E_NONE;
@@ -1925,7 +2055,7 @@ netdev_bcmsdk_l3intf_fp_stats_init(opennsl_vlan_t vlan_id, opennsl_port_t hw_por
         rc = opennsl_field_group_create(hw_unit, rx_stat_qset, FP_STATS_GROUP_PRIORITY,
                                         &l3intf_ingress_stats_fp_group);
         if (OPENNSL_FAILURE(rc)) {
-            VLOG_DBG("Failed to create FP ingress stats group for l3 intf \
+            VLOG_ERR("Failed to create FP ingress stats group for l3 intf \
                       Unit=%d port=%d Vlanid=%d. rc=%s",
                       hw_unit, hw_port, vlan_id, opennsl_errmsg(rc));
             l3intf_ingress_stats_fp_group = 0;
@@ -1938,7 +2068,7 @@ netdev_bcmsdk_l3intf_fp_stats_init(opennsl_vlan_t vlan_id, opennsl_port_t hw_por
         rc = opennsl_field_group_create(hw_unit, tx_stats_qset, FP_STATS_GROUP_PRIORITY,
                                         &l3intf_egress_stats_fp_group);
         if (OPENNSL_FAILURE(rc)) {
-            VLOG_DBG("Failed to create FP egress stats group for l3 intf \
+            VLOG_ERR("Failed to create FP egress stats group for l3 intf \
                       Unit=%d port=%d Vlanid=%d. rc=%s",
                       hw_unit, hw_port, vlan_id, opennsl_errmsg(rc));
             l3intf_ingress_stats_fp_group = 0;
@@ -1949,7 +2079,7 @@ netdev_bcmsdk_l3intf_fp_stats_init(opennsl_vlan_t vlan_id, opennsl_port_t hw_por
 
     rc = netdev_bcmsdk_qualify_ingress_unicast_entries(hw_unit, fp_entries, stat_ids, &(stat_ifp[0]), vlan_id);
     if (OPENNSL_FAILURE(rc)) {
-        VLOG_DBG("Error while qualifing FP ucast ingress stat entries \
+        VLOG_ERR("Error while qualifing FP ucast ingress stat entries \
                   Unit=%d Vlanid=%d. rc=%s",
                   hw_unit, vlan_id, opennsl_errmsg(rc));
         netdev_bcmsdk_l3intf_fp_stats_destroy(hw_port, hw_unit);
@@ -1958,7 +2088,7 @@ netdev_bcmsdk_l3intf_fp_stats_init(opennsl_vlan_t vlan_id, opennsl_port_t hw_por
     rc = netdev_bcmsdk_qualify_ingress_mcast_entries(hw_unit, fp_entries,
             stat_ids, &(stat_ifp[0]), vlan_id);
     if (OPENNSL_FAILURE(rc)) {
-        VLOG_DBG("Error while qualifing FP mcast ingress stat entries \
+        VLOG_ERR("Error while qualifing FP mcast ingress stat entries \
                   Unit=%d Vlanid=%d. rc=%s",
                   hw_unit, vlan_id, opennsl_errmsg(rc));
         netdev_bcmsdk_l3intf_fp_stats_destroy(hw_port, hw_unit);
@@ -1967,7 +2097,7 @@ netdev_bcmsdk_l3intf_fp_stats_init(opennsl_vlan_t vlan_id, opennsl_port_t hw_por
     rc = netdev_bcmsdk_qualify_egress_unicast_entries(hw_unit, fp_entries,
             stat_ids, &(stat_ifp[0]), hw_port);
     if (OPENNSL_FAILURE(rc)) {
-        VLOG_DBG("Error while qualifing FP ucast egress stat entries \
+        VLOG_ERR("Error while qualifing FP ucast egress stat entries \
                   Unit=%d portid=%d. rc=%s",
                   hw_unit, hw_port, opennsl_errmsg(rc));
         netdev_bcmsdk_l3intf_fp_stats_destroy(hw_port, hw_unit);
@@ -1976,7 +2106,7 @@ netdev_bcmsdk_l3intf_fp_stats_init(opennsl_vlan_t vlan_id, opennsl_port_t hw_por
     rc = netdev_bcmsdk_qualify_egress_mcast_entries(hw_unit, fp_entries,
             stat_ids, &(stat_ifp[0]), hw_port);
     if (OPENNSL_FAILURE(rc)) {
-        VLOG_DBG("Error while qualifing FP mcast egress stat entries \
+        VLOG_ERR("Error while qualifing FP mcast egress stat entries \
                   Unit=%d portid=%d. rc=%s",
                   hw_unit, hw_port, opennsl_errmsg(rc));
         netdev_bcmsdk_l3intf_fp_stats_destroy(hw_port, hw_unit);
@@ -2046,6 +2176,8 @@ netdev_bcmsdk_l3_global_stats_destroy(struct netdev *netdev_)
                     netdev->ingress_stats_object.ingress_vlan_id);
         }
         memset(&netdev->ingress_stats_object, 0, sizeof(netdev->ingress_stats_object));
+
+        l3_ingress_stats_mode.ref_count--;
     }
 
     return OPENNSL_E_NONE;
@@ -2364,11 +2496,9 @@ netdev_bcmsdk_qualify_egress_mcast_entries(int unit, opennsl_field_entry_t *fp_e
     return OPENNSL_E_NONE;
 }
 
-int
-netdev_bcmsdk_populate_l3_stats(int hw_unit, int hw_port, struct netdev_stats *stats)
+static int
+netdev_bcmsdk_populate_l3_stats(struct netdev_bcmsdk *netdev, struct netdev_stats *stats)
 {
-    struct netdev_bcmsdk *netdev = netdev_from_hw_id(hw_unit, hw_port);
-
     if (!netdev) {
         return OPENNSL_E_NONE;
     }
@@ -2377,6 +2507,8 @@ netdev_bcmsdk_populate_l3_stats(int hw_unit, int hw_port, struct netdev_stats *s
     opennsl_error_t rc = OPENNSL_E_NONE;
     uint64 l3_fp_packet_stats[NUM_L3_FP_STATS];
     uint64 l3_fp_bytes_stats[NUM_L3_FP_STATS];
+    int hw_unit = netdev->hw_unit;
+    int hw_port = netdev->hw_id;
     int i;
 
     /* Global L3 Statistics */
