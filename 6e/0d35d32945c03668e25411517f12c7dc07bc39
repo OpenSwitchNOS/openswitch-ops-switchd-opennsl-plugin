@@ -1,0 +1,8 @@
+Code-Review+2: Gary Wassermann <gary.wassermann@hpe.com>
+Workflow+1: Gary Wassermann <gary.wassermann@hpe.com>
+Verified+2: Gary Wassermann <gary.wassermann@hpe.com>
+Submitted-by: Gary Wassermann <gary.wassermann@hpe.com>
+Submitted-at: Fri, 22 Jul 2016 18:19:23 +0000
+Reviewed-on: https://review.openswitch.net/12469
+Project: openswitch/ops-switchd-opennsl-plugin
+Branch: refs/heads/feature/acl
