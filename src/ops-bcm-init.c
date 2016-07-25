@@ -86,7 +86,7 @@ opennsl_rx_t opennsl_rx_callback(int unit, opennsl_pkt_t *pkt, void *cookie)
 
         /* Write incoming data to Receivers buffer. When buffer is full,
          * data is sent to Collectors. */
-        ops_sflow_write_sampled_pkt(pkt);
+        ops_sflow_write_sampled_pkt(unit, pkt);
     }
 
     /* ACL logging packet */

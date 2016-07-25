@@ -1198,6 +1198,7 @@ netdev_bcmsdk_populate_sflow_stats(bool ingress, int hw_unit, int hw_port,
     }
 }
 
+
 /*
  * This function will update the statistics for sFlow which was previously
  * populated into the netdev_bcmsdk->stats structure.
