@@ -59,6 +59,7 @@ struct ops_classifier {
     struct uuid id;
     char *name;                                /* name of classifier list */
     enum ops_cls_type type;                    /* type of classifier list - aclv4, aclv6 */
+    uint16_t num_entries;                      /* number of toatl entries */
     struct ovs_list cls_entry_list;            /* list of ops_cls_entry */
     struct ovs_list cls_entry_update_list;     /* list of updated ops_cls_entry */
 

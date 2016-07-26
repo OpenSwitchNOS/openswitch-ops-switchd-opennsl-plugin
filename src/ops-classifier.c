@@ -272,6 +272,7 @@ ops_cls_add(struct ops_cls_list  *clist)
     cls->id = clist->list_id;
     cls->name = xstrdup(clist->list_name);
     cls->type = clist->list_type;
+    cls->num_entries = clist->num_entries;
 
     list_init(&cls->cls_entry_list);
     list_init(&cls->cls_entry_update_list);
@@ -339,7 +340,7 @@ ops_cls_delete_range_entries(struct ovs_list *list)
  * Delete original entires of classifier
  */
 static void
-ops_cls_delete_orig_entries(struct ops_classifier *cls)
+ops_cls_delete_orig_entries_index(struct ops_classifier *cls)
 {
     if (!cls) {
         return;
@@ -352,8 +353,6 @@ ops_cls_delete_orig_entries(struct ops_classifier *cls)
     ops_cls_delete_rule_entries(&cls->route_cls.rule_index_list);
     ops_cls_delete_stats_entries(&cls->route_cls.stats_index_list);
     ops_cls_delete_range_entries(&cls->route_cls.range_index_list);
-
-    ops_cls_cleanup_entries(&cls->cls_entry_list);
 }
 
 /*
@@ -389,7 +388,9 @@ ops_cls_delete(struct ops_classifier *cls)
         return;
     }
 
-    ops_cls_delete_orig_entries(cls);
+    ops_cls_delete_orig_entries_index(cls);
+    ops_cls_cleanup_entries(&cls->cls_entry_list);
+
     ops_cls_delete_updated_entries(cls);
 
     hmap_remove(&classifier_map, &cls->node);
@@ -1362,6 +1363,29 @@ ops_cls_update_classifier_in_asic(int                             hw_unit,
 }
 
 /*
+ * Check TCAM has sufficient entries to install ACL
+ */
+bool ops_avail_tcam_space(int unit, int acl_entries, int *available)
+{
+    *available = MAX_INGRESS_IPv4_ACL_RULES - cls_ingress_ipv4_rule_count[unit];
+    return (*available < acl_entries ? false : true);
+}
+
+/*
+ * Check enough space available on removing old rules
+ */
+bool ops_avail_tcam_space_replace_old_rules(int unit,
+                                            int acl_old_entries,
+                                            int acl_new_entries,
+                                            int *available)
+{
+    *available = MAX_INGRESS_IPv4_ACL_RULES - cls_ingress_ipv4_rule_count[unit]
+                 + acl_old_entries;
+    return (*available < acl_new_entries ? false : true);
+}
+
+
+/*
  * Apply classifier to a port
  */
 int
@@ -1379,16 +1403,31 @@ ops_cls_opennsl_apply(struct ops_cls_list            *list,
     char pbmp_string[200];
     int fail_index = 0; /* rule index to PI on failure */
     bool in_asic;
+    int tcam_space;
 
     VLOG_DBG("Apply classifier "UUID_FMT" (%s)",
               UUID_ARGS(&list->list_id), list->list_name);
 
     OPENNSL_PBMP_CLEAR(port_bmp);
+    /* get the port bits_map */
+    if (ops_cls_get_port_bitmap(ofproto, aux, &hw_unit, &port_bmp)) {
+        rc = OPS_CLS_FAIL;
+        goto apply_fail;
+    }
+
     cls = ops_cls_lookup(&list->list_id);
     if (!cls) {
+        if (!ops_avail_tcam_space(hw_unit, list->num_entries, &tcam_space)){
+            VLOG_ERR("Apply failed, no TCAM space available "
+                     "required %d, avilable %d",
+                     list->num_entries, tcam_space);
+            rc = OPENNSL_E_FULL;
+            goto apply_fail;
+        }
+
         cls = ops_cls_add(list);
         if (!cls) {
-            VLOG_ERR ("Failed to add classifier "UUID_FMT" (%s) in hashmap",
+            VLOG_ERR("Failed to add classifier "UUID_FMT" (%s) in hashmap",
                        UUID_ARGS(&list->list_id), list->list_name);
             rc = OPS_CLS_FAIL;
             goto apply_fail;
@@ -1397,11 +1436,6 @@ ops_cls_opennsl_apply(struct ops_cls_list            *list,
         VLOG_DBG("Classifier %s exist in hashmap", list->list_name);
     }
 
-    /* get the port bits_map */
-    if (ops_cls_get_port_bitmap(ofproto, aux, &hw_unit, &port_bmp)) {
-        rc = OPS_CLS_FAIL;
-        goto apply_fail;
-    }
 
     VLOG_DBG("Apply classifier %s on port(s) [ %s ]", cls->name,
               ops_cls_display_port_bit_map(&port_bmp, pbmp_string, 200));
@@ -1515,6 +1549,43 @@ remove_fail:
 }
 
 /*
+ * check if ACL replace creates space
+ */
+bool
+ops_avail_tcam_space_on_acl_replace(int                              hw_unit,
+                                    struct ops_classifier           *cls_orig,
+                                    struct ops_classifier           *cls_new,
+                                    opennsl_pbmp_t                  *port_bmp,
+                                    struct ops_cls_interface_info   *intf_info,
+                                    int                             *tcam_avail)
+{
+    opennsl_pbmp_t pbmp, rbmp;
+
+    OPENNSL_PBMP_CLEAR(pbmp);
+    OPENNSL_PBMP_CLEAR(rbmp);
+
+    pbmp = cls_orig->port_cls.pbmp;
+    rbmp = cls_orig->route_cls.pbmp;
+
+    if (intf_info && (intf_info->flags & OPS_CLS_INTERFACE_L3ONLY)) {
+        OPENNSL_PBMP_XOR(rbmp, *port_bmp);
+    } else {
+        OPENNSL_PBMP_XOR(pbmp, *port_bmp);
+    }
+
+    if (OPENNSL_PBMP_IS_NULL(pbmp) && OPENNSL_PBMP_IS_NULL(rbmp)) {
+        *tcam_avail = MAX_INGRESS_IPv4_ACL_RULES
+                      - cls_ingress_ipv4_rule_count[hw_unit]
+                      + cls_orig->num_entries;
+    } else {
+        *tcam_avail = MAX_INGRESS_IPv4_ACL_RULES
+                      - cls_ingress_ipv4_rule_count[hw_unit] ;
+    }
+
+    return (*tcam_avail < cls_new->num_entries ? false : true);
+}
+
+/*
  * Attach port to different classifier
  */
 int
@@ -1535,6 +1606,8 @@ ops_cls_opennsl_replace(const struct uuid               *list_id_orig,
     int fail_index = 0; /* rule index to PI on failure */
     bool *in_asic_orig = false;
     bool *in_asic_new = false;
+    bool check_tcam_space = false, evict_orig_rules = false;
+    int tcam_space;
 
     VLOG_DBG("Replace classifier "UUID_FMT" by "UUID_FMT"",
               UUID_ARGS(list_id_orig), UUID_ARGS(&list_new->list_id));
@@ -1586,15 +1659,77 @@ ops_cls_opennsl_replace(const struct uuid               *list_id_orig,
 
 
     if (!(*in_asic_new)) {
-        /* first binding of classifier*/
+        /* Check for enough space in TCAM */
+        check_tcam_space = ops_avail_tcam_space(hw_unit,
+                                                cls_new->num_entries,
+                                                &tcam_space);
+        if(!check_tcam_space) {
+            VLOG_DBG("ACL replace, no space in TCAM "
+                     "required %d, available %d",
+                     cls_new->num_entries, tcam_space);
+            /*
+             * Check if original ACL can be removed, if so
+             * sufficient space is available for new ACL or not.
+             */
+            evict_orig_rules = ops_avail_tcam_space_on_acl_replace(hw_unit, cls_orig,
+                                                                   cls_new, &port_bmp,
+                                                                   interface_info,
+                                                                   &tcam_space);
+
+            if (!evict_orig_rules) {
+                VLOG_ERR("Replace failed, no TCAM space available "
+                         "required %d, available %d",
+                         cls_new->num_entries, tcam_space);
+                rc = OPENNSL_E_FULL;
+                goto replace_fail;
+            } else {
+                VLOG_DBG("Sufficient space in TCAM on classifier "
+                         "%s removal, avaialble  %d, required %d",
+                          cls_orig->name, tcam_space, cls_new->num_entries);
+
+            }
+
+        }
+
+        if (evict_orig_rules) {
+            rc = ops_cls_delete_rules_in_asic(hw_unit, cls_orig, &fail_index,
+                                              interface_info, FALSE);
+
+            ops_cls_delete_orig_entries_index(cls_orig);
+
+            if (OPENNSL_FAILURE(rc)) {
+                VLOG_ERR("Replace failed, unable to remove classifier "
+                         "%s rules rc: (%s)", cls_orig->name,
+                         opennsl_errmsg(rc));
+                goto replace_fail;
+
+            }
+        }
+
+        fail_index = 0;
         rc = ops_cls_install_classifier_in_asic(hw_unit, cls_new,
                                                 &cls_new->cls_entry_list,
                                                 &port_bmp, &fail_index,
                                                 FALSE, interface_info);
         if (ops_cls_error(rc)) {
             int index = 0;
-            ops_cls_delete_rules_in_asic(hw_unit, cls_new, &index,
-                                         interface_info, FALSE);
+
+            VLOG_ERR("Replace failed, unable to install classifier %s: (%s)",
+                      cls_new->name, opennsl_errmsg(rc));
+            ops_cls_delete(cls_new);
+
+            if (evict_orig_rules) {
+                rc = ops_cls_install_classifier_in_asic(hw_unit, cls_orig,
+                                                        &cls_orig->cls_entry_list,
+                                                        &port_bmp, &index,
+                                                        FALSE, interface_info);
+                if (OPENNSL_FAILURE(rc)) {
+                    VLOG_ERR("Replace failed, unable to reinstall "
+                             "classifier %s rules rc: (%s)",
+                             cls_orig->name, opennsl_errmsg(rc));
+                }
+            }
+
             goto replace_fail;
         }
     } else {
@@ -1638,6 +1773,9 @@ ops_cls_opennsl_list_update(struct ops_cls_list                 *list,
     opennsl_pbmp_t port_bmp;
     int fail_index = 0; /* rule index to PI on failure */
     struct ops_cls_interface_info intf_info;
+    int index = 0;
+    bool check_tcam_space = false, evict_old_rules = false;
+    int tcam_space;
 
     VLOG_DBG("Update classifier "UUID_FMT" (%s)", UUID_ARGS(&list->list_id),
              list->list_name);
@@ -1655,64 +1793,147 @@ ops_cls_opennsl_list_update(struct ops_cls_list                 *list,
         intf_info.flags = OPS_CLS_INTERFACE_L3ONLY;
     }
 
-   VLOG_DBG("Total rules %d in classifier update", list->num_entries);
+    VLOG_DBG("Total rules %d in classifier update", list->num_entries);
 
-   if (list->num_entries > 0) {
-        /*
-         * Install updated ACL in FP, if it fails, remove
-         * the updated ACL and leave original ACL. On successful
-         * update remove the original ACL entries.
-         */
+    if (!list->num_entries) {
+        return rc;
+    }
 
-        ops_cls_populate_entries(cls, &cls->cls_entry_update_list, list);
+    check_tcam_space = ops_avail_tcam_space(hw_unit,
+                                            list->num_entries,
+                                            &tcam_space);
 
-        if (cls->port_cls.in_asic) {
-            OPENNSL_PBMP_CLEAR(port_bmp);
-            OPENNSL_PBMP_ASSIGN(port_bmp, cls->port_cls.pbmp);
+    if (!check_tcam_space) {
+        VLOG_DBG("ACL update: no space in TCAM required %d, available %d",
+                  list->num_entries, tcam_space);
+        evict_old_rules = ops_avail_tcam_space_replace_old_rules
+                                    (hw_unit, cls->num_entries,
+                                     list->num_entries,
+                                     &tcam_space);
 
-            rc = ops_cls_install_classifier_in_asic(hw_unit, cls,
-                                                    &cls->cls_entry_update_list,
-                                                    &port_bmp, &fail_index,
-                                                    TRUE, NULL);
-        }
-
-        if (!ops_cls_error(rc) && cls->route_cls.in_asic) {
-            OPENNSL_PBMP_CLEAR(port_bmp);
-            OPENNSL_PBMP_ASSIGN(port_bmp, cls->route_cls.pbmp);
-            rc = ops_cls_install_classifier_in_asic(hw_unit, cls,
-                                                    &cls->cls_entry_update_list,
-                                                    &port_bmp, &fail_index,
-                                                    TRUE, &intf_info);
-        }
-
-        int index = 0;
-        if(ops_cls_error(rc)) {
-            if (cls->port_cls.in_asic) {
-                ops_cls_delete_rules_in_asic(hw_unit, cls, &index,
-                                             NULL, TRUE);
-            }
-
-            if (cls->route_cls.in_asic) {
-                ops_cls_delete_rules_in_asic(hw_unit, cls, &index,
-                                             &intf_info, TRUE);
-            }
-            ops_cls_delete_updated_entries(cls);
+        if(!evict_old_rules) {
+            VLOG_ERR("Update failed, no TCAM space available "
+                     "required %d, avilable %d",
+                     list->num_entries, tcam_space);
+            rc = OPENNSL_E_FULL;
             goto update_fail;
         } else {
-            if (cls->port_cls.in_asic) {
-                ops_cls_delete_rules_in_asic(hw_unit, cls, &index,
-                                             NULL, FALSE);
-            }
-
-            if (cls->route_cls.in_asic) {
-                ops_cls_delete_rules_in_asic(hw_unit, cls, &index,
-                                             &intf_info, FALSE);
-            }
-            ops_cls_delete_orig_entries(cls);
-            ops_cls_update_entries(cls);
+            VLOG_DBG("Classifier %s old rules removal creates "
+                     "sufficient space in TCAM avialable %d, required %d",
+                     cls->name, tcam_space, list->num_entries);
         }
 
     }
+
+    /*
+     * Delete old rules in asic to create space for
+     * new rules
+     */
+
+    if (evict_old_rules) {
+        if (cls->port_cls.in_asic) {
+            ops_cls_delete_rules_in_asic(hw_unit, cls, &index,
+                                          NULL, FALSE);
+        }
+
+        if (cls->route_cls.in_asic) {
+            ops_cls_delete_rules_in_asic(hw_unit, cls, &index,
+                                         &intf_info, FALSE);
+        }
+        ops_cls_delete_orig_entries_index(cls);
+    }
+
+    /*
+     * Install updated ACL in TCAM, if it fails remove
+     * updated ACL and install original ACL.
+     */
+
+    ops_cls_populate_entries(cls, &cls->cls_entry_update_list, list);
+
+    if (cls->port_cls.in_asic) {
+         OPENNSL_PBMP_CLEAR(port_bmp);
+         OPENNSL_PBMP_ASSIGN(port_bmp, cls->port_cls.pbmp);
+
+         rc = ops_cls_install_classifier_in_asic(hw_unit, cls,
+                                                 &cls->cls_entry_update_list,
+                                                 &port_bmp, &fail_index,
+                                                 TRUE, NULL);
+    }
+
+    if (!ops_cls_error(rc) && cls->route_cls.in_asic) {
+        OPENNSL_PBMP_CLEAR(port_bmp);
+        OPENNSL_PBMP_ASSIGN(port_bmp, cls->route_cls.pbmp);
+        rc = ops_cls_install_classifier_in_asic(hw_unit, cls,
+                                                &cls->cls_entry_update_list,
+                                                &port_bmp, &fail_index,
+                                                TRUE, &intf_info);
+     }
+
+     index = 0;
+     if(ops_cls_error(rc)) {
+        /*
+         * Update ACL entries installation failed
+         */
+        if (cls->port_cls.in_asic) {
+            ops_cls_delete_rules_in_asic(hw_unit, cls, &index,
+                                         NULL, TRUE);
+        }
+
+        if (cls->route_cls.in_asic) {
+            ops_cls_delete_rules_in_asic(hw_unit, cls, &index,
+                                             &intf_info, TRUE);
+        }
+        ops_cls_delete_updated_entries(cls);
+
+        if (evict_old_rules) {
+            /*
+             * Install original entries again as update failed
+             */
+
+            VLOG_ERR("Update failed for classifier %s, reinstall "
+                     " old entries : (%s)", cls->name,
+                     opennsl_errmsg(rc));
+
+            if (cls->port_cls.in_asic) {
+                OPENNSL_PBMP_CLEAR(port_bmp);
+                OPENNSL_PBMP_ASSIGN(port_bmp, cls->port_cls.pbmp);
+
+                rc = ops_cls_install_classifier_in_asic(hw_unit, cls,
+                                                    &cls->cls_entry_list,
+                                                    &port_bmp, &index,
+                                                    FALSE, NULL);
+            }
+
+            if (!ops_cls_error(rc) && cls->route_cls.in_asic) {
+                OPENNSL_PBMP_CLEAR(port_bmp);
+                OPENNSL_PBMP_ASSIGN(port_bmp, cls->route_cls.pbmp);
+                rc = ops_cls_install_classifier_in_asic(hw_unit, cls,
+                                                        &cls->cls_entry_list,
+                                                        &port_bmp, &index,
+                                                        FALSE, &intf_info);
+            }
+        }
+        goto update_fail;
+    } else {
+        /*
+         * Update ACL installation successful
+         */
+        if (cls->port_cls.in_asic) {
+            ops_cls_delete_rules_in_asic(hw_unit, cls, &index,
+                                         NULL, FALSE);
+        }
+
+        if (cls->route_cls.in_asic) {
+            ops_cls_delete_rules_in_asic(hw_unit, cls, &index,
+                                         &intf_info, FALSE);
+        }
+        ops_cls_delete_orig_entries_index(cls);
+        ops_cls_cleanup_entries(&cls->cls_entry_list);
+        ops_cls_update_entries(cls);
+
+        cls->num_entries = list->num_entries;
+    }
+
     return OPS_CLS_OK;
 
 update_fail:
