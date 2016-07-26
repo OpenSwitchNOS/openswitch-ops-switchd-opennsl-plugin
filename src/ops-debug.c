@@ -1225,7 +1225,7 @@ hw_resource_show (int unit, opennsl_field_group_t group, struct ds *ds)
      * until we have clarification of how counters are shared among slices in hardware
      */
     if ((group == ops_copp_get_egress_group_id_for_hw_unit(unit))
-            || (group == ops_l3intf_egress_stats_group_id_for_hw_unit(unit)))
+            || (group == l3_fp_grp_info[unit].l3_fp_grpid))
     {
         (&status)->counters_total = 1024;
     } else {
@@ -1287,10 +1287,10 @@ ops_hw_resource_dump (struct ds *ds, enum hw_resource_type type, const char *opt
             group_id = ops_cls_get_ingress_group_id_for_hw_unit(unit);
             break;
         case HW_RESOURCE_L3INTF_INGRESS:
-            group_id = ops_l3intf_ingress_stats_group_id_for_hw_unit(unit);
+            group_id = l3_fp_grp_info[unit].l3_fp_grpid;
             break;
         case HW_RESOURCE_L3INTF_EGRESS:
-            group_id = ops_l3intf_egress_stats_group_id_for_hw_unit(unit);
+            group_id = l3_fp_grp_info[unit].l3_fp_grpid;
             break;
         default: /* Unknown type */
             continue;
