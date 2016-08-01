@@ -41,6 +41,7 @@ set (SOURCES ${SRC_DIR}/bcm.c
              ${SRC_DIR}/netdev-bcmsdk.c
              ${SRC_DIR}/ofproto-bcm-provider.c
              ${SRC_DIR}/ops-mac-learning.c
+             ${SRC_DIR}/ops-logical-switch.c
              ${SRC_DIR}/ops-vport.c
              ${SRC_DIR}/netdev-bcmsdk-vport.c
     )

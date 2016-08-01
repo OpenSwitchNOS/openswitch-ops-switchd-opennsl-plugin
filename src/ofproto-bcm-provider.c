@@ -47,6 +47,8 @@
 #include "ops-qos.h"
 #include "qos-asic-provider.h"
 #include "ops-mac-learning.h"
+#include "ops-logical-switch.h"
+#include "log-switch-asic-provider.h"
 
 VLOG_DEFINE_THIS_MODULE(ofproto_bcm_provider);
 
@@ -2537,42 +2539,6 @@ get_mac_learning_hmap(struct mlearn_hmap **mhmap)
     return ops_mac_learning_get_hmap(mhmap);
 }
 
-/* Set logical switch */
-int
-set_logical_switch(const struct ofproto *ofproto_,  void *aux,
-                   enum ofproto_logical_switch_action action,
-                   struct ofproto_logical_switch *log_switch)
-{
-    int rc = BCMSDK_E_NONE;
-    int hw_unit = 0;
-    bcmsdk_vxlan_opcode_t opcode;
-    bcmsdk_vxlan_logical_switch_t lsw;
-
-    switch (action) {
-    case OFPROTO_LOG_SWITCH_ACTION_ADD:
-        opcode = BCMSDK_VXLAN_OPCODE_CREATE;
-
-        lsw.vnid = log_switch->tunnel_key;
-
-        break;
-    case OFPROTO_LOG_SWITCH_ACTION_DEL:
-        lsw.vnid = log_switch->tunnel_key;
-        opcode = BCMSDK_VXLAN_OPCODE_DESTROY;
-        break;
-    case OFPROTO_LOG_SWITCH_ACTION_MOD:
-    default:
-        VLOG_ERR("Error [%s, %d] action:%d name:%s key:%d hw_unit:%d\n",
-                 __FUNCTION__, __LINE__,
-                 action, log_switch->name, log_switch->tunnel_key,
-                 hw_unit);
-        return 1;
-    }
-
-    rc = bcmsdk_vxlan_logical_switch_operation(hw_unit, opcode, &lsw);
-
-    return rc;
-}
-
 int
 update_l2_mac_table(const struct ofproto *ofproto_,
                         struct ovs_list *mac_entry_list)
@@ -2941,5 +2907,4 @@ const struct ofproto_class ofproto_bcm_provider_class = {
     l3_route_action,            /* l3 route action - install, update, delete */
     l3_ecmp_set,                /* enable/disable ECMP globally */
     l3_ecmp_hash_set,           /* enable/disable ECMP hash configs */
-    set_logical_switch,         /* set logical switch */
 };
