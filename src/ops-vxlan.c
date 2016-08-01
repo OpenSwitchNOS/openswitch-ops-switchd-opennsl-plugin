@@ -3260,6 +3260,7 @@ vxlan_hmap_cleanup(int unit)
         *logical_sw_element_next_p;
     vxlan_egr_obj_element_t *egr_obj_element_p,
         *egr_obj_element_next_p;
+    vxlan_port_element_t *port_element_p, *port_element_next_p;
 
     HMAP_FOR_EACH_SAFE(logical_sw_element_p, logical_sw_element_next_p,
                        node, &(vxlan_global.logical_sw_hmap)) {
@@ -3278,6 +3279,15 @@ vxlan_hmap_cleanup(int unit)
     }
 
     hmap_destroy(&vxlan_global.egr_obj_hmap);
+
+    HMAP_FOR_EACH_SAFE(port_element_p, port_element_next_p,
+                       node, &(vxlan_global.port_hmap)) {
+        hmap_remove(&vxlan_global.port_hmap,
+                    &port_element_p->node);
+        free(port_element_p);
+    }
+
+    hmap_destroy(&vxlan_global.port_hmap);
 
     return BCMSDK_E_NONE;
 }
@@ -3301,6 +3311,7 @@ ops_vxlan_init(int unit)
 
     hmap_init(&vxlan_global.logical_sw_hmap);
     hmap_init(&vxlan_global.egr_obj_hmap);
+    hmap_init(&vxlan_global.port_hmap);
 
     return BCMSDK_E_NONE;
 } // ops_vxlan_init

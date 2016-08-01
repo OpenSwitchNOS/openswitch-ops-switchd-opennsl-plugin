@@ -22,7 +22,6 @@
 #ifndef __BCM_COMMON_H__
 #define __BCM_COMMON_H__ 1
 
-
 /* Error return codes */
 #define BCMSDK_E_NONE         OPENNSL_E_NONE
 #define BCMSDK_E_INTERNAL     OPENNSL_E_INTERNAL
