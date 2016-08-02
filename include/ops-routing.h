@@ -24,6 +24,7 @@
 #include <opennsl/field.h>
 #include <netinet/in.h>
 #include <ofproto/ofproto.h>
+#include "ops-qos.h"
 
 #define IPV4_PREFIX_LEN     32
 #define IPV6_PREFIX_LEN     128
@@ -105,6 +106,16 @@ struct ops_switch_mac_info {
     int station_id;
 };
 
+/* Added this new FP group to include all l3 related feature rules.
+ * Currently subinterface and l3 stats are using this group.
+ */
+struct ops_l3_fp_info {
+    opennsl_field_group_t l3_fp_grpid;
+    opennsl_field_entry_t subint_fp_entry_id;
+};
+
+extern struct ops_l3_fp_info l3_fp_grp_info[MAX_SWITCH_UNITS];
+
 /* Hashmap of egress object ID's. Only used for mac-moves.
  * key = vlan_id + mac_addr
  * val = ID of the row in Egress table (in ASIC) for given vlan_id and mac_addr.
@@ -121,8 +132,8 @@ extern opennsl_l3_intf_t *ops_routing_enable_l3_interface(int hw_unit,
                                                          struct netdev *netdev);
 extern opennsl_l3_intf_t *
 ops_routing_enable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
-                                 opennsl_vrf_t vrf_id, opennsl_vlan_t vlan_id,
-                                 unsigned char *mac, struct netdev *netdev);
+                                   opennsl_vrf_t vrf_id, opennsl_vlan_t vlan_id,
+                                   unsigned char *mac, struct netdev *netdev);
 
 extern void ops_routing_disable_l3_interface(int hw_unit,
                                             opennsl_port_t hw_port,
@@ -130,7 +141,8 @@ extern void ops_routing_disable_l3_interface(int hw_unit,
                                             struct netdev *netdev);
 
 extern void ops_routing_disable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
-                                  opennsl_l3_intf_t *l3_intf, struct netdev *netdev);
+                                                opennsl_l3_intf_t *l3_intf,
+                                                struct netdev *netdev);
 
 extern opennsl_l3_intf_t * ops_routing_enable_l3_vlan_interface(int hw_unit,
                                                                opennsl_vrf_t vrf_id,
@@ -187,5 +199,10 @@ extern opennsl_field_group_t ops_routing_get_ospf_group_id_by_hw_unit (
                                                                 int unit);
 extern void ops_l3_mac_move_add(int unit, opennsl_l2_addr_t *l2addr, void *userdata);
 extern void ops_l3_mac_move_delete(int unit, opennsl_l2_addr_t *l2addr, void *userdata);
+extern bool ops_routing_is_internal_vlan(opennsl_vlan_t vlan);
 
+extern opennsl_error_t ops_create_l3_fp_group(int hw_unit);
+extern opennsl_error_t ops_destroy_l3_fp_entry(int hw_unit,
+                                                        opennsl_field_entry_t entryid);
+extern int ops_l3_fp_init(int hw_unit);
 #endif /* __OPS_ROUTING_H__ */

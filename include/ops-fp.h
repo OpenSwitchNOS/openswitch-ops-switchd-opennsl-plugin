@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Hewlett-Packard Enterprise Company, L.P.
+ * Copyright (C) 2016 Hewlett-Packard Development Company, L.P.
  * All Rights Reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -14,21 +14,19 @@
  *   License for the specific language governing permissions and limitations
  *   under the License.
  *
- * File: ops-bcm-init.h
+ * File: ops-fp.h
+ *
+ * Purpose: This file provides public definitions for FP functionality.
+ *
  */
 
-#ifndef __OPS_BCM_INIT_H__
-#define __OPS_BCM_INIT_H__ 1
+#ifndef __OPS_FP_H__
+#define __OPS_FP_H__ 1
 
-/* This function initializes switchd application threads within the SDK. */
-#define BCM_DIAG_SHELL_CUSTOM_INIT_F        ops_bcm_appl_init
+enum ops_fp_grp_prio {
+    FP_GROUP_PRIORITY_0 = 0, /* for L3 FP */
+    FP_GROUP_PRIORITY_1,     /* for Classifier FP */
+    FP_GROUP_PRIORITY_2      /* for COPP and OSPF */
+};
 
-/* Number of RX packets per second.
- * This limit is enforced in the user space SDK. */
-#define OPS_RX_GLOBAL_PPS            30000
-
-#define OPS_RX_PRIORITY_MAX          100
-
-extern int ops_switch_main(int argc, char *argv[]);
-
-#endif // __OPS_BCM_INIT_H__
+#endif

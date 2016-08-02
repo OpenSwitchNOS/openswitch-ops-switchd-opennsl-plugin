@@ -69,26 +69,14 @@ static void netdev_change_seq_changed(const struct netdev *) __attribute__((__un
 void
 init(void) {
 
-    int retval;
     struct plugin_extension_interface opennsl_extension;
     struct plugin_extension_interface copp_opennsl_extension;
-
-    /* Event log initialization for sFlow */
-    retval = event_log_init("SFLOW");
-    if (retval < 0) {
-        VLOG_ERR("Event log initialization failed for SFLOW");
-    }
-
-    /* Event log initialization for LAG */
-    retval = event_log_init("LAG");
-    if (retval < 0) {
-        VLOG_ERR("Event log initialization failed for LAG");
-    }
 
     opennsl_extension.plugin_name = ASIC_PLUGIN_INTERFACE_NAME;
     opennsl_extension.major = ASIC_PLUGIN_INTERFACE_MAJOR;
     opennsl_extension.minor = ASIC_PLUGIN_INTERFACE_MINOR;
     opennsl_extension.plugin_interface = (void *)&opennsl_interface;
+
 
     register_plugin_extension(&opennsl_extension);
     VLOG_INFO("The %s asic plugin interface was registered", ASIC_PLUGIN_INTERFACE_NAME);
@@ -102,6 +90,8 @@ init(void) {
     VLOG_INFO("The %s asic plugin interface was registered",
                                               COPP_ASIC_PLUGIN_INTERFACE_NAME);
 
+    /* Register plugins */
+    register_classifier_plugins();
     register_qos_extension();
     ovs_bcm_init();
 }

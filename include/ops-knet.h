@@ -42,17 +42,10 @@
  * Filters with priority 1 are applied only on RX channel 1.
  * Filters with priority 2 and above are applied to both RX channels.
  */
-/*
- * FIXME :  Currently we see issues in opennsl knet
- * for knet filters with priority > 9. These filters
- * dont seem to take effect.
- * We are ok for now, since we are using only upto
- * priority 8, but needs to be fixed incase we need
- * more knet filter priorities.
- */
 enum knet_filter_prio_e
 {
     KNET_FILTER_PRIO_HIGHEST = 2,
+    KNET_FILTER_PRIO_ACL_LOGGING,
     KNET_FILTER_PRIO_SFLOW,
     KNET_FILTER_PRIO_BPDU,
     KNET_FILTER_PRIO_PORT,
@@ -92,5 +85,8 @@ extern void bcmsdk_knet_bridge_normal_filter_create(char *knet_dst_if_name,
 extern void ops_knet_dump(struct ds *ds, knet_debug_type_t debug_type);
 
 extern void bcmsdk_knet_sflow_filter_create(int *knet_filter_id, int reason, char *desc);
+
+extern void bcmsdk_knet_acl_logging_filter_create(char *knet_dst_if_name,
+        int *knet_filter_id);
 
 #endif /* __OPS_KNET_H__ */

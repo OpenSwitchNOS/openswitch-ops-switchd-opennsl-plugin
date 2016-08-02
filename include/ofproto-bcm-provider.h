@@ -1,18 +1,21 @@
 /*
-* (c) Copyright 2015-2016 Hewlett Packard Enterprise  Development LP
-*
-* Licensed under the Apache License, Version 2.0 (the "License"); you may
-* not use this file except in compliance with the License. You may obtain
-* a copy of the License at
-*
-* http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-* WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-* License for the specific language governing permissions and limitations
-* under the License.
-*/
+ * (C) Copyright 2015-2016 Hewlett Packard Enterprise Development Company, L.P.
+ * All Rights Reserved.
+ *
+ *   Licensed under the Apache License, Version 2.0 (the "License"); you may
+ *   not use this file except in compliance with the License. You may obtain
+ *   a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *   Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ *   WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ *   License for the specific language governing permissions and limitations
+ *   under the License.
+ *
+ * File: ofproto-bcm-provider.h
+ */
 
 #ifndef OFPROTO_BCM_PROVIDER_H
 #define OFPROTO_BCM_PROVIDER_H 1
@@ -21,6 +24,7 @@
 #include <opennsl/types.h>
 #include <opennsl/l3.h>
 #include <opennsl/stat.h>
+#include <opennsl/mirror.h>
 
 /* No bfd/cfm status change. */
 #define NO_STATUS_CHANGE -1
@@ -72,6 +76,9 @@ struct ofbundle {
     int hw_unit, hw_port;       /* HW identification of L3 interfaces, might change
                                  * when L3 on top of LAGs would be introduced */
 
+    /* used for mirroring */
+    opennsl_mirror_destination_t *mirror_data;
+
     /* L3 Routing */
     opennsl_l3_intf_t *l3_intf;  /* L3 interface pointer. NULL if not L3 */
 
@@ -80,6 +87,8 @@ struct ofbundle {
     char *ip6_address;
     struct hmap secondary_ip4addr; /* List of secondary IP address */
     struct hmap secondary_ip6addr; /* List of secondary IPv6 address */
+
+    int lag_sflow_polling_interval; /* sflow polling interval for LAG */
 };
 
 struct bcmsdk_provider_ofport_node {
@@ -192,9 +201,25 @@ enum { N_TABLES = 255 };
 enum { TBL_INTERNAL = N_TABLES - 1 };    /* Used for internal hidden rules. */
 
 extern const struct ofproto_class ofproto_bcm_provider_class;
+
 extern bool  ofproto_find_ipv4_from_port(int hw_port, uint32_t *ip);
 int register_qos_extension(void);
 
+struct bcmsdk_provider_node * bcmsdk_provider_node_cast(
+    const struct ofproto *ofproto);
 
+/**
+ * Register asic plugins for various features such as ACL
+ */
+int register_classifier_plugins(void);
+
+extern int
+register_qos_extension(void);
+
+extern struct bcmsdk_provider_node *
+bcmsdk_provider_node_cast(const struct ofproto *ofproto);
+
+extern struct ofbundle *
+bundle_lookup(const struct bcmsdk_provider_node *ofproto, void *aux);
 
 #endif  /* ofproto-bcm-provider.h */

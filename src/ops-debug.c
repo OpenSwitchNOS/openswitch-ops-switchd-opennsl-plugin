@@ -34,6 +34,7 @@
 #include <opennsl/error.h>
 #include <opennsl/types.h>
 #include <opennsl/l2.h>
+#include <sal/version.h>
 
 #include "ops-lag.h"
 #include "platform-defines.h"
@@ -46,6 +47,10 @@
 #include "ops-port.h"
 #include "ops-qos.h"
 #include "ops-stg.h"
+#include "diag_dump.h"
+#include "ops-sflow.h"
+#include "ops-classifier.h"
+#include "netdev-bcmsdk.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_debug);
 
@@ -82,7 +87,9 @@ char cmd_ops_usage[] =
 "ovs-appctl plugin/debug <cmds> - Run OpenSwitch BCM Plugin specific debug commands.\n"
 "\n"
 "   debug [[+/-]<option> ...] [all/none] - enable/disable debugging.\n"
+"   opennsl-version - displays the opennsl version.\n"
 "   vlan <vid> - displays OpenSwitch VLAN info.\n"
+"   hwvlan - displays hardware VLAN info.\n"
 "   knet [netif | filter] - displays knet information\n"
 "   l3intf [<interface id>] - display OpenSwitch interface info.\n"
 "   l3host - display OpenSwitch l3 host info.\n"
@@ -93,13 +100,20 @@ char cmd_ops_usage[] =
 "   l3ecmp [<entry>] - display an ecmp egress object info.\n"
 "   lag [<lagid>] - displays OpenSwitch LAG info.\n"
 "   stg [hw] <stgid> - displays Spanning Tree Group Info. \n"
-"   fp [<copp-ingress-group> | <copp-egress-group> | <ospf-group>]- displays programmed fp rules.\n"
+"   fp [<copp-ingress-group> | <copp-egress-group> | <ospf-group> | <acl-ingress-group> | <l3-group> | <l3-subinterface>]- displays programmed fp rules.\n"
 "   copp-stats - displays all the CoPP configuration and statistics.\n"
 "   copp-config <packet class name> <CPU queue class> <Rate> <Burst> - Modifies the CoPP rule for a control packet class \n"
 "   cpu-queue-stats - displays the per cpu queue statistics.\n"
 "   qos [cos-map | dscp-map | trust | dscp-override | queuing | scheduling | "
         "statistics] - displays QoS information programmed in hardware.\n"
+"   hw-resource [aclv4 | copp | ospf | l3intf] - displays hardware resource utilization.\n"
 "   help - displays this help text.\n"
+;
+/* Format of hw-resource command */
+static const char cmd_hw_resource_table_header[] =
+"              |Rules |Rules   |Group |Group |Counters |Counters*|Meters |Meters*\n"
+"Feature       |Used  |Maximum |ID    |Used  |Used     |Maximum  |Used   |Maximum\n"
+"--------------|------|--------|------|------|---------|-------- |-------|-------\n"
 ;
 
 /*the action list that needs to be defined for checking if defined per entry*/
@@ -169,6 +183,16 @@ void PacketRes_toString(int packetRes, char *packet_res_string )
 
 }
 
+enum hw_resource_type {
+    HW_RESOURCE_INVALID = 0,
+    HW_RESOURCE_OSPF_INGRESS,
+    HW_RESOURCE_COPP_INGRESS,
+    HW_RESOURCE_COPP_EGRESS,
+    HW_RESOURCE_ACLV4_INGRESS,
+    HW_RESOURCE_L3INTF_INGRESS,
+    HW_RESOURCE_L3INTF_EGRESS
+};
+
 char *
 bcmsdk_datapath_version(void)
 {
@@ -180,7 +204,7 @@ bcmsdk_datapath_version(void)
     if (NULL == rel_version) {
         // OPS_TODO: need to automate this.
         //rel_version = strdup(_build_release);
-        rel_version = strdup("6.4.5.5");
+        rel_version = xstrdup("6.4.5.5");
     }
     return rel_version;
 
@@ -291,6 +315,66 @@ handle_ops_debug(struct ds *ds, int arg_idx, int argc, const char *argv[])
 } // handle_ops_debug
 
 static void
+fp_subinterface_entry_show(int unit, opennsl_field_group_t group, struct ds *ds)
+{
+    int ret = 0;
+    uint8_t data = 0;
+    uint8_t data_mask = 0;
+    enum_to_str_t *fp_action_iter = NULL;
+    int action_index = 0, fp_action_list_size;
+
+    opennsl_field_qset_t  qset;
+    uint32 p0 = 0, p1 = 0;
+    opennsl_pbmp_t pbmp, pbmp_mask;
+    char pfmt[_SHR_PBMP_FMT_LEN];
+
+    fp_action_list_size = (sizeof(fp_action_list)/sizeof(enum_to_str_t));
+
+    ds_put_format(ds, "Group ID = %d\n", group);
+
+    OPENNSL_FIELD_QSET_INIT(qset);
+    ret = opennsl_field_group_get(unit, group, &qset);
+    if (OPENNSL_FAILURE(ret)) {
+        VLOG_ERR(" Error fetching the qualifier set");
+        return;
+    }
+    if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyInPorts)) {
+        ret = opennsl_field_qualify_InPorts_get(unit,
+                l3_fp_grp_info[unit].subint_fp_entry_id, &pbmp, &pbmp_mask);
+        if (!OPENNSL_FAILURE(ret)) {
+            ds_put_format(ds, "\t     Inports - %s\n", _SHR_PBMP_FMT(pbmp, pfmt));
+            ds_put_format(ds, "\t        mask - %s\n",
+                    _SHR_PBMP_FMT(pbmp_mask, pfmt));
+        }
+    }
+    if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyMyStationHit)) {
+        ret = opennsl_field_qualify_MyStationHit_get(unit,
+                l3_fp_grp_info[unit].subint_fp_entry_id, &data, &data_mask);
+        if (!OPENNSL_FAILURE(ret)) {
+            ds_put_format(ds, "\tMyStationHit - %s\n", (data == 0)?"NOT HIT": "HIT");
+        }
+    }
+    /*Checking for the actions available in the entry*/
+    for(action_index = 0;action_index < fp_action_list_size;action_index++){
+        fp_action_iter = &fp_action_list[action_index];
+        ret = opennsl_field_action_get(0,l3_fp_grp_info[unit].subint_fp_entry_id,
+                fp_action_iter->action_type, &p0, &p1);
+        if (!OPENNSL_FAILURE(ret)) {
+            ds_put_format(ds, "\t      Action - %s\n",fp_action_iter->api_str);
+            if (fp_action_iter->action_type ==
+                    opennslFieldActionCosQCpuNew) {
+                ds_put_format(ds, "\t    CPUQueueNumber %u mask %u\n",
+                        p0,p1);
+            } else if (fp_action_iter->action_type ==
+                    opennslFieldActionRpDrop) {
+                ds_put_format(ds, "\t   Value %u mask %u\n",
+                        p0,p1);
+            }
+        }
+    }
+}
+
+static void
 fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
 {
     int entry_size  = 0;
@@ -306,6 +390,8 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
     uint32 p0, p1;
     static char *stat_type_str[] = STAT_TYPE_STRINGS;
     opennsl_ip6_t ip6_dest, ip6_mask;
+    opennsl_pbmp_t pbmp, pbmp_mask;
+    char pfmt[_SHR_PBMP_FMT_LEN];
 
     ds_put_format(ds, "Group ID = %d\n", group);
     /* First get th entry count for this group */
@@ -347,19 +433,41 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
         action_index = 0;
         fp_action_list_size = (sizeof(fp_action_list)/sizeof(enum_to_str_t));
 
-        ds_put_format(ds, "entry ID = %d in group = %d\n",
+        ds_put_format(ds, "Entry ID = 0x%x, Group = 0x%x\n",
                            entry_array[entry_index], group);
         if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyStageIngress)) {
-            ds_put_format(ds, "\tQualifier Stage is Ingress\n");
+            ds_put_format(ds, "\tStage Ingress\n");
         } else if (OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyStageEgress)) {
-            ds_put_format(ds, "\tQualifier Stage is Egress\n");
+            ds_put_format(ds, "\tStage Egress\n");
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyL3Routable)) {
+            ret = opennsl_field_qualify_L3Routable_get(unit,
+                    entry_array[entry_index],(uint8 *) &data,(uint8 *) &mask);
+             if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    L3Routable - ");
+                ds_put_format(ds, "0x%x mask 0x%x\n", (int)data, (int)mask);
+             }
+             data = 0;
+             mask = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyInPorts)) {
+            ret = opennsl_field_qualify_InPorts_get(unit,
+                  entry_array[entry_index], &pbmp, &pbmp_mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    Inports - ");
+                ds_put_format(ds, "%s\n", _SHR_PBMP_FMT(pbmp, pfmt));
+                ds_put_format(ds, "\t       mask - %s\n",
+                                _SHR_PBMP_FMT(pbmp_mask, pfmt));
+            }
         }
 
         if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyInPort)) {
             ret = opennsl_field_qualify_InPort_get(unit,
                   entry_array[entry_index],(int *) &data,(int *) &mask);
             if (!OPENNSL_FAILURE(ret)) {
-                ds_put_format(ds, "\t    Qualifier is Inport - ");
+                ds_put_format(ds, "\t    Inport - ");
                 ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
                                   (int)mask);
             }
@@ -371,19 +479,7 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
             ret = opennsl_field_qualify_OutPort_get(unit,
                   entry_array[entry_index],(int *) &data,(int *) &mask);
             if (!OPENNSL_FAILURE(ret)) {
-                ds_put_format(ds, "\t    Qualifier is Outport - ");
-                ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
-                                  (int)mask);
-            }
-            data = 0;
-            mask = 0;
-        }
-
-        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyL4DstPort)) {
-            ret = opennsl_field_qualify_L4DstPort_get(unit,
-                  entry_array[entry_index],(int *) &data,(int *) &mask);
-            if (!OPENNSL_FAILURE(ret)) {
-                ds_put_format(ds, "\t    Qualifier is L4DstPort - ");
+                ds_put_format(ds, "\t    Outport - ");
                 ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
                                   (int)mask);
             }
@@ -395,7 +491,7 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
             ret = opennsl_field_qualify_EtherType_get(unit,
                   entry_array[entry_index],(uint16 *) &data,(uint16 *) &mask);
             if (!OPENNSL_FAILURE(ret)) {
-                ds_put_format(ds, "\t    Qualifier is Ethertype - ");
+                ds_put_format(ds, "\t    Ethertype - ");
                 ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
                                   (int)mask);
             }
@@ -408,7 +504,7 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
                   entry_array[entry_index], (int *) &data_modid,
                   (int *) &mask_modid, (int *) &data, (int *) &mask);
             if (!OPENNSL_FAILURE(ret)) {
-                ds_put_format(ds, "\t    Qualifier is DstPort - ");
+                ds_put_format(ds, "\t    DstPort - ");
                 ds_put_format(ds, "0x%02x mask - 0x%02x data_modid - 0x%02x \
                                     mask_modid - 0x%02x \n",
                                    (int)data, (int)mask,
@@ -425,7 +521,7 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
                           entry_array[entry_index],(uint8 *)&data,
                           (uint8 *)&mask);
             if (!OPENNSL_FAILURE(ret)) {
-                ds_put_format(ds, "\t    Qualifier is DstIpLocal - ");
+                ds_put_format(ds, "\t    DstIpLocal - ");
                 ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
                                   (int)mask);
             }
@@ -433,14 +529,14 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
             mask = 0;
         }
 
-        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyDstIp)) {
+         if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifySrcIp)) {
             char ip_str[IPV4_BUFFER_LEN];
             char mask_str[IPV4_BUFFER_LEN];
-            ret = opennsl_field_qualify_DstIp_get(unit,
+            ret = opennsl_field_qualify_SrcIp_get(unit,
                           entry_array[entry_index],(opennsl_ip_t *)&data,
                           (opennsl_ip_t *)&mask);
             if (!OPENNSL_FAILURE(ret)) {
-                ds_put_format(ds, "\t    Qualifier is DstIp - ");
+                ds_put_format(ds, "\t    SrcIp - ");
                 sprintf(ip_str, "%d.%d.%d.%d",
                  ((int) data >> 24) & 0xff, ((int) data >> 16) & 0xff,
                  ((int) data >> 8) & 0xff,(int) data & 0xff);
@@ -453,12 +549,56 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
             mask = 0;
         }
 
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyDstIp)) {
+            char ip_str[IPV4_BUFFER_LEN];
+            char mask_str[IPV4_BUFFER_LEN];
+            ret = opennsl_field_qualify_DstIp_get(unit,
+                          entry_array[entry_index],(opennsl_ip_t *)&data,
+                          (opennsl_ip_t *)&mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    DstIp - ");
+                sprintf(ip_str, "%d.%d.%d.%d",
+                 ((int) data >> 24) & 0xff, ((int) data >> 16) & 0xff,
+                 ((int) data >> 8) & 0xff,(int) data & 0xff);
+                sprintf(mask_str, "%d.%d.%d.%d",
+                 ((int) mask >> 24) & 0xff, ((int) mask >> 16) & 0xff,
+                 ((int) mask >> 8) & 0xff,(int) mask & 0xff);
+                ds_put_format(ds,"data %-16s mask %-16s\n", ip_str, mask_str);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyL4SrcPort)) {
+            ret = opennsl_field_qualify_L4SrcPort_get(unit,
+                  entry_array[entry_index],(int *) &data,(int *) &mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    L4SrcPort - ");
+                ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
+                                  (int)mask);
+            }
+            data = 0;
+            mask = 0;
+        }
+
+        if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyL4DstPort)) {
+            ret = opennsl_field_qualify_L4DstPort_get(unit,
+                  entry_array[entry_index],(int *) &data,(int *) &mask);
+            if (!OPENNSL_FAILURE(ret)) {
+                ds_put_format(ds, "\t    L4DstPort - ");
+                ds_put_format(ds, "0x%02x mask 0x%02x\n", (int)data,
+                                  (int)mask);
+            }
+            data = 0;
+            mask = 0;
+        }
+
         if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyL3Ingress)) {
             ret = opennsl_field_qualify_L3Ingress_get(unit,
                           entry_array[entry_index],(uint32 *)&data,
                           (uint32 *)&mask);
             if (!OPENNSL_FAILURE(ret)) {
-                ds_put_format(ds, "\t    Qualifier is L3Ingress - ");
+                ds_put_format(ds, "\t    L3Ingress - ");
                 ds_put_format(ds, "0x%02x mask 0x%02x\n", (uint32) data,
                                   (uint32)  mask);
             }
@@ -482,7 +622,7 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
             if (!OPENNSL_FAILURE(ret)) {
                 inet_ntop(AF_INET6, &ip6_dest, ip6_dest_str, INET6_ADDRSTRLEN);
                 inet_ntop(AF_INET6, &ip6_mask, ip6_mask_str, INET6_ADDRSTRLEN);
-                ds_put_format(ds, "\t    Qualifier is DstIp6 - ");
+                ds_put_format(ds, "\t    DstIp6 - ");
                 ds_put_format(ds, "data %s mask %s\n", ip6_dest_str,
                               ip6_mask_str);
             }
@@ -496,16 +636,16 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
                           entry_array[entry_index], &IpType);
             if (!OPENNSL_FAILURE(ret)) {
                 if (IpType == opennslFieldIpTypeIpv6) {
-                         ds_put_format(ds, "\t    Qualifier is IpType - "\
+                         ds_put_format(ds, "\t    IpType - "\
                                            "IPv6 packet\n");
                 } else if(IpType == opennslFieldIpTypeIpv4Any) {
-                         ds_put_format(ds, "\t    Qualifier is IpType - "\
+                         ds_put_format(ds, "\t    IpType - "\
                                            "Any IPv4 packet\n");
                 } else if(IpType == opennslFieldIpTypeIpv4WithOpts) {
-                         ds_put_format(ds, "\t    Qualifier is IpType - "\
+                         ds_put_format(ds, "\t    IpType - "\
                                            "IPv4 options\n");
                 } else if(IpType == opennslFieldIpTypeIpv6OneExtHdr) {
-                         ds_put_format(ds, "\t    Qualifier is IpType - "\
+                         ds_put_format(ds, "\t    IpType - "\
                                            "IPv6 options\n");
                 }
             }
@@ -517,7 +657,7 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
                           entry_array[entry_index],(uint32 *)&data,
                           (uint32 *)&mask);
             if (!OPENNSL_FAILURE(ret)) {
-                ds_put_format(ds, "\t    Qualifier is PacketRes - ");
+                ds_put_format(ds, "\t    PacketRes - ");
                 PacketRes_toString(data,packet_res_str);
                 ds_put_format(ds, "%s mask 0x%02x\n",
                                 packet_res_str, (uint32)  mask);
@@ -537,7 +677,7 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
                           ether_ntoa((struct ether_addr*)&data));
                 snprintf(mask_str, SAL_MACADDR_STR_LEN, "%s",
                           ether_ntoa((struct ether_addr*)&mask));
-                ds_put_format(ds, "\t    Qualifier is DstMac - ");
+                ds_put_format(ds, "\t    DstMac - ");
                 ds_put_format(ds, "%-18s Mask %-18s\n",
                                    mac_str, mask_str);
             }
@@ -549,7 +689,7 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
             ret = opennsl_field_qualify_IpProtocol_get(unit,
                   entry_array[entry_index], (uint8 *)&data, (uint8 *)&mask);
             if (!OPENNSL_FAILURE(ret)) {
-                ds_put_format(ds, "\t    Qualifier is IpProtocol - ");
+                ds_put_format(ds, "\t    IpProtocol - ");
                 ds_put_format(ds, "0x%02x mask 0x%02x \n", (uint8) data,
                                   (uint8)  mask);
             }
@@ -561,7 +701,7 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
             ret = opennsl_field_qualify_CpuQueue_get(unit,
                   entry_array[entry_index], (uint8 *)&data, (uint8 *)&mask);
             if (!OPENNSL_FAILURE(ret)) {
-                ds_put_format(ds, "\t    Qualifier is CPUQueue - ");
+                ds_put_format(ds, "\t    CPUQueue - ");
                 ds_put_format(ds, "0x%02x mask 0x%02x \n", (uint8) data,
                                   (uint8)  mask);
             }
@@ -575,7 +715,7 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
             ret = opennsl_field_action_get(0,entry_array[entry_index],
                             fp_action_iter->action_type, &p0, &p1);
             if (!OPENNSL_FAILURE(ret)) {
-                ds_put_format(ds, "\tAction is %s\n",fp_action_iter->api_str);
+                ds_put_format(ds, "\tAction: %s\n",fp_action_iter->api_str);
                 if (fp_action_iter->action_type ==
                                                opennslFieldActionCosQCpuNew) {
                     ds_put_format(ds, "\t    CPUQueueNumber %u mask %u\n",
@@ -592,13 +732,12 @@ fp_entries_show (int unit, opennsl_field_group_t group, struct ds *ds)
                                            &stat_id);
         ds_put_format(ds, "\tStatistics: ");
         if(stat_id > 0) {
-            ds_put_format(ds, "\n\t    Stat id = %d for entry %d\n", stat_id,
-                          entry_array[entry_index]);
+            ds_put_format(ds, "\n\t    Stat id = %d\n", stat_id);
             for(stat_index=0; stat_index< MAX_STAT_TYPES;stat_index++){
                 ret = opennsl_field_stat_get(unit, stat_id,
                                              stat_arr[stat_index],&stat_value);
                 if (!OPENNSL_FAILURE(ret)) {
-                    ds_put_format(ds, "\t    stat type :%s value is %llu\n",
+                    ds_put_format(ds, "\t    stat type: %s value: %llu\n",
                                      stat_type_str[stat_index], stat_value);
                 }
             }
@@ -696,6 +835,86 @@ ops_fp_dump_ospf_rules (struct ds *ds)
 }
 
 /*
+ * ops_fp_dump_l3_rules
+ *
+ * This function dumps the "fp show" output for Subinterface and stats rules
+ * for all hardware units.
+ */
+static void
+ops_fp_dump_l3_rules (struct ds *ds)
+{
+    int                   unit = 0;
+
+    /*
+     * If "ds" is not a valid pointer, then return
+     * from this function.
+     */
+    if (!ds) {
+        return;
+    }
+
+    /*
+     * Iterate over all the hardware units available.
+     */
+    for(unit =0; unit < MAX_SWITCH_UNITS; unit++) {
+
+        /*
+         * If the group-id is invalid, then do not dump the
+         * "fp show" for that hardware unit.
+         */
+        if (l3_fp_grp_info[unit].l3_fp_grpid == -1) {
+            continue;
+        }
+
+        /*
+         * Call the "fp show" function to dump the fp rules
+         * for the given group and hardware unit.
+         */
+        fp_entries_show(unit, l3_fp_grp_info[unit].l3_fp_grpid, ds);
+    }
+}
+
+/*
+ * ops_fp_dump_l3_subinterface
+ *
+ * This function dumps the "fp show" output for Subinterface rules
+ * for all hardware units.
+ */
+static void
+ops_fp_dump_l3_subinterface(struct ds *ds)
+{
+    int                   unit = 0;
+
+    /*
+     * If "ds" is not a valid pointer, then return
+     * from this function.
+     */
+    if (!ds) {
+        return;
+    }
+
+    /*
+     * Iterate over all the hardware units available.
+     */
+    for(unit =0; unit < MAX_SWITCH_UNITS; unit++) {
+
+        /*
+         * If the group-id is invalid, then do not dump the
+         * "fp show" for that hardware unit.
+         */
+        if (l3_fp_grp_info[unit].l3_fp_grpid == -1) {
+            continue;
+        }
+
+        /*
+         * Call the "fp show" function to dump the fp rules
+         * for the given group and hardware unit.
+         */
+        fp_subinterface_entry_show(unit, l3_fp_grp_info[unit].l3_fp_grpid, ds);
+    }
+}
+
+/*
  * ops_fp_dump_copp_ingress_rules
  *
  * This function dumps the "fp show" output for CoPP ingress rules
@@ -770,6 +989,52 @@ ops_fp_dump_copp_egress_rules (struct ds *ds)
          * Get the group-id for CoPP FP egress rules.
          */
         group_id = ops_copp_get_egress_group_id_for_hw_unit(unit);
+
+        /*
+         * If the group-id is invalid, then do not dump the
+         * "fp show" for that hardware unit.
+         */
+        if (group_id == -1) {
+            continue;
+        }
+
+        /*
+         * Call the "fp show" function to dump the fp rules
+         * for the given group and hardware unit.
+         */
+        fp_entries_show(unit, group_id, ds);
+    }
+}
+
+/*
+ * ops_fp_dump_acl_ingress_rules
+ *
+ * This function dumps the "fp show" output for acl ingress rules
+ * for all hardware units.
+ */
+static void
+ops_fp_dump_acl_ingress_rules (struct ds *ds)
+{
+    int                   unit = 0;
+    opennsl_field_group_t group_id;
+
+    /*
+     * If "ds" is not a valid pointer, then return
+     * from this function.
+     */
+    if (!ds) {
+        return;
+    }
+
+    /*
+     * Iterate over all the hardware units available.
+     */
+    for(unit =0; unit < MAX_SWITCH_UNITS; unit++) {
+
+        /*
+         * Get the group-id for CoPP FP egress rules.
+         */
+        group_id = ops_cls_get_ingress_group_id_for_hw_unit(unit);
 
         /*
          * If the group-id is invalid, then do not dump the
@@ -932,6 +1197,147 @@ ops_get_cpu_queue_stats (struct ds *ds, opennsl_cos_queue_t queueid)
 }
 
 static void
+hw_resource_show (int unit, opennsl_field_group_t group, struct ds *ds)
+{
+    int ret          = 0;
+    opennsl_field_group_status_t status;
+    opennsl_field_group_t aclv4_ingress_group;
+
+    /* Retrieving status from field group */
+    ret = opennsl_field_group_status_get(unit, group, &status);
+    if (OPENNSL_FAILURE(ret)) {
+        VLOG_ERR("Error getting hw resources for unit %d, group %d\n", unit, group);
+        ds_put_format(ds, "Error getting hw resources for unit %d, group %d\n", unit, group);
+        return;
+    }
+
+    /* Check if field group is aclv4 ingress group. If so, temporarily display
+     * classifier rules maximum with restricted value MAX_INGRESS_IPv4_ACL_RULES
+     */
+    aclv4_ingress_group = ops_cls_get_ingress_group_id_for_hw_unit(unit);
+    if (group == aclv4_ingress_group) {
+        (&status)->entries_total = ops_cls_max_ingress_aclv4_rules();
+    }
+
+    /* Temporarily hard coding counters total to ingress group 4096, egress group 1024
+     * until we have clarification of how counters are shared among slices in hardware
+     */
+    if ((group == ops_copp_get_egress_group_id_for_hw_unit(unit))
+            || (group == ops_l3intf_egress_stats_group_id_for_hw_unit(unit)))
+    {
+        (&status)->counters_total = 1024;
+    } else {
+        (&status)->counters_total = 4096;
+    }
+    /* Print out current hw resources rows. Group required is one per feature for now.
+     * TODO: Add support for displaying one feature consuming multiple groups.
+     */
+    ds_put_format(ds, "| %5d| %7d| %5d| %5d| %8d| %8d| %6d| %6d\n",
+            (&status)->entry_count, (&status)->entries_total, group, 1, (&status)->counter_count,
+            (&status)->counters_total, (&status)->meter_count, (&status)->meters_total);
+} /* hw_resources_show */
+
+/*
+ * ops_hw_resource_dump
+ *
+ * This function dumps the "hw_resource_show" output for field group rules
+ * for all hardware units. Currently only one hw unit available.
+ */
+static void
+ops_hw_resource_dump (struct ds *ds, enum hw_resource_type type, const char *option)
+{
+    int                   unit;
+    opennsl_field_group_t group_id;
+
+    /*
+     * If "ds" is not a valid pointer, then return
+     * from this function.
+     */
+    if (!ds) {
+        return;
+    }
+    /*
+     * If "option" is not a valid pointer, then print out error message
+     * and return from this function.
+     */
+    if (!option) {
+        ds_put_format(ds, "Invalid hardware resource option for type %d", type);
+        return;
+    }
+    /*
+     * Iterate over all the hardware units available.
+     * Currently only one hardware unit is available.
+     */
+    for(unit =0; unit < MAX_SWITCH_UNITS; unit++) {
+
+        /* Get the group id for type of rules */
+        switch(type) {
+        case HW_RESOURCE_OSPF_INGRESS:
+            group_id = ops_routing_get_ospf_group_id_by_hw_unit(unit);
+            break;
+        case HW_RESOURCE_COPP_INGRESS:
+            group_id = ops_copp_get_ingress_group_id_for_hw_unit(unit);
+            break;
+        case HW_RESOURCE_COPP_EGRESS:
+            group_id = ops_copp_get_egress_group_id_for_hw_unit(unit);
+            break;
+        case HW_RESOURCE_ACLV4_INGRESS:
+            group_id = ops_cls_get_ingress_group_id_for_hw_unit(unit);
+            break;
+        case HW_RESOURCE_L3INTF_INGRESS:
+            group_id = ops_l3intf_ingress_stats_group_id_for_hw_unit(unit);
+            break;
+        case HW_RESOURCE_L3INTF_EGRESS:
+            group_id = ops_l3intf_egress_stats_group_id_for_hw_unit(unit);
+            break;
+        default: /* Unknown type */
+            continue;
+        }
+        /*
+         * If the group_id is invalid, then do not dump the
+         * "hw_resource_show" for that hardware unit.
+         */
+        if (group_id == -1) {
+            ds_put_format(ds, "%-14s", option);
+            ds_put_format(ds, "Field group hasn't been created\n");
+            continue;
+        }
+
+        /*
+         * Call the "hw_resource_show" function to dump the hardware resource utilization
+         * of fp rules for the given group and hardware unit.
+         */
+        ds_put_format(ds, "%-14s", option);
+        hw_resource_show(unit, group_id, ds);
+    }
+}
+
+/*
+ * ops_hw_resource_dump_all
+ *
+ * This function dumps the "hw_resource_show" output for all available features
+ */
+static void
+ops_hw_resource_dump_all (struct ds *ds)
+{
+    /* Ingress part */
+    ds_put_format(ds, "\nIngress:\n");
+    ds_put_format(ds, "%s", cmd_hw_resource_table_header);
+    ops_hw_resource_dump(ds, HW_RESOURCE_OSPF_INGRESS, "ospf");
+    ops_hw_resource_dump(ds, HW_RESOURCE_COPP_INGRESS, "copp");
+    ops_hw_resource_dump(ds, HW_RESOURCE_ACLV4_INGRESS, "aclv4");
+    ops_hw_resource_dump(ds, HW_RESOURCE_L3INTF_INGRESS, "l3intf");
+
+    /* Egress part */
+    ds_put_format(ds, "\nEgress:\n");
+    ds_put_format(ds, "%s", cmd_hw_resource_table_header);
+    ops_hw_resource_dump(ds, HW_RESOURCE_COPP_EGRESS, "copp");
+    ops_hw_resource_dump(ds, HW_RESOURCE_L3INTF_EGRESS, "l3intf");
+
+    ds_put_format(ds, "\n* Counters and Meters are shared resources across features\n");
+}
+
+static void
 bcm_plugin_debug(struct unixctl_conn *conn, int argc,
                  const char *argv[], void *aux OVS_UNUSED)
 {
@@ -952,6 +1358,9 @@ bcm_plugin_debug(struct unixctl_conn *conn, int argc,
         if (0 == strcmp(ch, "debug")) {
             handle_ops_debug(&ds, arg_idx, argc, argv);
             goto done;
+        } else if (!strcmp(ch, "opennsl-version")) {
+            ds_put_format(&ds, "OpenNSL version: %s\n", opennsl_version_get());
+            goto done;
         } else if (!strcmp(ch, "fp")) {
             const char* option = NEXT_ARG();
 
@@ -963,6 +1372,12 @@ bcm_plugin_debug(struct unixctl_conn *conn, int argc,
                     ops_fp_dump_copp_ingress_rules(&ds);
                 } else if (!strcmp(option, "copp-egress-group")) {
                     ops_fp_dump_copp_egress_rules(&ds);
+                } else if (!strcmp(option, "acl-ingress-group")) {
+                    ops_fp_dump_acl_ingress_rules(&ds);
+                } else if (!strcmp(option, "l3-group")) {
+                    ops_fp_dump_l3_rules(&ds);
+                } else if (!strcmp(option, "l3-subinterface")) {
+                    ops_fp_dump_l3_subinterface(&ds);
                 }
             } else {
                 ops_fp_show_dump(&ds);
@@ -975,6 +1390,10 @@ bcm_plugin_debug(struct unixctl_conn *conn, int argc,
                 vid = atoi(ch);
             }
             ops_vlan_dump(&ds, vid);
+            goto done;
+
+        } else if (!strcmp(ch, "hwvlan")) {
+            ops_hw_vlan_dump(&ds);
             goto done;
 
         } else if (!strcmp(ch, "stg")) {
@@ -1229,6 +1648,49 @@ copp_config_help:
             }
             goto done;
 
+        } else if (!strcmp(ch, "hw-resource")) {
+                    const char* option = NEXT_ARG();
+                    ds_put_format(&ds, "\n");
+                    ds_put_format(&ds, "Hardware Resource Usage\n");
+
+                    if (option) {
+                        if (!strcmp(option, "aclv4")) {
+                            /* aclv4 only has ingress group for now */
+                            ds_put_format(&ds, "\nIngress:\n");
+                            ds_put_format(&ds, "%s", cmd_hw_resource_table_header);
+                            ops_hw_resource_dump(&ds, HW_RESOURCE_ACLV4_INGRESS, option);
+                        } else if (!strcmp(option, "copp")) {
+                            ds_put_format(&ds, "\nIngress:\n");
+                            ds_put_format(&ds, "%s", cmd_hw_resource_table_header);
+                            ops_hw_resource_dump(&ds, HW_RESOURCE_COPP_INGRESS, option);
+                            ds_put_format(&ds, "\nEgress:\n");
+                            ds_put_format(&ds, "%s", cmd_hw_resource_table_header);
+                            ops_hw_resource_dump(&ds, HW_RESOURCE_COPP_EGRESS, option);
+                        } else if (!strcmp(option, "ospf")) {
+                            /* ospf only has ingress group for now */
+                            ds_put_format(&ds, "\nIngress:\n");
+                            ds_put_format(&ds, "%s", cmd_hw_resource_table_header);
+                            ops_hw_resource_dump(&ds, HW_RESOURCE_OSPF_INGRESS, option);
+                        } else if (!strcmp(option, "l3intf")) {
+                            ds_put_format(&ds, "\nIngress:\n");
+                            ds_put_format(&ds, "%s", cmd_hw_resource_table_header);
+                            ops_hw_resource_dump(&ds, HW_RESOURCE_L3INTF_INGRESS, option);
+                            ds_put_format(&ds, "\nEgress:\n");
+                            ds_put_format(&ds, "%s", cmd_hw_resource_table_header);
+                            ops_hw_resource_dump(&ds, HW_RESOURCE_L3INTF_EGRESS, option);
+                        } else {
+                            ds_put_format(&ds, "Unsupported Hardware Resource command.\n\n"
+                                    "Usage: ovs-appctl plugin/debug "
+                                    "hw-resource [aclv4 | copp | ospf | l3intf]\n"
+                                    "If no argument is specified,\n"
+                                    "the hardware resource utilization for all features will be displayed.\n\n");
+                        }
+                        ds_put_format(&ds, "\n* Counters and Meters are shared resources across features\n");
+                    } else {
+                        /* If no options are given, dump all */
+                        ops_hw_resource_dump_all(&ds);
+                    }
+                    goto done;
         } else {
             ds_put_format(&ds, "Unknown or unsupported command - %s.\n", ch);
             goto done;
@@ -1372,6 +1834,15 @@ process_mac_table(mac_match_t *match, mac_filter_t filter, struct ds *ds)
     }
 } // process_mac_table
 
+static char *
+xstrndup(const char *s, size_t len)
+{
+    int slen = strlen(s);
+
+    if (slen < len) len = slen;
+    return xmemdup0(s, len);
+}
+
 static int
 parse_port_ids(const char *ports, mac_match_t *match)
 {
@@ -1398,10 +1869,10 @@ parse_port_ids(const char *ports, mac_match_t *match)
         /* split string by commas */
         end = strchr(ptr, ',');
         if (end == NULL) {
-            working = strdup(ptr);
+            working = xstrdup(ptr);
             ptr += strlen(working);
         } else {
-            working = strndup(ptr, end - ptr);
+            working = xstrndup(ptr, end - ptr);
             ptr += strlen(working) + 1;
         }
 
@@ -1433,10 +1904,10 @@ parse_vlan_ids(const char *vlans, mac_match_t *match)
         /* split string by commas */
         end = strchr(ptr, ',');
         if (end == NULL) {
-            working = strdup(ptr);
+            working = xstrdup(ptr);
             ptr += strlen(working);
         } else {
-            working = strndup(ptr, end - ptr);
+            working = xstrndup(ptr, end - ptr);
             ptr += strlen(working) + 1;
         }
 
@@ -1516,11 +1987,173 @@ done:
     ds_destroy(&ds);
 } // bcm_mac_debug
 
+#define L3INTERFACE "l3interface"
+#define VLANINTERFACE "vlaninterface"
+#define LAGINTERFACE "laginterface"
+#define SUBINTERFACE "subinterface"
+#define LOOPBACK "loopback"
+#define COPP "copp"
+#define SFLOW "sflow"
+#define HWRESOURCE "hw-resource"
+#define L2VLAN "l2vlan"
+
+static void diag_dump_basic_cb(struct ds *ds)
+{
+    /* populate basic diagnostic data to buffer  */
+    ds_put_format(ds, "L3 interface information: \n");
+    ops_l3intf_dump(ds, -1);
+    ds_put_format(ds, "\n\n");
+
+    ds_put_format(ds, "VLAN information: \n");
+    ops_vlan_dump(ds, -1);
+    ds_put_format(ds, "\n\n");
+
+    ds_put_format(ds, "Hardware VLAN information: \n");
+    ops_hw_vlan_dump(ds);
+    ds_put_format(ds, "\n\n");
+
+    ds_put_format(ds, "L3 ipv4 host information: \n");
+    ops_l3host_dump(ds, FALSE);
+    ds_put_format(ds, "\n\n");
+
+    ds_put_format(ds, "L3 ipv6 host information: \n");
+    ops_l3host_dump(ds, TRUE);
+    ds_put_format(ds, "\n\n");
+
+    ds_put_format(ds, "L3 ipv4 route information: \n");
+    ops_l3route_dump(ds, FALSE);
+    ds_put_format(ds, "\n\n");
+
+    ds_put_format(ds, "L3 ipv6 route information: \n");
+    ops_l3route_dump(ds, TRUE);
+    ds_put_format(ds, "\n\n");
+
+    ds_put_format(ds, "L3 egress information: \n");
+    ops_l3egress_dump(ds, -1);
+    ds_put_format(ds, "\n\n");
+
+    ds_put_format(ds, "KNET ID information: \n");
+    ops_knet_dump(ds, KNET_DEBUG_NETIF);
+    ds_put_format(ds, "\n\nKNET filter information: \n");
+    ops_knet_dump(ds, KNET_DEBUG_FILTER);
+    ds_put_format(ds, "\n\n");
+
+    ds_put_format(ds, "FP information: \n");
+    ops_fp_show_dump(ds);
+    ds_put_format(ds, "\n\n");
+}
+
+static void copp_diag_dump_cb(struct ds *ds)
+{
+    int queueid;
+    /* populate basic diagnostic data to buffer  */
+
+    ds_put_format(ds, "Output for CoPP ingress rules information:\n");
+    ops_fp_dump_copp_ingress_rules(ds);
+    ds_put_format(ds, "\n\n");
+
+    ds_put_format(ds, "Output for CoPP egress rules information:\n");
+    ops_fp_dump_copp_egress_rules(ds);
+    ds_put_format(ds, "\n\n");
+
+    ds_put_format(ds, "Output for CoPP cpu queue stats:\n");
+    for(queueid = OPS_COPP_QOS_QUEUE_MIN;
+        queueid <= OPS_COPP_QOS_QUEUE_MAX; queueid++)
+    {
+        ops_get_cpu_queue_stats(ds, queueid);
+    }
+    ds_put_format(ds, "\n\n");
+
+    ds_put_format(ds, "Output for CoPP stats:\n");
+    if (ops_get_all_packet_stats() > 0) {
+        ds_put_format(ds, "%s", ops_copp_all_packet_stat_buffer);
+    }
+
+    ds_put_format(ds, "\n\n");
+}
+
+static void
+lag_diag_dump_basic_cb(struct ds *ds)
+{
+    /* populate basic diagnostic data to buffer  */
+    ds_put_format(ds, "LAG information:\n");
+    ops_lag_dump(ds, -1);
+    ds_put_format(ds, "\n\n");
+
+    diag_dump_basic_cb(ds);
+
+}
+
+static void
+hw_resource_diag_dump_basic_cb(struct ds *ds)
+{
+    /* populate basic diagnostic data to buffer  */
+    ds_put_format(ds, "\nHardware resource usage:\n");
+    ops_hw_resource_dump_all(ds);
+}
+
+static void
+ops_l2vlan_diag_dump(struct ds *ds)
+{
+    /*Populates basic L2VLAN diagnostic data to buffer */
+    ds_put_format(ds, "VLAN bitmaps information: \n");
+    ops_vlan_dump(ds, -1);
+    ds_put_format(ds, "\n\n");
+
+    ds_put_format(ds, "Hardware VLANi bitmaps information: \n");
+    ops_hw_vlan_dump(ds);
+    ds_put_format(ds, "\n\n");
+}
+
+/* _diag_dump_callback */
+/**
+ * callback handler function for diagnostic dump basic
+ * it allocates memory as per requirement and populates data.
+ * INIT_DIAG_DUMP_BASIC will free allocated memory.
+ *
+ * @param feature name of the feature.
+ * @param buf pointer to the buffer.
+ **/
+static void diag_dump_callback(const char *feature , char **buf)
+{
+    struct ds ds = DS_EMPTY_INITIALIZER;
+
+    if (!strncmp(feature, L3INTERFACE, strlen(L3INTERFACE)) ||
+            !strncmp(feature, SUBINTERFACE, strlen(SUBINTERFACE)) ||
+            !strncmp(feature, LOOPBACK, strlen(LOOPBACK)) ||
+            !strncmp(feature, VLANINTERFACE, strlen(VLANINTERFACE))) {
+        diag_dump_basic_cb(&ds);
+    } else if (!strncmp(feature, COPP, strlen(COPP))) {
+        copp_diag_dump_cb(&ds);
+    } else if (!strncmp(feature, SFLOW, strlen(SFLOW))) {
+        sflow_diag_dump_basic_cb(&ds);
+    } else if (!strncmp(feature, LAGINTERFACE, strlen(LAGINTERFACE))) {
+        lag_diag_dump_basic_cb(&ds);
+    } else if (!strncmp(feature, HWRESOURCE, strlen(HWRESOURCE))) {
+        hw_resource_diag_dump_basic_cb(&ds);
+    } else if (!strncmp(feature, L2VLAN, strlen(L2VLAN))) {
+        ops_l2vlan_diag_dump(&ds);
+    }
+
+    *buf =  xcalloc(1,ds.length);
+    if (*buf) {
+        VLOG_INFO("diag-dump ds.length = %lu", ds.length);
+        snprintf(*buf, ds.length, "%s", ds_cstr(&ds));
+    } else {
+        VLOG_ERR("Memory allocation failed for feature %s , %lu bytes",
+                feature , ds.length);
+    }
+    ds_destroy(&ds);
+    return ;
+}
+
 ///////////////////////////////// INIT /////////////////////////////////
 
 int
 ops_debug_init(void)
 {
+    /* Register diagnostic callback function */
+    INIT_DIAG_DUMP_BASIC(diag_dump_callback);
     unixctl_command_register("plugin/debug", "[cmds]", 0, INT_MAX,
                              bcm_plugin_debug, NULL);
     unixctl_command_register("plugin/dump-mac-table", "[port|vlan <id list>]",

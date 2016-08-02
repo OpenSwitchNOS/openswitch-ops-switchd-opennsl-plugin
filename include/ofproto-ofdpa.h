@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016 Hewlett-Packard Enterprise Company, L.P.
+ * (C) Copyright 2016 Broadcom Limited
  * All Rights Reserved.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -14,21 +14,22 @@
  *   License for the specific language governing permissions and limitations
  *   under the License.
  *
- * File: ops-bcm-init.h
+ * File: ofproto-ofdpa.h
  */
+#ifndef OFPROTO_OFDPA_H
+#define OFPROTO_OFDPA_H 1
 
-#ifndef __OPS_BCM_INIT_H__
-#define __OPS_BCM_INIT_H__ 1
+#include "ofp-util.h"
+#include "opennsl/ofdpa_datatypes.h"
+#include "opennsl/ofdpa_api.h"
 
-/* This function initializes switchd application threads within the SDK. */
-#define BCM_DIAG_SHELL_CUSTOM_INIT_F        ops_bcm_appl_init
+#define OFDPA_DATAPATH_TYPE "ofdpa"
 
-/* Number of RX packets per second.
- * This limit is enforced in the user space SDK. */
-#define OPS_RX_GLOBAL_PPS            30000
+typedef struct ovs_ofdpa_group_bucket_s
+{
+  uint32_t        outputPort;
+  uint32_t        popVlanTag;
 
-#define OPS_RX_PRIORITY_MAX          100
+} ovs_ofdpa_group_bucket_t;
 
-extern int ops_switch_main(int argc, char *argv[]);
-
-#endif // __OPS_BCM_INIT_H__
+#endif /* ofproto-ofdpa.h */

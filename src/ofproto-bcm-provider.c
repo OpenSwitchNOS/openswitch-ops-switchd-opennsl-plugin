@@ -1,19 +1,22 @@
 /*
  * (c) Copyright 2015-2016 Hewlett Packard Enterprise Development LP
  * Copyright (c) 2009, 2010, 2011, 2012, 2013, 2014 Nicira, Inc.
- * All Rights Reserved.
+ * (C) Copyright 2015-2016 Hewlett Packard Enterprise Development Company, L.P.
+ * (C) Copyright 2016 Broadcom Limited
  *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may
- * not use this file except in compliance with the License. You may obtain
- * a copy of the License at
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at:
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- * License for the specific language governing permissions and limitations
- * under the License.
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * Hewlett-Packard Company Confidential (C) Copyright 2015 Hewlett-Packard Development Company, L.P.
  */
 
 #include <errno.h>
@@ -29,11 +32,11 @@
 #include <vswitch-idl.h>
 #include <openswitch-idl.h>
 
+#include "ofproto-bcm-provider.h"
 #include "ops-pbmp.h"
 #include "ops-vlan.h"
 #include "ops-lag.h"
 #include "ops-routing.h"
-#include "ops-vxlan.h"
 #include "ops-knet.h"
 #include "ops-sflow.h"
 #include "netdev-bcmsdk.h"
@@ -43,10 +46,18 @@
 #include "bcm-common.h"
 #include "netdev-bcmsdk-vport.h"
 #include "ops-vport.h"
+#include "ops-vxlan.h"
 #include "ops-stg.h"
 #include "ops-qos.h"
 #include "qos-asic-provider.h"
 #include "ops-mac-learning.h"
+#include "eventlog.h"
+#include "ops-stats.h"
+#include "ops-mirrors.h"
+#include "ops-classifier.h"
+#include "ofproto-ofdpa.h"
+
+#define DEFAULT_VID  (1)
 
 VLOG_DEFINE_THIS_MODULE(ofproto_bcm_provider);
 
@@ -86,6 +97,7 @@ allocate_vrf_id() {
     vrf_id = bitmap_scan(available_vrf_ids, 0, 0, BCM_MAX_VRFS);
     if (vrf_id == BCM_MAX_VRFS) {
         VLOG_DBG("Couldn't allocate VRF ID\n");
+
         return BCM_MAX_VRFS;
     }
 
@@ -98,14 +110,17 @@ release_vrf_id(size_t vrf_id) {
     bitmap_set0(available_vrf_ids, vrf_id);
 }
 
-static struct bcmsdk_provider_ofport_node *
+struct bcmsdk_provider_ofport_node *
 bcmsdk_provider_ofport_node_cast(const struct ofport *ofport)
 {
     return ofport ?
            CONTAINER_OF(ofport, struct bcmsdk_provider_ofport_node, up) : NULL;
 }
 
-static inline struct bcmsdk_provider_node *
+/*
+ * used externally, do NOT make static
+ */
+inline struct bcmsdk_provider_node *
 bcmsdk_provider_node_cast(const struct ofproto *ofproto)
 {
     ovs_assert(ofproto->ofproto_class == &ofproto_bcm_provider_class);
@@ -115,6 +130,510 @@ bcmsdk_provider_node_cast(const struct ofproto *ofproto)
 /* All existing ofproto provider instances, indexed by ->up.name. */
 static struct hmap all_bcmsdk_provider_nodes =
               HMAP_INITIALIZER(&all_bcmsdk_provider_nodes);
+
+static int ofproto_is_ofdpa(const struct ofproto *ofproto)
+{
+    int is_ofdpa = 0;
+
+    if (ofproto) {
+        if (strcmp(ofproto->type, OFDPA_DATAPATH_TYPE) == 0) {
+            is_ofdpa = 1;
+        }
+    }
+    return(is_ofdpa);
+}
+
+static enum ofperr ovs_ofdpa_match_fields_masks_get(const struct match *match, ofdpaFlowEntry_t *flow)
+{
+    enum ofperr err = 0;
+    uint16_t vid, vid_mask;
+
+    switch (flow->tableId) {
+    case OFDPA_FLOW_TABLE_ID_VLAN:
+        flow->flowData.vlanFlowEntry.match_criteria.inPort = match->flow.in_port.ofp_port;
+        if (match->wc.masks.in_port.ofp_port == 0xFFFF) {
+            flow->flowData.vlanFlowEntry.match_criteria.inPortMask = OFDPA_INPORT_EXACT_MASK;
+        } else {
+            flow->flowData.vlanFlowEntry.match_criteria.inPortMask = match->wc.masks.in_port.ofp_port;
+        }
+
+        /* DEI bit indicating 'present' is included in the VID match field */
+        vid = ntohs(match->flow.vlan_tci) & (VLAN_VID_MASK | VLAN_CFI);
+        vid_mask = ntohs(match->wc.masks.vlan_tci) & (VLAN_VID_MASK | VLAN_CFI);
+
+        flow->flowData.vlanFlowEntry.match_criteria.vlanId = vid;
+
+        if (vid_mask != 0) {
+            if (vid == OFDPA_VID_PRESENT) {   /* All */
+                flow->flowData.vlanFlowEntry.match_criteria.vlanIdMask = OFDPA_VID_PRESENT;
+            } else if ((vid & OFDPA_VID_EXACT_MASK) == OFDPA_VID_NONE) {      /* untagged */
+                flow->flowData.vlanFlowEntry.match_criteria.vlanIdMask = OFDPA_VID_EXACT_MASK;
+            } else {     /* tagged */
+                flow->flowData.vlanFlowEntry.match_criteria.vlanIdMask = (OFDPA_VID_PRESENT | OFDPA_VID_EXACT_MASK);
+            }
+        } else {         /* ALL */
+            flow->flowData.vlanFlowEntry.match_criteria.vlanId = OFDPA_VID_NONE;
+            flow->flowData.vlanFlowEntry.match_criteria.vlanIdMask = OFDPA_VID_FIELD_MASK;
+        }
+
+        break;
+
+    case OFDPA_FLOW_TABLE_ID_BRIDGING:
+        flow->flowData.bridgingFlowEntry.match_criteria.tunnelId     = ntohll(match->flow.tunnel.tun_id);
+        flow->flowData.bridgingFlowEntry.match_criteria.tunnelIdMask = ntohll(match->wc.masks.tunnel.tun_id);
+
+        memcpy(&flow->flowData.bridgingFlowEntry.match_criteria.destMac, &match->flow.dl_dst, OFDPA_MAC_ADDR_LEN);
+        memcpy(&flow->flowData.bridgingFlowEntry.match_criteria.destMacMask, &match->wc.masks.dl_dst, OFDPA_MAC_ADDR_LEN);
+
+        break;
+
+    default:
+        VLOG_ERR("Invalid table id %d", flow->tableId);
+        err = OFPERR_OFPBRC_BAD_TYPE;
+        break;
+    }
+
+    return err;
+}
+
+static enum ofperr ovs_ofdpa_translate_openflow_actions(const struct ofpact *act, ofdpaFlowEntry_t *flow)
+{
+    ofp_port_t port_no;
+
+    switch (act->type) {
+    case OFPACT_OUTPUT:
+    {
+        port_no = ofpact_get_OUTPUT(act)->port;
+
+        switch (port_no) {
+        case OFPP_CONTROLLER:
+        {
+            switch (flow->tableId) {
+            case OFDPA_FLOW_TABLE_ID_BRIDGING:
+                flow->flowData.bridgingFlowEntry.outputPort = OFDPA_PORT_CONTROLLER;
+                break;
+            default:
+                VLOG_ERR("Unsupported output port action (OFPP_CONTROLLER) for Table: %d", flow->tableId);
+                return OFPERR_OFPHFC_INCOMPATIBLE;
+            }
+
+            break;
+        }
+
+        case OFPP_LOCAL:
+        case OFPP_FLOOD:
+        case OFPP_ALL:
+        case OFPP_TABLE:
+        case OFPP_IN_PORT:
+        case OFPP_NORMAL:
+            VLOG_ERR("Unsupported port type for output port action 0x%x", port_no);
+            return OFPERR_OFPBIC_UNSUP_INST;
+
+        default:
+            /* Physical or logical port as output port */
+
+            /* NOTE: currently no flow entry types support output to physical or logical port (only OFPP_CONTROLLER) */
+            VLOG_ERR("Unsupported port type for output port action 0x%x", port_no);
+            return OFPERR_OFPBIC_UNSUP_INST;
+            break;
+        }
+        break;
+    }
+
+    case OFPACT_SET_FIELD:
+    {
+        enum mf_field_id id = ofpact_get_SET_FIELD(act)->field->id;
+        switch (id) {
+        case MFF_TUN_ID:
+        {
+            ovs_be64 tunnel_id;
+
+            tunnel_id = ntohll(ofpact_get_SET_FIELD(act)->value.be64);
+
+            if (flow->tableId == OFDPA_FLOW_TABLE_ID_VLAN) {
+                flow->flowData.vlanFlowEntry.tunnelIdAction = 1;
+                flow->flowData.vlanFlowEntry.tunnelId = tunnel_id;
+            } else {
+                VLOG_ERR("Unsupported set-field %d for table %d", id, flow->tableId);
+                return OFPERR_OFPHFC_INCOMPATIBLE;
+            }
+
+            break;
+        }
+
+        default:
+            VLOG_ERR("Unsupported set-field %d for table %d", id, flow->tableId);
+            return OFPERR_OFPHFC_INCOMPATIBLE;
+        }
+        break;
+    }
+
+    case OFPACT_GROUP:
+    {
+        uint32_t group_id;
+
+        group_id = ofpact_get_GROUP(act)->group_id;
+
+        switch (flow->tableId) {
+        case OFDPA_FLOW_TABLE_ID_BRIDGING:
+            flow->flowData.bridgingFlowEntry.groupID = group_id;
+            break;
+
+        default:
+            VLOG_ERR("Unsupported action: '%s' (%d), table %d", ofpact_name(act->type), act->type, flow->tableId);
+            return OFPERR_OFPHFC_INCOMPATIBLE;
+        }
+        break;
+    }
+
+    default:
+        VLOG_ERR("Unsupported action: '%s' (%d), table %d", ofpact_name(act->type), act->type, flow->tableId);
+        return OFPERR_OFPHFC_INCOMPATIBLE;
+    }
+
+    return 0;
+}
+
+static enum ofperr
+ovs_ofdpa_instructions_get(const struct rule_actions *rule_action, ofdpaFlowEntry_t *flow)
+{
+    enum ofperr err;
+    uint8_t next_table_id;
+    const struct ofpact *act;
+    const struct ofpact *write_act;
+
+    OFPACT_FOR_EACH(act, rule_action->ofpacts, rule_action->ofpacts_len) {
+        switch (ovs_instruction_type_from_ofpact_type(act->type)) {
+        case OVSINST_OFPIT11_WRITE_ACTIONS:
+            switch (flow->tableId) {
+            case OFDPA_FLOW_TABLE_ID_VLAN:
+            case OFDPA_FLOW_TABLE_ID_BRIDGING:
+                break;
+            default:
+                VLOG_ERR("Unsupported instruction: '%s' (%d), table %d", ofpact_name(act->type), act->type, flow->tableId);
+                return OFPERR_OFPHFC_INCOMPATIBLE;
+            }
+            write_act = ofpact_get_WRITE_ACTIONS(act)->actions;
+            err = ovs_ofdpa_translate_openflow_actions(write_act, flow);
+            if (err != 0) {
+                return err;
+            }
+            break;
+
+        case OVSINST_OFPIT11_GOTO_TABLE:
+            next_table_id = ofpact_get_GOTO_TABLE(act)->table_id;
+            switch (flow->tableId) {
+            case OFDPA_FLOW_TABLE_ID_VLAN:
+                flow->flowData.vlanFlowEntry.gotoTableId = next_table_id;
+                break;
+            case OFDPA_FLOW_TABLE_ID_BRIDGING:
+                flow->flowData.bridgingFlowEntry.gotoTableId = next_table_id;
+                break;
+            default:
+                VLOG_ERR("Unsupported instruction: '%s' (%d), table %d", ofpact_name(act->type), act->type, flow->tableId);
+                return OFPERR_OFPHFC_INCOMPATIBLE;
+            }
+            break;
+
+        case OVSINST_OFPIT11_APPLY_ACTIONS:
+            switch (flow->tableId) {
+            case OFDPA_FLOW_TABLE_ID_INGRESS_PORT:
+            case OFDPA_FLOW_TABLE_ID_VLAN:
+            case OFDPA_FLOW_TABLE_ID_TERMINATION_MAC:
+            case OFDPA_FLOW_TABLE_ID_BRIDGING:
+            case OFDPA_FLOW_TABLE_ID_ACL_POLICY:
+                break;
+            default:
+                VLOG_ERR("Unsupported instruction: '%s' (%d), table %d", ofpact_name(act->type), act->type, flow->tableId);
+                return OFPERR_OFPHFC_INCOMPATIBLE;
+            }
+
+            err = ovs_ofdpa_translate_openflow_actions(act, flow);
+            if (err != 0) {
+                return err;
+            }
+            break;
+        default:
+            VLOG_ERR("Unsupported instruction: '%s' (%d), table %d", ofpact_name(act->type), act->type, flow->tableId);
+            return OFPERR_OFPHFC_INCOMPATIBLE;
+        }
+    }
+    return 0;
+}
+
+static enum ofperr
+ofdpa_flow_add(struct rule *rule_)
+{
+    enum ofperr err;
+    struct match megamatch;
+    ofdpaFlowEntry_t flow;
+    OFDPA_ERROR_t ofdpa_rv = OFDPA_E_NONE;
+
+    memset(&flow, 0, sizeof(flow));
+    minimatch_expand(&rule_->cr.match, &megamatch);
+    flow.tableId   = rule_->table_id;
+    flow.hard_time = rule_->hard_timeout;
+    flow.idle_time = rule_->idle_timeout;
+    flow.priority  = rule_->cr.priority;
+    flow.cookie    = rule_->flow_cookie;
+
+    /* Get the match fields and masks from LOCI match structure */
+    err = ovs_ofdpa_match_fields_masks_get(&megamatch, &flow);
+    if (err) {
+        VLOG_ERR("Error getting match fields and masks. (err = %d)", err);
+        return err;
+    }
+
+    /* Get the instructions set from the LOCI flow add object */
+    err = ovs_ofdpa_instructions_get(rule_->actions, &flow);
+    if (err) {
+        VLOG_ERR("Failed to get flow instructions. (err = 0x%8x)", err);
+        return err;
+    }
+
+    /* Submit the changes to ofdpa */
+    ofdpa_rv = ofdpaFlowAdd(&flow);
+    if (ofdpa_rv != OFDPA_E_NONE) {
+        VLOG_ERR("Failed to add flow. (ofdpa_rv = %d)", ofdpa_rv);
+    } else {
+        VLOG_DBG("Flow added successfully. (ofdpa_rv = %d)", ofdpa_rv);
+    }
+
+    if (ofdpa_rv == OFDPA_E_NONE)
+        return 0;
+    else
+        return OFPERR_OFPHFC_INCOMPATIBLE;
+}
+
+enum ofperr ofdpa_flow_delete(struct rule *rule_)
+{
+    enum ofperr err;
+    struct match megamatch;
+    ofdpaFlowEntry_t flow;
+    OFDPA_ERROR_t ofdpa_rv = OFDPA_E_NONE;
+
+    memset(&flow, 0, sizeof(flow));
+
+    minimatch_expand(&rule_->cr.match, &megamatch);
+    flow.tableId   = rule_->table_id;
+    flow.hard_time = rule_->hard_timeout;
+    flow.idle_time = rule_->idle_timeout;
+    flow.priority  = rule_->cr.priority;
+    flow.cookie    = rule_->flow_cookie;
+
+
+    /* Get the match fields and masks from LOCI match structure */
+    err = ovs_ofdpa_match_fields_masks_get(&megamatch, &flow);
+    if (err) {
+        VLOG_ERR("Error getting match fields and masks. (err = %d)", err);
+        return err;
+    }
+
+    /* Get the instructions set from the LOCI flow add object */
+    err = ovs_ofdpa_instructions_get(rule_->actions, &flow);
+    if (err) {
+        VLOG_ERR("Failed to get flow instructions. (err = 0x%8x)", err);
+        return err;
+    }
+
+    /* Delete the flow entry */
+    ofdpa_rv = ofdpaFlowDelete(&flow);
+    if (ofdpa_rv != OFDPA_E_NONE) {
+        VLOG_ERR("Failed to delete flow. (ofdpa_rv = %d)", ofdpa_rv);
+    } else {
+        VLOG_DBG("Flow deleted successfully. (ofdpa_rv = %d)", ofdpa_rv);
+    }
+
+    if (ofdpa_rv == OFDPA_E_NONE)
+        return 0;
+    else
+        return OFPERR_OFPHFC_INCOMPATIBLE;
+}
+
+static enum ofperr
+ovs_ofdpa_translate_group_actions(struct ofputil_bucket *bucket,
+                                  ovs_ofdpa_group_bucket_t *group_bucket,
+                                  uint64_t *group_action_bitmap,
+                                  uint64_t *group_action_sf_bitmap)
+{
+    ofp_port_t port_no;
+    const struct ofpact *act;
+
+    OFPACT_FOR_EACH(act, bucket->ofpacts, bucket->ofpacts_len) {
+        switch (act->type) {
+        case OFPACT_OUTPUT:
+        {
+            port_no = ofpact_get_OUTPUT(act)->port;
+            switch (port_no) {
+            case OFPP_CONTROLLER:
+            case OFPP_FLOOD:
+            case OFPP_ALL:
+            case OFPP_TABLE:
+            case OFPP_LOCAL:
+            case OFPP_IN_PORT:
+            case OFPP_NORMAL:
+                VLOG_ERR("Unsupported port for group output port action 0x%x", port_no);
+                return OFPERR_OFPHFC_INCOMPATIBLE;
+            default:
+                group_bucket->outputPort = port_no;
+                break;
+            }
+            break;
+        }
+
+        case OFPACT_STRIP_VLAN: /*OF_ACTION_POP_VLAN*/
+            group_bucket->popVlanTag = 1;
+            break;
+
+        default:
+            VLOG_ERR("unsupported action type %d", act->type);
+            return OFPERR_OFPHFC_INCOMPATIBLE;
+        }
+    }
+
+    VLOG_DBG("group_action_bitmap is 0x%" PRIx64 ", group_action_sf_bitmap is 0x%" PRIx64 "",
+             *group_action_bitmap, *group_action_sf_bitmap);
+
+    return 0;
+}
+
+static enum ofperr
+ovs_ofdpa_translate_group_buckets(uint32_t group_id,
+                                  struct ovs_list *of_buckets,
+                                  int is_add_cmd)
+{
+    enum ofperr err;
+    uint16_t bucket_index = 0;
+    ovs_ofdpa_group_bucket_t group_bucket;
+    uint32_t group_type;
+    ofdpaGroupEntry_t group_entry;
+    ofdpaGroupBucketEntry_t group_bucket_entry;
+    OFDPA_ERROR_t ofdpa_rv = OFDPA_E_FAIL;
+    int group_added = 0;
+
+    uint64_t group_action_bitmap = 0;
+    uint64_t group_action_sf_bitmap = 0;
+    struct ofputil_bucket *bucket;
+
+    LIST_FOR_EACH(bucket, list_node, of_buckets) {
+        VLOG_DBG("bucket weight %d watch_port %d watch_group %d act_length %zd",
+                 bucket->weight, bucket->watch_port,
+                 bucket->watch_group, bucket->ofpacts_len);
+
+        memset(&group_bucket, 0, sizeof(group_bucket));
+
+        err = ovs_ofdpa_translate_group_actions(bucket, &group_bucket, &group_action_bitmap, &group_action_sf_bitmap);
+
+        if (err < 0) {
+            VLOG_ERR("Error in translating group actions error %d", err);
+            if (group_added == 1) {
+                /* Delete the added group */
+                (void)ofdpaGroupDelete(group_id);
+            }
+            return err;
+        }
+
+        ofdpaGroupTypeGet(group_id, &group_type);
+
+        memset(&group_bucket_entry, 0, sizeof(group_bucket_entry));
+        group_bucket_entry.groupId = group_id;
+        group_bucket_entry.bucketIndex = bucket_index;
+
+        switch (group_type) {
+
+        case OFDPA_GROUP_ENTRY_TYPE_L2_INTERFACE:
+            group_bucket_entry.bucketData.l2Interface.outputPort = group_bucket.outputPort;
+            group_bucket_entry.bucketData.l2Interface.popVlanTag = group_bucket.popVlanTag;
+
+            break;
+
+        default:
+            err = OFPERR_OFPHFC_EPERM;
+            VLOG_ERR("Invalid GROUP_TYPE %d", group_type);
+            break;
+        }
+
+        if (err) {
+            if (err == OFPERR_OFPHFC_INCOMPATIBLE) {
+                VLOG_ERR("Incompatible fields for Group Type err %d", err);
+            }
+            if (group_added == 1) {
+                /* Delete the added group */
+                (void)ofdpaGroupDelete(group_id);
+            }
+            return err;
+        }
+
+        if (is_add_cmd == true) {
+            if (bucket_index == 0) {
+                /* First Bucket; Add Group first*/
+                group_entry.groupId = group_id;
+                ofdpa_rv = ofdpaGroupAdd(&group_entry);
+                if (ofdpa_rv != OFDPA_E_NONE) {
+                    VLOG_ERR("Error in adding Group, rv = %d", ofdpa_rv);
+                    break;
+                }
+                group_added = 1;
+            }
+        } else {      /* OF_GROUP_MODIFY */
+            if (bucket_index == 0) {
+                /* First Bucket; Delete all buckets first */
+                ofdpa_rv = ofdpaGroupBucketsDeleteAll(group_id);
+                if (ofdpa_rv != OFDPA_E_NONE) {
+                VLOG_ERR("Error in deleting Group buckets, rv = %d", ofdpa_rv);
+                break;
+                }
+            }
+        }
+
+        ofdpa_rv = ofdpaGroupBucketEntryAdd(&group_bucket_entry);
+        if (ofdpa_rv != OFDPA_E_NONE) {
+            VLOG_ERR("Error in adding Group bucket, rv = %d",ofdpa_rv);
+            if (group_added == 1) {
+                /* Delete the added group */
+                (void)ofdpaGroupDelete(group_id);
+            } else {    /* OF_GROUP_MODIFY */
+                /* Need to clean up and delete Group here as well.
+                Will be done by the caller as the Group also needs to
+                be deleted from the Indigo database. */
+            }
+            break;
+        }
+
+        bucket_index++;
+    }
+
+    if (ofdpa_rv == OFDPA_E_NONE)
+        return 0;
+    else
+        return OFPERR_OFPHFC_INCOMPATIBLE;
+}
+
+enum ofperr ofdpa_group_add(struct bcmsdk_provider_group *group)
+{
+    if (group->up.type != OFPGT11_ALL) {
+        return OFPERR_OFPBIC_UNSUP_INST;
+    }
+
+    return ovs_ofdpa_translate_group_buckets(group->up.group_id, &group->up.buckets, 1 /*add*/);
+}
+
+enum ofperr ofdpa_group_modify(struct bcmsdk_provider_group *group)
+{
+    return ovs_ofdpa_translate_group_buckets(group->up.group_id, &group->up.buckets, 0 /*modify*/);
+}
+
+void ofdpa_group_delete(uint32_t id)
+{
+    OFDPA_ERROR_t ofdpa_rv;
+
+    ofdpa_rv = ofdpaGroupDelete(id);
+    if (ofdpa_rv != OFDPA_E_NONE) {
+        VLOG_ERR("Group Delete failed, rv = %d",ofdpa_rv);
+    }
+
+    return;
+}
 
 /* Factory functions. */
 
@@ -131,6 +650,7 @@ enumerate_types(struct sset *types)
 {
     sset_add(types, "system");
     sset_add(types, "vrf");
+    sset_add(types, "ofdpa");
 }
 
 static int
@@ -161,13 +681,12 @@ del(const char *type OVS_UNUSED, const char *name OVS_UNUSED)
 static const char *
 port_open_type(const char *datapath_type OVS_UNUSED, const char *port_type)
 {
-    if( (strcmp(port_type, OVSREC_INTERFACE_TYPE_INTERNAL) == 0) ||
+    if ((strcmp(port_type, OVSREC_INTERFACE_TYPE_INTERNAL) == 0) ||
         (strcmp(port_type, OVSREC_INTERFACE_TYPE_LOOPBACK) == 0) ||
         (strcmp(port_type, OVSREC_INTERFACE_TYPE_VLANSUBINT) == 0) ||
         (strcmp(port_type, OVSREC_INTERFACE_TYPE_VXLAN) == 0)) {
         return port_type;
-    }
-    else {
+    } else {
         return "system";
     }
 }
@@ -245,7 +764,7 @@ out:
 }
 
 static void
-destruct(struct ofproto *ofproto_ OVS_UNUSED)
+destruct(struct ofproto *ofproto_)
 {
     struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
 
@@ -268,7 +787,7 @@ destruct(struct ofproto *ofproto_ OVS_UNUSED)
 }
 
 static int
-run(struct ofproto *ofproto_ OVS_UNUSED)
+run(struct ofproto *ofproto_)
 {
     struct bcmsdk_provider_node *ofproto = bcmsdk_provider_node_cast(ofproto_);
 
@@ -322,12 +841,49 @@ port_construct(struct ofport *port_)
 
     port->bundle = NULL;
 
+    if (ofproto_is_ofdpa(port->up.ofproto)) {
+        OFDPA_ERROR_t rc;
+        int hw_unit, hw_port;
+        ofdpaPortInfo_t port_info;
+
+        netdev_bcmsdk_get_hw_info(port->up.netdev, &hw_unit, &hw_port, NULL);
+
+        if (hw_port < 0) {
+            VLOG_DBG("Skip create port in OF-DPA. Invalid hw_port value. (ofp_port = %d, hw_unit = %d, hw_port = %d)\n",
+                     port->up.ofp_port, hw_unit, hw_port);
+        } else {
+            port_info.type = OFDPA_PORT_TYPE_PHYSICAL;
+            port_info.portInfo.physical.hw_unit = hw_unit;
+            port_info.portInfo.physical.hw_port = hw_port;
+
+            rc = ofdpaPortCreate(port->up.ofp_port, &port_info);
+            if (rc != OFDPA_E_NONE) {
+                VLOG_ERR("Error creating port in OFDPA. (rc = %d, ofp_port = %d, hw_unit = %d, hw_port = %d)\n",
+                         rc, port->up.ofp_port, hw_unit, hw_port);
+            }
+        }
+    }
+
     return 0;
 }
 
 static void
-port_destruct(struct ofport *port_ OVS_UNUSED)
+port_destruct(struct ofport *port_)
 {
+    struct bcmsdk_provider_ofport_node *port =
+           bcmsdk_provider_ofport_node_cast(port_);
+    VLOG_DBG("destruct port %s", netdev_get_name(port->up.netdev));
+
+    if (ofproto_is_ofdpa(port->up.ofproto)) {
+        OFDPA_ERROR_t rc;
+
+        rc = ofdpaPortDelete(port->up.ofp_port);
+        if (rc != OFDPA_E_NONE) {
+            VLOG_ERR("Error deleting port from OFDPA. (rc = %d, ofp_port = %d)\n",
+                     rc, port->up.ofp_port);
+        }
+    }
+
     return;
 }
 
@@ -530,7 +1086,10 @@ bundle_get_tnl_key(const struct ofproto_bundle_settings *set)
     return -1;
 }
 
-static struct ofbundle *
+/*
+ * used externally, do NOT make static
+ */
+struct ofbundle *
 bundle_lookup(const struct bcmsdk_provider_node *ofproto, void *aux)
 {
     struct ofbundle *bundle;
@@ -590,7 +1149,7 @@ bundle_add_port(struct ofbundle *bundle, ofp_port_t ofp_port,
 static void
 bundle_destroy(struct ofbundle *bundle)
 {
-    struct bcmsdk_provider_node *ofproto = bundle->ofproto;;
+    struct bcmsdk_provider_node *ofproto;
     struct bcmsdk_provider_ofport_node *port = NULL, *next_port;
     const char *type;
     int hw_unit, hw_port;
@@ -599,6 +1158,7 @@ bundle_destroy(struct ofbundle *bundle)
     if (!bundle) {
         return;
     }
+    ofproto = bundle->ofproto;
     VLOG_DBG("%s, destroying bundle = %s", __FUNCTION__, bundle->name);
 
     LIST_FOR_EACH_SAFE (port, next_port, bundle_node, &bundle->ports) {
@@ -632,7 +1192,8 @@ bundle_destroy(struct ofbundle *bundle)
                             false);
                 } else {
                     netdev_bcmsdk_get_hw_info(port->up.netdev, &hw_unit, &hw_port, mac);
-                    VLOG_DBG("%s destroy the l3 interface hw_port = %d", __FUNCTION__, hw_port);
+                    VLOG_DBG("%s destroy the l3 interface hw_port = %d",
+                             __FUNCTION__, hw_port);
                     ops_routing_disable_l3_interface(hw_unit,
                             hw_port,
                             bundle->l3_intf,
@@ -669,6 +1230,9 @@ bundle_destroy(struct ofbundle *bundle)
         if (strcmp(type, OVSREC_INTERFACE_TYPE_VXLAN) != 0) {
             netdev_bcmsdk_l3_global_stats_destroy(port->up.netdev);
         }
+
+        netdev_bcmsdk_l3_ingress_stats_destroy(port->up.netdev);
+        netdev_bcmsdk_l3_egress_stats_destroy(port->up.netdev);
         bundle_del_port(port);
     }
 
@@ -678,7 +1242,12 @@ bundle_destroy(struct ofbundle *bundle)
     if (bundle->bond_hw_handle != -1) {
         VLOG_DBG("%s destroy the lag %s", __FUNCTION__, bundle->name);
         bcmsdk_destroy_lag(bundle->bond_hw_handle);
+        ops_sflow_remove_polling_on_lag_interface(bundle);
+        bundle->lag_sflow_polling_interval = 0;
     }
+
+    /* in case a mirror destination, unconfigure it */
+    mirror_object_destroy_with_mtp(bundle);
 
     ofproto = bundle->ofproto;
 
@@ -1001,7 +1570,6 @@ port_ip_reconfigure(struct ofproto *ofproto, struct ofbundle *bundle,
                 }
                 /* else no change */
             } else {
-
                 /* Earlier primary was not there, just add new */
                 bundle->ip6_address = xstrdup(s->ip6_address);
                 port_l3_host_add(ofproto, is_ipv6, bundle->ip6_address);
@@ -1027,51 +1595,6 @@ port_ip_reconfigure(struct ofproto *ofproto, struct ofbundle *bundle,
         port_config_secondary_ipv6_addr(ofproto, bundle, s);
     }
 
-    return 0;
-}
-
-static int
-init_l3_ingress_stats(struct bcmsdk_provider_ofport_node *port, opennsl_vlan_t vlan_id)
-{
-    int rc = 0;
-    uint32_t ing_stat_id = 0;
-    uint32_t ing_num_id = 0;
-
-    /* Create Ingress stat object using the vlan id */
-    rc = opennsl_stat_group_create(0, opennslStatObjectIngL3Intf,
-            opennslStatGroupModeTrafficType, &ing_stat_id,
-            &ing_num_id);
-    if (rc) {
-        VLOG_ERR("Failed to create bcm stat group for ingress id %d",
-                vlan_id);
-        return 1; /* Return error */
-    }
-
-    /* Attach stat to customized group mode */
-    rc = opennsl_stat_custom_group_create(0, l3_stats_mode_id,
-            opennslStatObjectIngL3Intf, &ing_stat_id, &ing_num_id);
-    if (rc) {
-        VLOG_ERR("Failed to create custom stat group for ing id %d",
-                vlan_id);
-        return 1; /* Return error */
-    }
-
-    rc = opennsl_l3_ingress_stat_attach(0, vlan_id, ing_stat_id);
-    if (rc) {
-        VLOG_ERR("Failed to attach stat obj, for ingress id %d, %s",
-                vlan_id, opennsl_errmsg(rc));
-        return 1; /* Return error */
-    }
-
-    rc = netdev_bcmsdk_set_l3_ingress_stat_obj(port->up.netdev,
-            vlan_id,
-            ing_stat_id,
-            ing_num_id);
-    if (rc) {
-        VLOG_ERR("Failed to set l3 ingress stats obj for vlanid %d",
-                vlan_id);
-        return 1; /* Return error */
-    }
     return 0;
 }
 
@@ -1130,8 +1653,10 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         bundle->trunk_all_vlans = false;
         bundle->pbm = NULL;
         bundle->bond_hw_handle = -1;
+        bundle->mirror_data = NULL;
         bundle->lacp = NULL;
         bundle->bond = NULL;
+        bundle->lag_sflow_polling_interval = 0;
 
         bundle->ip4_address = NULL;
         bundle->ip6_address = NULL;
@@ -1166,9 +1691,12 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         /* Create a h/w LAG if there is more than one member present
            in the bundle or if requested by upper layer. */
         bcmsdk_create_lag(&bundle->bond_hw_handle);
+        log_event("LAG_CREATE",
+                   EV_KV("lag_id", "%s", bundle->name));
         VLOG_DBG("%s: Allocated bond_hw_handle# %d for port %s",
                  __FUNCTION__, bundle->bond_hw_handle, s->name);
         if (s->bond_handle_alloc_only) {
+            bcmsdk_destroy_pbmp(all_pbm);
             return 0;
         }
     } else if ((-1 != bundle->bond_hw_handle) &&
@@ -1177,6 +1705,10 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         VLOG_DBG("%s destroy LAG", __FUNCTION__);
         bcmsdk_destroy_lag(bundle->bond_hw_handle);
         bundle->bond_hw_handle = -1;
+        ops_sflow_remove_polling_on_lag_interface(bundle);
+        bundle->lag_sflow_polling_interval = 0;
+        log_event("LAG_DELETE",
+                   EV_KV("lag_id", "%s", bundle->name));
     }
     if (!ofproto->vrf && s->n_slaves > 0) {
          struct bcmsdk_provider_ofport_node *port;
@@ -1202,6 +1734,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         port = get_ofp_port(bundle->ofproto, s->slaves[0]);
         if (!port) {
             VLOG_ERR("slave is not in the ports\n");
+            return ENODEV;
         }
 
         type = netdev_get_type(port->up.netdev);
@@ -1222,6 +1755,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
             /* For l3-loopback interfaces, just configure ips */
             port_ip_reconfigure(ofproto_, bundle, s);
             VLOG_DBG("%s Done with l3 loopback configurations", __FUNCTION__);
+            log_event("LOOPBACK_CREATE", EV_KV("interface", "%s", bundle->name));
             goto done;
         } else {
             vlan_id = smap_get_int(s->port_options[PORT_HW_CONFIG],
@@ -1235,24 +1769,43 @@ bundle_set(struct ofproto *ofproto_, void *aux,
             if ((bundle->l3_intf->l3a_vid != vlan_id || !s->enable) &&
                  false == s->hw_bond_should_exist) {
                 VLOG_DBG("%s call disable s-enable = %d or vid(%d) != vlan_id(%d)",
-                           __FUNCTION__, s->enable, bundle->l3_intf->l3a_vid, vlan_id);
+                           __FUNCTION__, s->enable,
+                           bundle->l3_intf->l3a_vid, vlan_id);
                 if (strcmp(type, OVSREC_INTERFACE_TYPE_VLANSUBINT) == 0) {
                     VLOG_DBG("%s disable l3 subinterface", __FUNCTION__);
+                     if (bundle->l3_intf->l3a_vid != vlan_id) {
+                         log_event("SUBINTERFACE_ENC_UPDATE",
+                                   EV_KV("interface", "%s", bundle->name),
+                                   EV_KV("value", "%d", vlan_id));
+                     }
+                     if (!s->enable) {
+                         log_event("SUBINTERFACE_ADMIN_STATE",
+                                    EV_KV("interface", "%s", bundle->name),
+                                    EV_KV("state", "%s", s->enable?"up":"down"));
+                     }
                     ops_routing_disable_l3_subinterface(hw_unit, hw_port,
                                                         bundle->l3_intf,
                                                         port->up.netdev);
+                    log_event("SUBINTERFACE_DELETE",
+                               EV_KV("interface", "%s", bundle->name));
                 } else if (strcmp(type, OVSREC_INTERFACE_TYPE_SYSTEM) == 0) {
-                    VLOG_DBG("%s disable l3 interface %s", __FUNCTION__, bundle->name);
+                    VLOG_DBG("%s disable l3 interface %s",
+                              __FUNCTION__, bundle->name);
+                         log_event("L3INTERFACE_ADMIN_STATE",
+                                    EV_KV("interface", "%s", bundle->name),
+                                    EV_KV("state", "%s", s->enable?"up":"down"));
                     ops_routing_disable_l3_interface(hw_unit, hw_port,
                                                      bundle->l3_intf,
                                                      port->up.netdev);
                     /* Destroy L3 stats */
                     netdev_bcmsdk_l3intf_fp_stats_destroy(hw_port, hw_unit);
 
+                    log_event("L3INTERFACE_DELETE",
+                               EV_KV("interface", "%s", bundle->name));
                 } else if (strcmp(type, OVSREC_INTERFACE_TYPE_INTERNAL) == 0) {
                     opennsl_l3_intf_delete(hw_unit, bundle->l3_intf);
                 }
-                netdev_bcmsdk_l3_global_stats_destroy(port->up.netdev);
+                netdev_bcmsdk_l3_ingress_stats_remove(port->up.netdev);
                 bundle->l3_intf = NULL;
                 bundle->hw_unit = 0;
                 bundle->hw_port = -1;
@@ -1265,6 +1818,9 @@ bundle_set(struct ofproto *ofproto_, void *aux,
              * create an l3 vlan interface on every hw_unit. */
             if (strcmp(type, OVSREC_INTERFACE_TYPE_SYSTEM) == 0) {
                 VLOG_DBG("%s Create interface %s", __FUNCTION__, bundle->name);
+                log_event("L3INTERFACE_ADMIN_STATE",
+                           EV_KV("interface", "%s", bundle->name),
+                           EV_KV("state", "%s", s->enable?"up":"down"));
                 bundle->l3_intf = ops_routing_enable_l3_interface(
                             hw_unit, hw_port, ofproto->vrf_id, vlan_id,
                             mac, port->up.netdev);
@@ -1272,8 +1828,10 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                 if (bundle->l3_intf) {
                     bundle->hw_unit = hw_unit;
                     bundle->hw_port = hw_port;
-                    /* Initilize FP entries for l3 interface stats */
-                    netdev_bcmsdk_l3intf_fp_stats_init(vlan_id, hw_port, hw_unit);
+                    /* Create FP group/entries for l3 interface stats */
+                    netdev_bcmsdk_l3intf_fp_stats_create(port->up.netdev, vlan_id);
+                    log_event("L3INTERFACE_CREATE",
+                               EV_KV("interface", "%s", bundle->name));
                 }
 
             } else if (strcmp(type, OVSREC_INTERFACE_TYPE_VLANSUBINT) == 0) {
@@ -1285,6 +1843,8 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                 if (bundle->l3_intf) {
                     bundle->hw_unit = hw_unit;
                     bundle->hw_port = hw_port;
+                    log_event("SUBINTERFACE_CREATE",
+                               EV_KV("interface", "%s", bundle->name));
                 }
 
             } else if (strcmp(type, OVSREC_INTERFACE_TYPE_INTERNAL) == 0) {
@@ -1293,11 +1853,15 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                     bundle->l3_intf = ops_routing_enable_l3_vlan_interface(
                             unit, ofproto->vrf_id, vlan_id,
                             mac);
+                    if (bundle->l3_intf) {
+                        log_event("VLANINTERFACE_CREATE",
+                                EV_KV("interface", "%s", bundle->name));
+                    }
                 }
             }
             /* Initialize L3 ingress flex counters. The L3 egress flex counters are
              * installed dynamically per egress object at creation time. */
-            init_l3_ingress_stats(port, vlan_id);
+            netdev_bcmsdk_create_l3_ingress_stats(port->up.netdev, vlan_id);
         }
     }
 
@@ -1317,21 +1881,40 @@ bundle_set(struct ofproto *ofproto_, void *aux,
        VLOG_DBG("%s BOND config options option_arg= %s", __FUNCTION__,opt_arg);
     }
 
-    /* sFlow config on port */
-    opt_arg = smap_get(s->port_options[PORT_OTHER_CONFIG],
-                       PORT_OTHER_CONFIG_SFLOW_PER_INTERFACE_KEY_STR);
-    if (opt_arg == NULL) {
-        VLOG_DBG("sflow not configured on port: %s", bundle->name);
+    /* sFlow config on port. true - enable sFlow; false - disable sFlow */
+    bool sflow_enabled = smap_get_bool(s->port_options[PORT_OTHER_CONFIG],
+                             PORT_OTHER_CONFIG_SFLOW_PER_INTERFACE_KEY_STR,
+                             true);
+    if (s->name &&
+        strncmp(s->name, DEFAULT_BRIDGE_NAME, strlen(DEFAULT_BRIDGE_NAME)) == 0) {
+        VLOG_DBG("sFlow will not be configured on bridge_normal");
     }
-    /* if sFlow settings present on port, download it to ASIC */
-    else {
+    /* Check if sFlow configuration on port has changed and
+       download it to ASIC. */
+    else if (ops_sflow_port_config_changed(bundle->name, sflow_enabled)) {
         int hw_unit, hw_port;
+        /* Loop through all the 'ports' under a 'bundle' and
+           enable/disable sFlow sampling on all of them. */
         LIST_FOR_EACH_SAFE(port, next_port, bundle_node, &bundle->ports) {
-            netdev_bcmsdk_get_hw_info(port->up.netdev,
-                                      &hw_unit, &hw_port, NULL);
-            ops_sflow_set_per_interface(hw_unit, hw_port,
-                                        strcmp(opt_arg, "false"));
+            type = netdev_get_type(port->up.netdev);
+            /* sFlow is only supported on physical(system) interfaces */
+            if (strcmp(type, OVSREC_INTERFACE_TYPE_SYSTEM) == 0) {
+                VLOG_DBG("sflow on port %s is %s", bundle->name,
+                         (sflow_enabled)?"ENABLED":"DISABLED");
+                netdev_bcmsdk_get_hw_info(port->up.netdev,
+                                          &hw_unit, &hw_port, NULL);
+                ops_sflow_set_per_interface(hw_unit, hw_port, sflow_enabled);
+                sflow_options_update_ports_list(bundle->name, sflow_enabled);
+            } else {
+                VLOG_DBG("sFlow is not applicable for port %s of type %s",
+                         bundle->name, type);
+                break;
+            }
         }
+    }
+    else {
+        VLOG_DBG("No sFlow configuration change on port %s : %s", bundle->name,
+                 (sflow_enabled)?"ENABLED":"DISABLED");
     }
 
     /* Go through the list of physical interfaces (slaves) that
@@ -1349,13 +1932,22 @@ bundle_set(struct ofproto *ofproto_, void *aux,
             switch (s->bond->balance) {
             case BM_L2_SRC_DST_HASH:
                 lag_mode = OPENNSL_TRUNK_PSC_SRCDSTMAC;
+                log_event("LAG_LOAD_BAL_MODE",
+                           EV_KV("interface", "%s", bundle->name),
+                           EV_KV("mode", "%s", "SRCDSTMAC"));
                 break;
             case BM_L3_SRC_DST_HASH:
                 lag_mode = OPENNSL_TRUNK_PSC_SRCDSTIP;
+                log_event("LAG_LOAD_BAL_MODE",
+                           EV_KV("interface", "%s", bundle->name),
+                           EV_KV("mode", "%s", "SRCDSTIP"));
                 break;
             case BM_L4_SRC_DST_HASH:
                 bcmsdk_trunk_hash_setup(OPS_L4_SRC_DST);
                 lag_mode = OPENNSL_TRUNK_PSC_PORTFLOW;
+                log_event("LAG_LOAD_BAL_MODE",
+                           EV_KV("interface", "%s", bundle->name),
+                           EV_KV("mode", "%s", "PORTFLOW"));
                 break;
             default:
                 break;
@@ -1406,9 +1998,14 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                 port = get_ofp_port(bundle->ofproto, s->slaves[i]);
                 if (!port) {
                     VLOG_ERR("slave is not in the ports\n");
+                    return ENODEV;
                 }
                 VLOG_DBG("%s Adding port %s from VLAN",
                          __FUNCTION__,netdev_get_name(port->up.netdev));
+                log_event("L3_LAG_ADD_VLAN_PORT_BITMAP",
+                           EV_KV("interface", "%s", bundle->name),
+                           EV_KV("port", "%s", netdev_get_name(port->up.netdev)),
+                           EV_KV("vlan", "%d", vlan_id));
                 netdev_bcmsdk_get_hw_info(port->up.netdev, &hw_unit, &hw_port, mac);
                 OPENNSL_PBMP_PORT_ADD(lag_pbmp, hw_port);
                 /* add bitmap */
@@ -1437,6 +2034,8 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                     ops_routing_disable_l3_interface(hw_unit, hw_port,
                             bundle->l3_intf,
                             port->up.netdev);
+                    log_event("L3_LAG_DELETE",
+                               EV_KV("interface", "%s", bundle->name));
                     bundle->l3_intf = NULL;
                 } else {
 
@@ -1446,6 +2045,10 @@ bundle_set(struct ofproto *ofproto_, void *aux,
                         /* Delete bitmap */
                         bcmsdk_del_native_untagged_ports(vlan_id, &lag_pbmp,
                                 true);
+                        log_event("L3_LAG_REM_VLAN_PORT_BITMAP",
+                                EV_KV("interface", "%s", bundle->name),
+                                EV_KV("port", "%s", netdev_get_name(port->up.netdev)),
+                                EV_KV("vlan", "%d", vlan_id));
                     }
 
                     /* Delete knet */
@@ -1460,37 +2063,42 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     }
 add_port:
     /* Update set of ports. */
-    ok = true;
-    for (i = 0; i < s->n_slaves; i++) {
-        if (!bundle_add_port(bundle, s->slaves[i], NULL)) {
-            ok = false;
-        }
-    }
-
-    if (!ok || list_size(&bundle->ports) != s->n_slaves) {
-        struct bcmsdk_provider_ofport_node *next_port;
-
-        LIST_FOR_EACH_SAFE (port, next_port, bundle_node, &bundle->ports) {
-            for (i = 0; i < s->n_slaves; i++) {
-                if (s->slaves[i] == port->up.ofp_port) {
-                    goto found;
-                }
+    if ((!ofproto->vrf) || (ofproto->vrf && bundle->l3_intf)) {
+        ok = true;
+        for (i = 0; i < s->n_slaves; i++) {
+            if (!bundle_add_port(bundle, s->slaves[i], NULL)) {
+                ok = false;
             }
-
-            VLOG_DBG("%s Bundle delete port %s",
-                       __FUNCTION__,netdev_get_name(port->up.netdev));
-            bundle_del_port(port);
-        found: ;
         }
-    }
 
-    ovs_assert(list_size(&bundle->ports) <= s->n_slaves);
+        if (!ok || list_size(&bundle->ports) != s->n_slaves) {
+            struct bcmsdk_provider_ofport_node *next_port;
 
-    if (list_is_empty(&bundle->ports)) {
-        if (s->hw_bond_should_exist == false) {
-            VLOG_DBG("%s calling bundle destroy",__FUNCTION__);
-            bundle_destroy(bundle);
-            return 0;
+            LIST_FOR_EACH_SAFE (port, next_port, bundle_node, &bundle->ports) {
+                for (i = 0; i < s->n_slaves; i++) {
+                    if (s->slaves[i] == port->up.ofp_port) {
+                        goto found;
+                    }
+                }
+
+                VLOG_DBG("%s Bundle delete port %s",
+                        __FUNCTION__,netdev_get_name(port->up.netdev));
+                bundle_del_port(port);
+                log_event("LAG_REM_PORT_BITMAP",
+                        EV_KV("interface", "%s", bundle->name),
+                        EV_KV("port", "%s", netdev_get_name(port->up.netdev)));
+                found: ;
+            }
+        }
+
+        ovs_assert(list_size(&bundle->ports) <= s->n_slaves);
+
+        if (list_is_empty(&bundle->ports)) {
+            if (s->hw_bond_should_exist == false) {
+                VLOG_DBG("%s calling bundle destroy",__FUNCTION__);
+                bundle_destroy(bundle);
+                return 0;
+            }
         }
     }
     if(tunnel) {
@@ -1568,7 +2176,7 @@ add_port:
 
         /* Check for mode changes first. */
         if (mode_changed) {
-            if (bundle->vlan_mode == PORT_VLAN_ACCESS) {
+           if (bundle->vlan_mode == PORT_VLAN_ACCESS && s->vlan_mode == PORT_VLAN_TRUNK) {
                 /* Was ACCESS type, becoming one of the TRUNK types. */
                 if (bundle->vlan != -1) {
                     bcmsdk_del_access_ports(bundle->vlan, temp_pbm);
@@ -1577,16 +2185,17 @@ add_port:
                 /* Add all new trunk VLANs. */
                 config_all_vlans(s->vlan_mode, s->vlan,
                                  new_trunks, temp_pbm);
+                bcmsdk_add_native_untagged_ports(DEFAULT_VID, temp_pbm, false);
 
                 /* Should have nothing else to do... */
-                goto done;
+                goto label_bcmsdk_destroy_pbmp;
 
             } else if (s->vlan_mode == PORT_VLAN_ACCESS) {
                 /* Was one of the TRUNK types (trunk, native-tagged,
                  * or native-untagged), becoming ACCESS type. */
                 unconfig_all_vlans(bundle->vlan_mode, bundle->vlan,
                                    bundle->trunks, temp_pbm);
-
+                bcmsdk_del_native_untagged_ports(DEFAULT_VID, temp_pbm, false);
                 /* Add new access VLAN. */
                 if (s->vlan != -1) {
                     bcmsdk_add_access_ports(s->vlan, temp_pbm);
@@ -1594,6 +2203,7 @@ add_port:
 
                 /* Should have nothing else to do... */
                 goto tnl_key_binding;
+
 
             } else {
                 /* Changing modes among one of the TRUNK types (trunk,
@@ -1624,6 +2234,14 @@ add_port:
                     }
                     break;
                 case PORT_VLAN_ACCESS:
+                     if (bundle->vlan != -1) {
+                        bcmsdk_del_access_ports(bundle->vlan, temp_pbm);
+                     }
+
+                     /* Add all new trunk VLANs. */
+                     config_all_vlans(s->vlan_mode, s->vlan,
+                                 new_trunks, temp_pbm);
+                    break;
                 case PORT_VLAN_TRUNK:
                 default:
                     break;
@@ -1633,16 +2251,23 @@ add_port:
                 switch (s->vlan_mode) {
                 case PORT_VLAN_NATIVE_TAGGED:
                     if (s->vlan != -1) {
+                        bcmsdk_del_native_untagged_ports(s->vlan, temp_pbm, false);
                         bcmsdk_add_native_tagged_ports(s->vlan, temp_pbm);
                     }
                     break;
                 case PORT_VLAN_NATIVE_UNTAGGED:
+                    if (bundle->vlan == DEFAULT_VID) {
+                        bcmsdk_del_native_untagged_ports(DEFAULT_VID, temp_pbm, false);
+                    }
+
                     if (s->vlan != -1) {
                         bcmsdk_add_native_untagged_ports(s->vlan, temp_pbm, false);
                     }
                     break;
-                case PORT_VLAN_ACCESS:
                 case PORT_VLAN_TRUNK:
+                    bcmsdk_add_native_untagged_ports(DEFAULT_VID, temp_pbm, false);
+                    break;
+                case PORT_VLAN_ACCESS:
                 default:
                     break;
                 }
@@ -1659,7 +2284,9 @@ add_port:
                     bcmsdk_add_access_ports(s->vlan, temp_pbm);
                 }
                 /* For ACCESS ports, nothing more to do. */
+
                 goto tnl_key_binding;
+
                 break;
             case PORT_VLAN_NATIVE_TAGGED:
                 if (bundle->vlan != -1) {
@@ -1700,10 +2327,14 @@ add_port:
                                       bundle->vlan_mode, s->vlan_mode);
         }
     }
+
 tnl_key_binding:
     if(tnl_key_unbinding) {
         tnl_key_configure(TUNNEL_KEY_BIND, bundle, s, temp_pbm);
     }
+
+label_bcmsdk_destroy_pbmp:
+
     /* Done with temp_pbm. */
     bcmsdk_destroy_pbmp(temp_pbm);
 
@@ -1751,7 +2382,7 @@ tnl_key_configure(int action, struct ofbundle *bundle,
 }
 
 static void
-bundle_remove(struct ofport *port_ OVS_UNUSED)
+bundle_remove(struct ofport *port_)
 {
     struct bcmsdk_provider_ofport_node *port =
         bcmsdk_provider_ofport_node_cast(port_);
@@ -1821,21 +2452,6 @@ set_vlan(struct ofproto *ofproto, int vid, bool add)
         bcmsdk_destroy_vlan(vid, false);
     }
     return 0;
-}
-
-/* Mirrors. */
-
-static int
-mirror_get_stats__(struct ofproto *ofproto OVS_UNUSED, void *aux OVS_UNUSED,
-                   uint64_t *packets OVS_UNUSED, uint64_t *bytes OVS_UNUSED)
-{
-    return 0;
-}
-
-static bool
-is_mirror_output_bundle(const struct ofproto *ofproto_ OVS_UNUSED, void *aux OVS_UNUSED)
-{
-    return false;
 }
 
 static void
@@ -1989,7 +2605,10 @@ port_add(struct ofproto *ofproto_, struct netdev *netdev)
     const char *devname = netdev_get_name(netdev);
 
     sset_add(&ofproto->ports, devname);
-    ops_sflow_add_port(netdev);
+
+    if (!ofproto_is_ofdpa(ofproto_)) {
+        ops_sflow_add_port(netdev);
+    }
     return 0;
 }
 
@@ -2113,9 +2732,9 @@ port_dump_done(const struct ofproto *ofproto_ OVS_UNUSED, void *state_)
 }
 
 static struct bcmsdk_provider_rule
-              *bcmsdk_provider_rule_cast(const struct rule *rule OVS_UNUSED)
+              *bcmsdk_provider_rule_cast(const struct rule *rule)
 {
-    return NULL;
+    return rule ? CONTAINER_OF(rule, struct bcmsdk_provider_rule, up) : NULL;
 }
 
 static struct rule *
@@ -2133,29 +2752,62 @@ rule_dealloc(struct rule *rule_)
 }
 
 static enum ofperr
-rule_construct(struct rule *rule_ OVS_UNUSED)
+rule_construct(struct rule *rule_)
     OVS_NO_THREAD_SAFETY_ANALYSIS
 {
+    struct bcmsdk_provider_rule *rule = bcmsdk_provider_rule_cast(rule_);
+
+    VLOG_DBG("==========in ofdpa %s, %d", __FUNCTION__,__LINE__);
+    ovs_mutex_init(&rule->stats_mutex);
+
     return 0;
 }
 
-static void rule_insert(struct rule *rule, struct rule *old_rule,
+static void rule_insert(struct rule *rule_, struct rule *old_rule,
                     bool forward_stats)
 OVS_REQUIRES(ofproto_mutex)
 {
+    struct bcmsdk_provider_rule *rule = bcmsdk_provider_rule_cast(rule_);
+    enum ofperr error;
+
+    if (ofproto_is_ofdpa(rule->up.ofproto)) {
+        VLOG_DBG("==========in ofdpa %s, %d", __FUNCTION__,__LINE__);
+        ovs_mutex_lock(&rule->stats_mutex);
+        error = ofdpa_flow_add(rule_);
+        if(error) {
+            VLOG_ERR("Error adding flow. [error = %d]", error);
+        }
+        ovs_mutex_unlock(&rule->stats_mutex);
+    }
+
     return;
 }
 
 static void
-rule_delete(struct rule *rule_ OVS_UNUSED)
+rule_delete(struct rule *rule_)
     OVS_REQUIRES(ofproto_mutex)
 {
+    struct bcmsdk_provider_rule *rule = bcmsdk_provider_rule_cast(rule_);
+    enum ofperr error;
+
+    if (ofproto_is_ofdpa(rule->up.ofproto)) {
+        VLOG_DBG("==========in ofdpa %s, %d", __FUNCTION__,__LINE__);
+        ovs_mutex_lock(&rule->stats_mutex);
+        error = ofdpa_flow_delete(rule_);
+        if(error) {
+            VLOG_ERR("Error deleting flow. [error = %d]", error);
+        }
+        ovs_mutex_unlock(&rule->stats_mutex);
+    }
     return;
 }
 
 static void
-rule_destruct(struct rule *rule_ OVS_UNUSED)
+rule_destruct(struct rule *rule_)
 {
+    struct bcmsdk_provider_rule *rule = bcmsdk_provider_rule_cast(rule_);
+
+    ovs_mutex_destroy(&rule->stats_mutex);
     return;
 }
 
@@ -2176,8 +2828,7 @@ rule_execute(struct rule *rule OVS_UNUSED, const struct flow *flow OVS_UNUSED,
 static struct bcmsdk_provider_group
               *bcmsdk_provider_group_cast(const struct ofgroup *group)
 {
-    return group ?
-           CONTAINER_OF(group, struct bcmsdk_provider_group, up) : NULL;
+    return group ? CONTAINER_OF(group, struct bcmsdk_provider_group, up) : NULL;
 }
 
 static struct ofgroup *
@@ -2195,21 +2846,56 @@ group_dealloc(struct ofgroup *group_)
 }
 
 static enum ofperr
-group_construct(struct ofgroup *group_ OVS_UNUSED)
+group_construct(struct ofgroup *group_)
 {
-    return 0;
+    struct bcmsdk_provider_group *group = bcmsdk_provider_group_cast(group_);
+    enum ofperr error;
+
+    VLOG_DBG("==========in ofdpa %s, %d", __FUNCTION__,__LINE__);
+    ovs_mutex_init(&group->stats_mutex);
+    ovs_mutex_lock(&group->stats_mutex);
+    error = ofdpa_group_add(group);
+    if (error) {
+        VLOG_ERR("Error adding group entry. [rc = %d]", error);
+    }
+    ovs_mutex_unlock(&group->stats_mutex);
+
+    return error;
 }
 
 static void
-group_destruct(struct ofgroup *group_ OVS_UNUSED)
+group_destruct(struct ofgroup *group_)
 {
+    struct bcmsdk_provider_group *group = bcmsdk_provider_group_cast(group_);
+
+    if (ofproto_is_ofdpa(group->up.ofproto)) {
+        ovs_mutex_lock(&group->stats_mutex);
+        ofdpa_group_delete(group->up.group_id);
+        ovs_mutex_unlock(&group->stats_mutex);
+        ovs_mutex_destroy(&group->stats_mutex);
+    }
+
     return;
 }
 
 static enum ofperr
-group_modify(struct ofgroup *group_ OVS_UNUSED)
+group_modify(struct ofgroup *group_)
 {
-    return 0;
+    struct bcmsdk_provider_group *group = bcmsdk_provider_group_cast(group_);
+    enum ofperr error;
+
+    error = 0;
+
+    if (ofproto_is_ofdpa(group->up.ofproto)) {
+        ovs_mutex_lock(&group->stats_mutex);
+        error = ofdpa_group_modify(group);
+        if(error) {
+            VLOG_ERR("Error modifying group entry. [rc = %d]", error);
+        }
+        ovs_mutex_unlock(&group->stats_mutex);
+    }
+
+    return error;
 }
 
 static enum ofperr
@@ -2220,9 +2906,18 @@ group_get_stats(const struct ofgroup *group_ OVS_UNUSED,
 }
 
 static const char *
-get_datapath_version(const struct ofproto *ofproto_ OVS_UNUSED)
+get_datapath_version(const struct ofproto *ofproto_)
 {
-    return bcmsdk_datapath_version();
+    if (ofproto_is_ofdpa(ofproto_)) {
+#if 0 /* use call to OF-DPA API when available */
+        return ofdpaVersionStringGet();
+#else
+        return "0.0.0.1";
+#endif
+    }
+    else {
+        return bcmsdk_datapath_version();
+    }
 }
 
 static bool
@@ -2290,7 +2985,14 @@ add_l3_host_entry(const struct ofproto *ofproto_, void *aux,
     if (!port) {
         VLOG_ERR("Failed to get port while adding l3 host entry");
         return 1; /* Return error */
+        log_event("L3INTERFACE_ADD_HOST_ERR",
+                  EV_KV("ipaddr", "%s", ip_addr),
+                  EV_KV("egressid", "%d", *l3_egress_id),
+                  EV_KV("err", "%s", opennsl_errmsg(rc)));
     }
+    log_event("L3INTERFACE_ADD_HOST",
+            EV_KV("ipaddr", "%s", ip_addr),
+            EV_KV("egressid", "%d", *l3_egress_id));
 
     if (list_size(&port_bundle->ports) == 1) {
         rc = netdev_bcmsdk_set_l3_egress_id(port->up.netdev, *l3_egress_id);
@@ -2346,9 +3048,16 @@ delete_l3_host_entry(const struct ofproto *ofproto_, void *aux,
                                       l3_egress_id);
     if (rc) {
         VLOG_ERR("Failed to delete L3 host entry for ip %s", ip_addr);
-    } else {
         vport_update_host(port_bundle, HOST_DELETE, is_ipv6_addr,
                           ip_addr, NULL, l3_egress_id);
+        log_event("L3INTERFACE_DEL_HOST_ERR",
+                   EV_KV("ipaddr", "%s", ip_addr),
+                   EV_KV("egressid", "%d", *l3_egress_id),
+                   EV_KV("err", "%s", opennsl_errmsg(rc)));
+    } else {
+        log_event("L3INTERFACE_DEL_HOST",
+                   EV_KV("ipaddr", "%s", ip_addr),
+                   EV_KV("egressid", "%d", *l3_egress_id));
     }
 
     return rc;
@@ -2498,6 +3207,8 @@ get_l3_host_hit_bit(const struct ofproto *ofproto_, void *aux,
                                  is_ipv6_addr, ip_addr, hit_bit);
     if (rc) {
         VLOG_ERR("Failed to get L3 host hit for ip %s", ip_addr);
+        log_event("L3INTERFACE_HITBIT_FAILURE",
+                   EV_KV("ipaddr", "%s", ip_addr));
     }
 
     return rc;
@@ -2801,6 +3512,13 @@ register_qos_extension(void)
     return(register_plugin_extension(&qos_extension));
 }
 
+int
+register_classifier_plugins(void)
+{
+    /* Register classifier plugin extension */
+     return(register_ops_cls_plugin());
+}
+
 const struct ofproto_class ofproto_bcm_provider_class = {
     init,
     enumerate_types,
@@ -2879,10 +3597,13 @@ const struct ofproto_class ofproto_bcm_provider_class = {
     bundle_remove,
     bundle_get,
     set_vlan,
-    NULL,                       /* may implement mirror_set__ */
-    mirror_get_stats__,
+
+    /* mirror processing functions */
+    .mirror_set = mirror_set__,
+    .mirror_get_stats = mirror_get_stats__,
+
     NULL,                       /* may implement set_flood_vlans */
-    is_mirror_output_bundle,
+    .is_mirror_output_bundle = is_mirror_output_bundle,
     forward_bpdu_changed,
     NULL,                       /* may implement set_mac_table_config */
     NULL,                       /* may implement set_mcast_snooping */
