@@ -210,7 +210,7 @@ void ops_sflow_write_sampled_pkt(int unit, opennsl_pkt_t *pkt)
     SFLFlow_sample_element  hdrElem;
     SFLSampled_header       *header;
     SFLSampler              *sampler;
-    struct ops_sflow_port_stats stats;
+    struct netdev_stats stats;
 
     memset(&stats, 0, sizeof stats);
 
@@ -287,19 +287,15 @@ void ops_sflow_write_sampled_pkt(int unit, opennsl_pkt_t *pkt)
                               opennslRxReasonSampleSource)) {
        /* Packets were sampled at ingress so sample pool will include
         * all RX packets. */
-       bcmsdk_get_sflow_port_stats(unit, pkt->src_port, &stats);
-       fs.sample_pool = (uint32_t)(stats.in_ucastpkts +
-                                   stats.in_multicastpkts +
-                                   stats.in_broadcastpkts);
+        netdev_bcmsdk_get_interface_stats(unit, pkt->src_port, &stats);
+        fs.sample_pool = stats.rx_packets;
     }
     if (OPENNSL_RX_REASON_GET(pkt->rx_reasons,
                               opennslRxReasonSampleDest)) {
        /* Packets sampled at egress so sample pool will include
         * all TX packets. */
-       bcmsdk_get_sflow_port_stats(unit, pkt->dest_port, &stats);
-       fs.sample_pool = (uint32_t)(stats.out_ucastpkts +
-                                   stats.out_multicastpkts +
-                                   stats.out_broadcastpkts);
+        netdev_bcmsdk_get_interface_stats(unit, pkt->dest_port, &stats);
+        fs.sample_pool = stats.tx_packets;
     }
 
     /* Submit the flow sample to be encoded into the next datagram. */
