@@ -102,7 +102,7 @@ char cmd_ops_usage[] =
 "   l3ecmp [<entry>] - display an ecmp egress object info.\n"
 "   lag [<lagid>] - displays OpenSwitch LAG info.\n"
 "   stg [hw] <stgid> - displays Spanning Tree Group Info. \n"
-"   fp [<copp-ingress-group> | <copp-egress-group> | <ospf-group> | <acl-ingress-group> | <l3-group> | <l3-subinterface>]- displays programmed fp rules.\n"
+"   fp [<copp-ingress-group> | <copp-egress-group> | <ospf-group> | <acl-ingress-group> | <l3-subinterface>]- displays programmed fp rules.\n"
 "   copp-stats - displays all the CoPP configuration and statistics.\n"
 "   copp-config <packet class name> <CPU queue class> <Rate> <Burst> - Modifies the CoPP rule for a control packet class \n"
 "   cpu-queue-stats - displays the per cpu queue statistics.\n"
@@ -192,6 +192,7 @@ enum hw_resource_type {
     HW_RESOURCE_COPP_EGRESS,
     HW_RESOURCE_ACLV4_INGRESS,
     HW_RESOURCE_L3INTF_INGRESS,
+    HW_RESOURCE_L3INTF_EGRESS
 };
 
 char *
@@ -341,7 +342,7 @@ fp_subinterface_entry_show(int unit, opennsl_field_group_t group, struct ds *ds)
     }
     if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyInPorts)) {
         ret = opennsl_field_qualify_InPorts_get(unit,
-                l3_fp_grp_info[unit].subint_fp_entry_id, &pbmp, &pbmp_mask);
+                subintf_fp_grp_info[unit].subint_fp_entry_id, &pbmp, &pbmp_mask);
         if (!OPENNSL_FAILURE(ret)) {
             ds_put_format(ds, "\t     Inports - %s\n", _SHR_PBMP_FMT(pbmp, pfmt));
             ds_put_format(ds, "\t        mask - %s\n",
@@ -350,7 +351,7 @@ fp_subinterface_entry_show(int unit, opennsl_field_group_t group, struct ds *ds)
     }
     if( OPENNSL_FIELD_QSET_TEST(qset, opennslFieldQualifyMyStationHit)) {
         ret = opennsl_field_qualify_MyStationHit_get(unit,
-                l3_fp_grp_info[unit].subint_fp_entry_id, &data, &data_mask);
+                subintf_fp_grp_info[unit].subint_fp_entry_id, &data, &data_mask);
         if (!OPENNSL_FAILURE(ret)) {
             ds_put_format(ds, "\tMyStationHit - %s\n", (data == 0)?"NOT HIT": "HIT");
         }
@@ -358,7 +359,7 @@ fp_subinterface_entry_show(int unit, opennsl_field_group_t group, struct ds *ds)
     /*Checking for the actions available in the entry*/
     for(action_index = 0;action_index < fp_action_list_size;action_index++){
         fp_action_iter = &fp_action_list[action_index];
-        ret = opennsl_field_action_get(0,l3_fp_grp_info[unit].subint_fp_entry_id,
+        ret = opennsl_field_action_get(0,subintf_fp_grp_info[unit].subint_fp_entry_id,
                 fp_action_iter->action_type, &p0, &p1);
         if (!OPENNSL_FAILURE(ret)) {
             ds_put_format(ds, "\t      Action - %s\n",fp_action_iter->api_str);
@@ -836,46 +837,6 @@ ops_fp_dump_ospf_rules (struct ds *ds)
 }
 
 /*
- * ops_fp_dump_l3_rules
- *
- * This function dumps the "fp show" output for Subinterface and stats rules
- * for all hardware units.
- */
-static void
-ops_fp_dump_l3_rules (struct ds *ds)
-{
-    int                   unit = 0;
-
-    /*
-     * If "ds" is not a valid pointer, then return
-     * from this function.
-     */
-    if (!ds) {
-        return;
-    }
-
-    /*
-     * Iterate over all the hardware units available.
-     */
-    for(unit =0; unit < MAX_SWITCH_UNITS; unit++) {
-
-        /*
-         * If the group-id is invalid, then do not dump the
-         * "fp show" for that hardware unit.
-         */
-        if (l3_fp_grp_info[unit].l3_fp_grpid == -1) {
-            continue;
-        }
-
-        /*
-         * Call the "fp show" function to dump the fp rules
-         * for the given group and hardware unit.
-         */
-        fp_entries_show(unit, l3_fp_grp_info[unit].l3_fp_grpid, ds);
-    }
-}
-
-/*
  * ops_fp_dump_l3_subinterface
  *
  * This function dumps the "fp show" output for Subinterface rules
@@ -903,7 +864,7 @@ ops_fp_dump_l3_subinterface(struct ds *ds)
          * If the group-id is invalid, then do not dump the
          * "fp show" for that hardware unit.
          */
-        if (l3_fp_grp_info[unit].l3_fp_grpid == -1) {
+        if (subintf_fp_grp_info[unit].l3_fp_grpid == -1) {
             continue;
         }
 
@@ -911,7 +872,7 @@ ops_fp_dump_l3_subinterface(struct ds *ds)
          * Call the "fp show" function to dump the fp rules
          * for the given group and hardware unit.
          */
-        fp_subinterface_entry_show(unit, l3_fp_grp_info[unit].l3_fp_grpid, ds);
+        fp_subinterface_entry_show(unit, subintf_fp_grp_info[unit].l3_fp_grpid, ds);
     }
 }
 
@@ -1223,7 +1184,8 @@ hw_resource_show (int unit, opennsl_field_group_t group, struct ds *ds)
     /* Temporarily hard coding counters total to ingress group 4096, egress group 1024
      * until we have clarification of how counters are shared among slices in hardware
      */
-    if ((group == ops_copp_get_egress_group_id_for_hw_unit(unit)))
+    if ((group == ops_copp_get_egress_group_id_for_hw_unit(unit))
+            || (group == ops_l3intf_egress_stats_group_id_for_hw_unit(unit)))
     {
         (&status)->counters_total = 1024;
     } else {
@@ -1285,8 +1247,10 @@ ops_hw_resource_dump (struct ds *ds, enum hw_resource_type type, const char *opt
             group_id = ops_cls_get_ingress_group_id_for_hw_unit(unit);
             break;
         case HW_RESOURCE_L3INTF_INGRESS:
-            /* L3 interfaces are using ICAP only */
-            group_id = l3_fp_grp_info[unit].l3_fp_grpid;
+            group_id = ops_l3intf_ingress_stats_group_id_for_hw_unit(unit);
+            break;
+        case HW_RESOURCE_L3INTF_EGRESS:
+            group_id = ops_l3intf_egress_stats_group_id_for_hw_unit(unit);
             break;
         default: /* Unknown type */
             continue;
@@ -1330,6 +1294,7 @@ ops_hw_resource_dump_all (struct ds *ds)
     ds_put_format(ds, "\nEgress:\n");
     ds_put_format(ds, "%s", cmd_hw_resource_table_header);
     ops_hw_resource_dump(ds, HW_RESOURCE_COPP_EGRESS, "copp");
+    ops_hw_resource_dump(ds, HW_RESOURCE_L3INTF_EGRESS, "l3intf");
 
     ds_put_format(ds, "\n* Counters and Meters are shared resources across features\n");
 }
@@ -1371,8 +1336,6 @@ bcm_plugin_debug(struct unixctl_conn *conn, int argc,
                     ops_fp_dump_copp_egress_rules(&ds);
                 } else if (!strcmp(option, "acl-ingress-group")) {
                     ops_fp_dump_acl_ingress_rules(&ds);
-                } else if (!strcmp(option, "l3-group")) {
-                    ops_fp_dump_l3_rules(&ds);
                 } else if (!strcmp(option, "l3-subinterface")) {
                     ops_fp_dump_l3_subinterface(&ds);
                 }
@@ -1671,10 +1634,12 @@ copp_config_help:
                             ds_put_format(&ds, "%s", cmd_hw_resource_table_header);
                             ops_hw_resource_dump(&ds, HW_RESOURCE_OSPF_INGRESS, option);
                         } else if (!strcmp(option, "l3intf")) {
-                            /* L3 interfaces are using ICAP only */
                             ds_put_format(&ds, "\nIngress:\n");
                             ds_put_format(&ds, "%s", cmd_hw_resource_table_header);
                             ops_hw_resource_dump(&ds, HW_RESOURCE_L3INTF_INGRESS, option);
+                            ds_put_format(&ds, "\nEgress:\n");
+                            ds_put_format(&ds, "%s", cmd_hw_resource_table_header);
+                            ops_hw_resource_dump(&ds, HW_RESOURCE_L3INTF_EGRESS, option);
                         } else {
                             ds_put_format(&ds, "Unsupported Hardware Resource command.\n\n"
                                     "Usage: ovs-appctl plugin/debug "
