@@ -31,7 +31,6 @@
 #define OPS_VLAN_VALID(v)  ((v)>OPS_VLAN_MIN && (v)<OPS_VLAN_MAX)
 
 extern void ops_vlan_dump(struct ds *ds, int vid);
-extern void ops_hw_vlan_dump(struct ds *ds);
 extern int ops_vlan_init(int hw_unit);
 
 extern int bcmsdk_create_vlan(int vid, bool internal);

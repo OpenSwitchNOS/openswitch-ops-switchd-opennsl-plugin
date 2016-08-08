@@ -59,13 +59,11 @@
 #define PORT_BUF_LEN 6 /* maximum char in a L4 port */
 
 /* Constants used in sFlow counter samples */
-#define SFLOW_CNTR_SAMPLE_SPEED_DEFAULT         100000000
-#define SFLOW_CNTR_SAMPLE_DIRECTION_DEFAULT     0
-#define SFLOW_CNTR_SAMPLE_DIRECTION_FULL_DUPLEX 1
-#define SFLOW_CNTR_SAMPLE_DIRECTION_HALF_DUPLEX 2
-#define SFLOW_CNTR_SAMPLE_STATE_DOWN            0
-#define SFLOW_CNTR_SAMPLE_ADMIN_STATE_UP        1
-#define SFLOW_CNTR_SAMPLE_OPER_STATE_UP         2
+#define SFLOW_CNTR_SAMPLE_SPEED_DEFAULT     100000000
+#define SFLOW_CNTR_SAMPLE_DIRECTION_DEFAULT 0
+#define SFLOW_CNTR_SAMPLE_STATE_DOWN        0
+#define SFLOW_CNTR_SAMPLE_ADMIN_STATE_UP    1
+#define SFLOW_CNTR_SAMPLE_OPER_STATE_UP     2
 
 struct ops_sflow_port_stats {
     uint64_t in_octets;
@@ -97,7 +95,7 @@ extern int opennsl_port_sample_rate_get(int unit, int port, int *ingress_rate,
                                         int *egress_rate);
 
 extern int ops_sflow_init(int unit);
-extern void ops_sflow_write_sampled_pkt(int unit, opennsl_pkt_t *pkt);
+extern void ops_sflow_write_sampled_pkt(opennsl_pkt_t *pkt);
 extern void print_pkt(const opennsl_pkt_t *pkt);
 
 extern void ops_sflow_agent_enable();
@@ -122,16 +120,6 @@ ops_sflow_set_polling_interval(struct bcmsdk_provider_node *ofproto,
                                int polling_interval);
 
 extern void
-ops_sflow_remove_polling_on_lag_interface(struct ofbundle *lag_bundle);
-
-extern void
-sflow_options_update_ports_list(const char *port_name,
-                                bool sflow_is_enabled);
-
-extern bool
-ops_sflow_port_config_changed(const char *port_name, bool sflow_enabled);
-
-extern void
 ops_sflow_run(struct bcmsdk_provider_node *ofproto);
 
 extern void
@@ -148,6 +136,4 @@ ops_sflow_set_per_interface (const int unit, const int port, bool set);
 extern int
 ops_sflow_set_collectors(struct sset *ops_targets);
 
-extern void
-sflow_diag_dump_basic_cb(struct ds *ds);
 #endif /* __OPS_SFLOW_H__ */

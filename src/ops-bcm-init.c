@@ -15,7 +15,6 @@
 */
 
 #include <openvswitch/vlog.h>
-#include <ovs/uuid.h>
 
 #include <sal/driver.h>
 #include <opennsl/error.h>
@@ -26,10 +25,8 @@
 #include "ops-bcm-init.h"
 #include "ops-knet.h"
 #include "ops-port.h"
-#include "ops-mirrors.h"
 #include "ops-routing.h"
 #include "ops-vlan.h"
-#include "ops-classifier.h"
 #include "ops-debug.h"
 #include "ops-vport.h"
 #include "ops-copp.h"
@@ -68,29 +65,23 @@ opennsl_rx_t opennsl_rx_callback(int unit, opennsl_pkt_t *pkt, void *cookie)
         /* Uncomment to print the sampled pkt info */
         /* print_pkt(pkt); */
 
+        char port[IFNAMSIZ];
+
         if (OPENNSL_RX_REASON_GET(pkt->rx_reasons,
                                   opennslRxReasonSampleSource)) {
-            netdev_bcmsdk_populate_sflow_stats(true, unit,
-                                               pkt->src_port, pkt->pkt_len);
+            snprintf(port, IFNAMSIZ, "%d", pkt->src_port);
+            netdev_bcmsdk_populate_sflow_stats(true, port, pkt->pkt_len);
         }
 
         if (OPENNSL_RX_REASON_GET(pkt->rx_reasons,
                                   opennslRxReasonSampleDest)) {
-            netdev_bcmsdk_populate_sflow_stats(false, unit,
-                                               pkt->dest_port, pkt->pkt_len);
+            snprintf(port, IFNAMSIZ, "%d", pkt->dest_port);
+            netdev_bcmsdk_populate_sflow_stats(false, port, pkt->pkt_len);
         }
 
         /* Write incoming data to Receivers buffer. When buffer is full,
          * data is sent to Collectors. */
-        ops_sflow_write_sampled_pkt(unit, pkt);
-    }
-
-    /* ACL logging packet */
-    if (OPENNSL_RX_REASON_GET(pkt->rx_reasons, opennslRxReasonFilterMatch)
-          && (pkt->rx_matched == ACL_LOG_RULE_ID)) {
-        /* Copy relevant parts of the metadata and header to an ACL logging
-        * buffer */
-        acl_log_handle_rx_event(pkt);
+        ops_sflow_write_sampled_pkt(pkt);
     }
 
     return OPENNSL_RX_HANDLED;
@@ -135,41 +126,6 @@ ops_rx_init(int unit)
 
 } // ops_rx_init
 
-void
-ops_event_log_init(void)
-{
-    if (event_log_init("LOOPBACK") < 0) {
-        VLOG_ERR("Event log initialization failed for LOOPBACK");
-    }
-    if (event_log_init("SUBINTERFACE") < 0) {
-        VLOG_ERR("Event log initialization failed for SUBINTERFACE");
-    }
-    if (event_log_init("OSPFv2") < 0) {
-        VLOG_ERR("Event log initialization failed for OSPFv2");
-    }
-    if (event_log_init("LAG") < 0) {
-        VLOG_ERR("Event log initialization failed for LAG");
-    }
-    if(event_log_init("VLANINTERFACE") < 0) {
-        VLOG_ERR("Event log initialization failed for VLANINTERFACE");
-    }
-    if (event_log_init("L3INTERFACE") < 0) {
-        VLOG_ERR("Event log initialization failed for L3INTERFACE");
-    }
-    if (event_log_init("ECMP") < 0) {
-        VLOG_ERR("Event log initialization failed for ECMP");
-    }
-    if (event_log_init("VLAN") < 0) {
-        VLOG_ERR("Event log initialization failed for VLAN");
-    }
-    if (event_log_init("LACP") < 0) {
-        VLOG_ERR("Event log initialization failed for LACP");
-    }
-    if (event_log_init("SFLOW") < 0) {
-        VLOG_ERR("Event log initialization failed for SFLOW");
-    }
-}
-
 int
 ops_bcm_appl_init(void)
 {
@@ -182,7 +138,6 @@ ops_bcm_appl_init(void)
         VLOG_ERR("Mac learning init failed");
         return (1);
     }
-    ops_event_log_init();
 
     /* Initialize QoS global data structures */
     rc = ops_qos_global_init();
@@ -240,12 +195,6 @@ ops_bcm_appl_init(void)
             return 1;
         }
 
-        rc = bcmsdk_mirrors_init(unit);
-        if (rc) {
-            VLOG_ERR("MIRRORING/SPAN subsystem init failed");
-            return 1;
-        }
-
         rc = ops_copp_init();
         if (rc) {
             VLOG_ERR("COPP subsystem init failed");
@@ -258,18 +207,6 @@ ops_bcm_appl_init(void)
         if (rc) {
             VLOG_ERR("QoS hw unit %d init failed, rc %d",
                       unit, rc);
-            return 1;
-        }
-
-        rc = ops_classifier_init(unit);
-        if (rc) {
-            VLOG_ERR("Classifier subsystem init failed");
-            return 1;
-        }
-
-        rc = ops_l3_fp_init(unit);
-        if (rc) {
-            VLOG_ERR("FP subsystem init failed");
             return 1;
         }
     }

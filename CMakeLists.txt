@@ -31,7 +31,6 @@ set (SOURCES ${SRC_DIR}/bcm.c
              ${SRC_DIR}/ops-pbmp.c
              ${SRC_DIR}/ops-port.c
              ${SRC_DIR}/ops-qos.c
-             ${SRC_DIR}/ops-mirrors.c
              ${SRC_DIR}/ops-stats.c
              ${SRC_DIR}/ops-vlan.c
              ${SRC_DIR}/ops-sflow.c
@@ -39,7 +38,6 @@ set (SOURCES ${SRC_DIR}/bcm.c
              ${SRC_DIR}/ops-routing.c
              ${SRC_DIR}/ops-copp.c
              ${SRC_DIR}/ops-stg.c
-             ${SRC_DIR}/ops-classifier.c
              ${SRC_DIR}/netdev-bcmsdk.c
              ${SRC_DIR}/ofproto-bcm-provider.c
              ${SRC_DIR}/ops-mac-learning.c

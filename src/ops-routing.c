@@ -43,10 +43,6 @@
 #include "netdev-bcmsdk.h"
 #include "ops-mac-learning.h"
 #include <opennsl/stat.h>
-#include "netdev.h"
-#include "eventlog.h"
-#include "ops-fp.h"
-#include "ops-pbmp.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_routing);
 
@@ -54,18 +50,9 @@ VLOG_DEFINE_THIS_MODULE(ops_routing);
 /* ecmp resiliency flag */
 bool ecmp_resilient_flag = false;
 
-#define VLAN_ID_MAX_LENGTH   5
-static opennsl_error_t
-ops_subinterface_fp_entry_create(opennsl_port_t hw_port, int hw_unit);
-
-struct ops_l3_fp_info l3_fp_grp_info[MAX_SWITCH_UNITS];
 static int
 ops_update_l3ecmp_egress_resilient(int unit, opennsl_l3_egress_ecmp_t *ecmp,
                  int intf_count, opennsl_if_t *egress_obj, void *user_data);
-
-static opennsl_error_t
-ops_update_subint_fp_entry(int hw_unit, opennsl_port_t hw_port, bool add);
-
 opennsl_if_t local_nhid;
 /* fake MAC to create a local_nhid */
 opennsl_mac_t LOCAL_MAC =  {0x0,0x0,0x01,0x02,0x03,0x04};
@@ -74,6 +61,9 @@ opennsl_mac_t LOCAL_MAC =  {0x0,0x0,0x01,0x02,0x03,0x04};
 char    egress_id_key[24];
 struct hmap ops_mac_move_egress_id_map;
 struct hmap ops_hmap_switch_macs;
+
+/* l3 ingress stats related globals */
+uint32_t l3_stats_mode_id = 0;
 
 /* all routes in asic*/
 struct ops_route_table {
@@ -88,33 +78,10 @@ int default_ip4_options_profile_id = 1;
 /* Global Structure that stores OSPF related data */
 static ops_ospf_data_t *ospf_data = NULL;
 
-/* Internal default route needed for ALPM mode */
-static opennsl_l3_route_t ipv4_default_route;
-static opennsl_l3_route_t ipv6_default_route;
-
-/* List of internal VLANs */
-struct shash internal_vlans;
-
-/* ops_routing_is_internal_vlan
- *
- * This function checks if the vlan is an internal VLAN.
- */
-bool
-ops_routing_is_internal_vlan (opennsl_vlan_t vlan)
-{
-    char vlan_str[VLAN_ID_MAX_LENGTH];
-    snprintf(vlan_str, VLAN_ID_MAX_LENGTH, "%d", vlan);
-
-    if (shash_find(&internal_vlans, vlan_str)) {
-        return true;
-    }
-    return false;
-}
-
 /*
  * ops_routing_get_ospf_group_id_by_hw_unit
  *
- * This function returns the group-id for the OSPF ingress FP rules for
+'* This function returns the group-id for the OSPF ingress FP rules for
  * the given hardware unit.
  */
 opennsl_field_group_t
@@ -177,10 +144,6 @@ ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
         VLOG_ERR("Failed at %s opennsl_field_entry_create :: "
                  "unit=%d retval=%s ",
                  ospf_packet_rule, unit, opennsl_errmsg(retval));
-        log_event("OSPFv2_FP_ERR",
-                  EV_KV("action", "%s", "opennsl_field_entry_create"),
-                  EV_KV("rule", "%s", ospf_packet_rule),
-                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         return retval;
     }
 
@@ -193,10 +156,6 @@ ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
         VLOG_ERR("Failed at %s opennsl_field_qualify_DstMac :: "
                  "unit=%d retval=%s ",
                  ospf_packet_rule, unit, opennsl_errmsg(retval));
-        log_event("OSPFv2_FP_ERR",
-                  EV_KV("action", "%s", "opennsl_field_qualify_DstMac"),
-                  EV_KV("rule", "%s", ospf_packet_rule),
-                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         opennsl_field_entry_destroy(unit, fieldEntry);
         return retval;
     }
@@ -208,10 +167,6 @@ ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
         VLOG_ERR("Failed at %s opennsl_field_qualify_IpProtocol :: "
                  "unit=%d retval=%s ",
                  ospf_packet_rule, unit, opennsl_errmsg(retval));
-        log_event("OSPFv2_FP_ERR",
-                  EV_KV("action", "%s", "opennsl_field_qualify_IpProtocol"),
-                  EV_KV("rule", "%s", ospf_packet_rule),
-                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         opennsl_field_entry_destroy(unit, fieldEntry);
         return retval;
     }
@@ -231,10 +186,6 @@ ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
         VLOG_ERR("Failed at %s opennsl_field_qualify_DstIp :: "
                  "unit=%d retval=%s ",
                  ospf_packet_rule, unit, opennsl_errmsg(retval));
-        log_event("OSPFv2_FP_ERR",
-                  EV_KV("action", "%s", "opennsl_field_qualify_DstIp"),
-                  EV_KV("rule", "%s", ospf_packet_rule),
-                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         opennsl_field_entry_destroy(unit, fieldEntry);
         return retval;
     }
@@ -245,10 +196,6 @@ ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
         VLOG_ERR("Failed at %s opennslFieldActionCopyToCpu :: "
                  "unit=%d retval=%s ",
                  ospf_packet_rule, unit, opennsl_errmsg(retval));
-        log_event("OSPFv2_FP_ERR",
-                  EV_KV("action", "%s", "opennslFieldActionCopyToCpu"),
-                  EV_KV("rule", "%s", ospf_packet_rule),
-                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         opennsl_field_entry_destroy(unit, fieldEntry);
         return retval;
     }
@@ -267,10 +214,6 @@ ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
         VLOG_ERR("Failed at %s opennsl_field_entry_stat_attach :: "
                 "unit=%d retval=%s ",
                  ospf_packet_rule, unit, opennsl_errmsg(retval));
-        log_event("OSPFv2_FP_ERR",
-                  EV_KV("action", "%s", "opennsl_field_entry_stat_attach"),
-                  EV_KV("rule", "%s", ospf_packet_rule),
-                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         opennsl_field_stat_destroy(unit, stat_id);
         opennsl_field_entry_destroy(unit, fieldEntry);
         return retval;
@@ -280,10 +223,6 @@ ops_routing_create_ospf_field_entry(int unit, bool designatedRouter)
     if (OPENNSL_FAILURE(retval)) {
         VLOG_ERR("Failed to %s opennsl_field_entry_install : unit=%d retval=%s",
                  ospf_packet_rule, unit, opennsl_errmsg(retval));
-        log_event("OSPFv2_FP_ERR",
-                  EV_KV("action", "%s", "opennsl_field_entry_install"),
-                  EV_KV("rule", "%s", ospf_packet_rule),
-                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         opennsl_field_stat_destroy(unit, stat_id);
         opennsl_field_entry_destroy(unit, fieldEntry);
         return retval;
@@ -329,15 +268,11 @@ ops_routing_ospf_init(int unit)
     OPENNSL_FIELD_QSET_ADD (qualifierSet, opennslFieldQualifyDstIp);
 
     retval = opennsl_field_group_create(unit, qualifierSet,
-                                        FP_GROUP_PRIORITY_2,
+                                        OPS_ROUTING_INGRESS_OSPF_GROUP_PRIORITY,
                                         &ospf_data->ospf_group_id);
     if (OPENNSL_FAILURE(retval)) {
         VLOG_ERR("Failed at OSPF opennsl_field_group_create :: "
                 "unit=%d retval=%s ", unit, opennsl_errmsg(retval));
-        log_event("OSPFv2_FP_ERR",
-                  EV_KV("action", "%s", "opennsl_field_group_create"),
-                  EV_KV("rule", "%s", ""),
-                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         free(ospf_data);
         return retval;
     }
@@ -349,32 +284,20 @@ ops_routing_ospf_init(int unit)
         VLOG_ERR("Failed at create field entry for OSPF:AllRouters :: "
                 "unit=%d retval=%s ", unit, opennsl_errmsg(retval));
         opennsl_field_group_destroy(unit, ospf_data->ospf_group_id);
-        log_event("OSPFv2_FP_ERR",
-                  EV_KV("action", "%s", "create field entry for OSPF:AllRouters"),
-                  EV_KV("rule", "%s", ""),
-                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         free(ospf_data);
         return retval;
     }
 
     VLOG_DBG("OSPF all routers field entry added: "
-            "group_id=%d fp_id=%d stat_id=%d",
-            ospf_data->ospf_group_id,
-            ospf_data->ospf_all_routers_fp_id,
-            ospf_data->ospf_all_routers_stat_id);
-    log_event("OSPFv2_FP_SUCCESS",
-            EV_KV("group_id", "%d", ospf_data->ospf_group_id),
-            EV_KV("fp_id", "%d", ospf_data->ospf_all_routers_fp_id),
-            EV_KV("stats_id", "%d", ospf_data->ospf_all_routers_stat_id));
+             "group_id=%d fp_id=%d stat_id=%d",
+             ospf_data->ospf_group_id,
+             ospf_data->ospf_all_routers_fp_id,
+             ospf_data->ospf_all_routers_stat_id);
 
     retval = ops_routing_create_ospf_field_entry(unit, true);
     if (OPENNSL_FAILURE(retval)) {
         VLOG_ERR("Failed at create field entry for OSPF:DesignatedRouters :: "
                 "unit=%d retval=%s ", unit, opennsl_errmsg(retval));
-        log_event("OSPFv2_FP_ERR",
-                  EV_KV("action", "%s", "create field entry for OSPF:DesignatedRouters"),
-                  EV_KV("rule", "%s", ""),
-                  EV_KV("err", "%s", opennsl_errmsg(retval)));
         opennsl_field_group_destroy(unit, ospf_data->ospf_group_id);
         free(ospf_data);
         return retval;
@@ -385,77 +308,51 @@ ops_routing_ospf_init(int unit)
              ospf_data->ospf_group_id,
              ospf_data->ospf_desginated_routers_fp_id,
              ospf_data->ospf_desginated_routers_stat_id);
-    log_event("OSPFv2_DR_FP_SUCCESS",
-            EV_KV("group_id", "%d", ospf_data->ospf_group_id),
-            EV_KV("fp_id", "%d", ospf_data->ospf_desginated_routers_fp_id),
-            EV_KV("stats_id", "%d", ospf_data->ospf_desginated_routers_stat_id));
-
     return retval;
 }
 
-/* Function to add ipv4/ipv6 default routes to support ALPM mode.
-** This was suggestated by broadcom */
-int
-ops_add_default_routes(int unit)
+static int l3_ingress_stats_init()
 {
-    opennsl_error_t rc = OPENNSL_E_NONE;
+    int rc = 0;
+    int total_counters=2;
+    int num_selectors=4;
+    uint32_t flags = OPENNSL_STAT_GROUP_MODE_INGRESS;
+    opennsl_stat_group_mode_attr_selector_t attr_selectors[4];
 
-    /* Configure ipv4 default route, with vrf, addr and mask = 0 */
-    /* Setting subnet/mask to zero even after doing init, just to
-    ** make it visible that we are programming 0 */
-    opennsl_l3_route_t_init(&ipv4_default_route);
-    ipv4_default_route.l3a_flags = OPENNSL_L3_REPLACE;
-    ipv4_default_route.l3a_vrf = 0;
-    ipv4_default_route.l3a_subnet = 0;
-    ipv4_default_route.l3a_ip_mask = 0;
-    ipv4_default_route.l3a_intf = local_nhid;
-    rc = opennsl_l3_route_add (unit, &ipv4_default_route);
-    if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("Default route for IPv4 failed rc = %s",
-                 opennsl_errmsg(rc));
-        return rc; /* Return error */
+    /* Selector0 for KNOWN_L3UC_PKT. Assigned to 1st counter. */
+    opennsl_stat_group_mode_attr_selector_t_init(&attr_selectors[0]);
+    attr_selectors[0].counter_offset = L3_UCAST_STAT_GROUP_COUNTER_OFFSET;
+    attr_selectors[0].attr = opennslStatGroupModeAttrPktType;
+    attr_selectors[0].attr_value = opennslStatGroupModeAttrPktTypeKnownL3UC;
+
+    /* Selector1 for UNKNOWN_L3UC_PKT. Assigned to 1st counter. */
+    opennsl_stat_group_mode_attr_selector_t_init(&attr_selectors[1]);
+    attr_selectors[1].counter_offset = L3_UCAST_STAT_GROUP_COUNTER_OFFSET;
+    attr_selectors[1].attr = opennslStatGroupModeAttrPktType;
+    attr_selectors[1].attr_value = opennslStatGroupModeAttrPktTypeUnknownL3UC;
+
+    /* Selector2 for KNOWN_IPMC. Assigned to 2nd counter. */
+    opennsl_stat_group_mode_attr_selector_t_init(&attr_selectors[2]);
+    attr_selectors[2].counter_offset = L3_MCAST_STAT_GROUP_COUNTER_OFFSET;
+    attr_selectors[2].attr = opennslStatGroupModeAttrPktType;
+    attr_selectors[2].attr_value = opennslStatGroupModeAttrPktTypeKnownIPMC;
+
+    /* Selector3 for UNKNOWN_IPMC. Assigned to 2nd counter. */
+    opennsl_stat_group_mode_attr_selector_t_init(&attr_selectors[3]);
+    attr_selectors[3].counter_offset = L3_MCAST_STAT_GROUP_COUNTER_OFFSET;
+    attr_selectors[3].attr = opennslStatGroupModeAttrPktType;
+    attr_selectors[3].attr_value = opennslStatGroupModeAttrPktTypeUnknownIPMC;
+
+    /* Create customized stat mode */
+    rc = opennsl_stat_group_mode_id_create(0, flags,
+                    total_counters, num_selectors, attr_selectors,
+                    &l3_stats_mode_id);
+    if (rc) {
+        VLOG_ERR("Failed to create stat group mode id");
+        return 1; /* Return error */
     }
 
-    /* Configure ipv6 default route, with vrf, addr and mask = 0 */
-    opennsl_l3_route_t_init(&ipv6_default_route);
-    ipv6_default_route.l3a_flags = OPENNSL_L3_IP6 | OPENNSL_L3_REPLACE;
-    ipv6_default_route.l3a_vrf = 0;
-    memset(&ipv6_default_route.l3a_ip6_net, 0,
-                               sizeof(ipv6_default_route.l3a_ip6_net));
-    memset(&ipv6_default_route.l3a_ip6_mask, 0,
-                               sizeof(ipv6_default_route.l3a_ip6_mask));
-    ipv6_default_route.l3a_intf = local_nhid;
-    rc = opennsl_l3_route_add (unit, &ipv6_default_route);
-    if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("Default route for IPv6 failed rc = %s",
-                 opennsl_errmsg(rc));
-        return rc; /* Return error */
-    }
-
-    return 0;
-}
-
-/* Function to compare internal ipv4/ipv6 default 0 route */
-int
-is_default_route(int unit,
-                 struct ofproto_route *of_routep,
-                 opennsl_l3_route_t *route)
-{
-    if (of_routep->family == OFPROTO_ROUTE_IPV4) {
-        if ( (route->l3a_vrf == ipv4_default_route.l3a_vrf) &&
-             (route->l3a_subnet == ipv4_default_route.l3a_subnet) &&
-             (route->l3a_ip_mask == ipv4_default_route.l3a_ip_mask) )
-            return 1; /* Matched v4 default route */
-    } else {
-        if ( (route->l3a_vrf == ipv6_default_route.l3a_vrf) &&
-             (memcmp(route->l3a_ip6_net, ipv6_default_route.l3a_ip6_net,
-                     sizeof(ipv6_default_route.l3a_ip6_net)) == 0) &&
-             (memcmp(route->l3a_ip6_mask, ipv6_default_route.l3a_ip6_mask,
-                     sizeof(ipv6_default_route.l3a_ip6_mask))) )
-            return 1; /* Matched v6 default route */
-    }
-
-    return 0;
+    return rc;
 }
 
 int
@@ -464,14 +361,11 @@ ops_l3_init(int unit)
     int hash_cfg = 0;
     opennsl_error_t rc = OPENNSL_E_NONE;
     opennsl_l3_egress_t egress_object;
-    shash_init(&internal_vlans);
 
     rc = opennsl_switch_control_set(unit, opennslSwitchL3IngressMode, 1);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchL3IngressMode: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -479,8 +373,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchL3EgressMode: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -496,17 +388,7 @@ ops_l3_init(int unit)
 
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Error, create a local egress object, rc=%s", opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
-    }
-
-    /* Add ipv4/ipv6 default route to support ALPM mode */
-    rc = ops_add_default_routes(unit);
-    if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("Default route configuration failed unit=%d rc=%s",
-                 unit, opennsl_errmsg(rc));
-        return 1;
     }
 
     /* Send ARP to CPU */
@@ -514,8 +396,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchArpRequestToCpu: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -523,8 +403,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchArpReplyToCpu: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -533,8 +411,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchDhcpPktToCpu: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -543,8 +419,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchNdPktToCpu: unit=%d  rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -553,8 +427,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchUnknownL3DestToCpu: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -562,8 +434,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchV6L3DstMissToCpu: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -572,8 +442,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchL3UcastTtl1ToCpu: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -583,8 +451,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set OPENNSL_HASH_CONTROL_ECMP_ENHANCE: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -592,8 +458,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set Max ECMP  paths unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -608,8 +472,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashIP4TcpUdpPortsEqualField0: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit,
@@ -618,8 +480,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashIP4TcpUdpPortsEqualField0: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit,
@@ -628,8 +488,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashIP4Field0: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -644,8 +502,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashIP6TcpUdpPortsEqualField0: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit,
@@ -654,8 +510,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashIP6TcpUdpPortsEqualField0: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit,
@@ -664,8 +518,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashIP6Field0: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     /* Enabling the ecmp resiliency initially*/
@@ -676,8 +528,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashSeed0: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit, opennslSwitchHashField0PreProcessEnable,
@@ -685,8 +535,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashField0PreProcessEnable: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit, opennslSwitchHashField0Config,
@@ -694,8 +542,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashField0Config: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit, opennslSwitchHashField0Config1,
@@ -703,24 +549,18 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashField0Config1: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit, opennslSwitchECMPHashSet0Offset, 0);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchECMPHashSet0Offset: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(unit, opennslSwitchHashSelectControl, 0);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashSelectControl: unit=%d rc=%s",
                  unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
 
@@ -732,8 +572,6 @@ ops_l3_init(int unit)
     if (OPENNSL_FAILURE(rc)) {
       VLOG_ERR("Failed to set opennslIntfIPOptionActionCopyCPUAndDrop: unit=%d rc=%s",
                 unit, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
       return 1;
     }
 
@@ -757,13 +595,17 @@ ops_l3_init(int unit)
     rc = ops_routing_ospf_init(unit);
     if (rc) {
         VLOG_ERR("OSPF FP init failed");
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", "OSPF FP init failed"));
         return 1; /* Return error */
     }
 
     /* Initialize hash map of switch mac's */
     hmap_init(&ops_hmap_switch_macs);
+    /* initialize the l3 ingress stats related mode selectors */
+    rc = l3_ingress_stats_init();
+    if (rc) {
+        VLOG_ERR("L3 Ingress stats init failed");
+        return 1; /* Return error */
+    }
 
     return 0;
 }
@@ -900,7 +742,6 @@ ops_routing_enable_l3_interface(int hw_unit, opennsl_port_t hw_port,
     opennsl_error_t rc = OPENNSL_E_NONE;
     opennsl_pbmp_t pbmp;
     opennsl_l3_intf_t *l3_intf;
-    char vlan_str[VLAN_ID_MAX_LENGTH];
 
     VLOG_DBG("%s unit=%d port=%d vlan=%d vrf=%d",
              __FUNCTION__, hw_unit, hw_port, vlan_id, vrf_id);
@@ -909,9 +750,6 @@ ops_routing_enable_l3_interface(int hw_unit, opennsl_port_t hw_port,
     if (rc < 0) {
         VLOG_ERR("Failed at bcmsdk_create_vlan: unit=%d port=%d vlan=%d rc=%d",
                  hw_unit, hw_port, vlan_id, rc);
-        log_event("L3INTERFACE_VLAN_CREATE_ERR",
-                  EV_KV("interface", "%s", netdev_get_name(netdev)),
-                  EV_KV("vlanid", "%d", vlan_id));
         goto failed_vlan_creation;
     }
 
@@ -934,18 +772,13 @@ ops_routing_enable_l3_interface(int hw_unit, opennsl_port_t hw_port,
     /* Create l3 interface and add the mac to station tcam */
     rc = ops_routing_create_l3_intf(hw_unit, vrf_id, vlan_id, mac, l3_intf);
     if (OPENNSL_FAILURE(rc)) {
-        log_event("L3INTERFACE_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         goto failed_l3_intf_create;
     }
 
     SW_L3_DBG("Enabled L3 on unit=%d port=%d vlan=%d vrf=%d",
             hw_unit, hw_port, vlan_id, vrf_id);
 
-    snprintf(vlan_str, VLAN_ID_MAX_LENGTH, "%d", vlan_id);
-    shash_add_once(&internal_vlans, vlan_str, &vlan_id);
     handle_bcmsdk_knet_l3_port_filters(netdev, vlan_id, true);
-
     return l3_intf;
 
 failed_l3_intf_create:
@@ -960,10 +793,6 @@ failed_allocating_l3_intf:
     if (rc < 0) {
         VLOG_ERR("Failed at bcmsdk_destroy_vlan: unit=%d port=%d vlan=%d rc=%d",
                  hw_unit, hw_port, vlan_id, rc);
-        log_event("L3INTERFACE_VLAN_DESTROY_ERR",
-                EV_KV("interface", "%s", netdev_get_name(netdev)),
-                EV_KV("vlanid", "%d", vlan_id),
-                EV_KV("err", "%s", opennsl_errmsg(rc)));
     }
 
 failed_vlan_creation:
@@ -982,9 +811,6 @@ ops_routing_enable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
     /* VLAN config */
     rc = bcmsdk_create_vlan(vlan_id, false);
     if (rc < 0) {
-        log_event("SUBINTERFACE_VLAN_CREATE_ERR",
-                  EV_KV("interface", "%s", netdev_get_name(netdev)),
-                  EV_KV("vlanid", "%d", vlan_id));
         VLOG_ERR("Failed at bcmsdk_create_vlan: unit=%d port=%d vlan=%d rc=%d",
                  hw_unit, hw_port, vlan_id, rc);
         goto failed_vlan_creation;
@@ -1010,9 +836,7 @@ ops_routing_enable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
 
     /* Create l3 interface and add the mac to station tcam */
     rc = ops_routing_create_l3_intf(hw_unit, vrf_id, vlan_id, mac, l3_intf);
-    if (rc != OPENNSL_E_EXISTS && OPENNSL_FAILURE(rc)) {
-        log_event("SUBINTERFACE_L3INTF_CREATE_ERR",
-                  EV_KV("interface", "%s", netdev_get_name(netdev)));
+    if (OPENNSL_FAILURE(rc)) {
         goto failed_l3_intf_create;
     }
 
@@ -1020,16 +844,7 @@ ops_routing_enable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
             hw_unit, hw_port, vlan_id, vrf_id);
 
     VLOG_DBG("Create knet filter\n");
-    if (netdev_bcmsdk_get_subint_count(netdev) == 0) {
-        handle_bcmsdk_knet_subinterface_filters(netdev, true);
-        VLOG_DBG("Create FP to stop switching");
-        rc = ops_subinterface_fp_entry_create(hw_port, hw_unit);
-        if (OPENNSL_FAILURE(rc)) {
-            VLOG_ERR("FP creation failed");
-            goto failed_l3_intf_create;
-        }
-    }
-    netdev_bcmsdk_update_subint_count(netdev, true);
+    handle_bcmsdk_knet_subinterface_filters(netdev, true);
 
     return l3_intf;
 
@@ -1044,24 +859,11 @@ failed_allocating_l3_intf:
 
     rc = bcmsdk_destroy_vlan(vlan_id, false);
     if (rc < 0) {
-        log_event("SUBINTERFACE_VLAN_DESTROY_ERR",
-                EV_KV("interface", "%s", netdev_get_name(netdev)),
-                EV_KV("vlanid", "%d", vlan_id),
-                EV_KV("err", "%s", opennsl_errmsg(rc)));
         VLOG_ERR("Failed at bcmsdk_destroy_vlan: unit=%d port=%d vlan=%d rc=%d",
                  hw_unit, hw_port, vlan_id, rc);
     }
 
 failed_vlan_creation:
-    /* Delete subinterface entry from group*/
-    rc = ops_update_subint_fp_entry(hw_unit, hw_port, false);
-    if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("Failed to delete port to entry = %d for group = %d,\
-                Unit=%d port=%d rc=%s",
-                l3_fp_grp_info[hw_unit].subint_fp_entry_id,
-                l3_fp_grp_info[hw_unit].l3_fp_grpid,
-                hw_unit, hw_port, opennsl_errmsg(rc));
-    }
     return NULL;
 }
 
@@ -1069,16 +871,12 @@ void
 ops_routing_disable_l3_interface(int hw_unit, opennsl_port_t hw_port,
                                  opennsl_l3_intf_t *l3_intf, struct netdev *netdev)
 {
-    char vlan_str[VLAN_ID_MAX_LENGTH];
     opennsl_error_t rc = OPENNSL_E_NONE;
     opennsl_vlan_t vlan_id = l3_intf->l3a_vid;
 
     VLOG_DBG("%s unit=%d vlan=%d",__FUNCTION__, hw_unit, vlan_id);
     rc = opennsl_l3_intf_delete(hw_unit, l3_intf);
     if (OPENNSL_FAILURE(rc)) {
-        log_event("L3INTERFACE_DELETE_ERR",
-                  EV_KV("interface", "%s", netdev_get_name(netdev)),
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         VLOG_ERR("Failed at opennsl_l3_intf_delete: unit=%d vlan=%d"
                  " rc=%s",
                  hw_unit, vlan_id, opennsl_errmsg(rc));
@@ -1088,17 +886,9 @@ ops_routing_disable_l3_interface(int hw_unit, opennsl_port_t hw_port,
     if (rc < 0) {
         VLOG_ERR("Failed at bcmsdk_destroy_vlan: unit=%d vlan=%d rc=%d",
                 hw_unit, vlan_id, rc);
-        log_event("L3INTERFACE_VLAN_DESTROY_ERR",
-                EV_KV("interface", "%s", netdev_get_name(netdev)),
-                EV_KV("vlanid", "%d", vlan_id),
-                EV_KV("err", "%s", opennsl_errmsg(rc)));
     }
 
     SW_L3_DBG("Disabled L3 on unit=%d", hw_unit);
-
-    snprintf(vlan_str, VLAN_ID_MAX_LENGTH, "%d", vlan_id);
-    shash_find_and_delete(&internal_vlans, vlan_str);
-
     handle_bcmsdk_knet_l3_port_filters(netdev, vlan_id, false);
 }
 
@@ -1113,9 +903,6 @@ ops_routing_disable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
 
     rc = opennsl_l3_intf_delete(hw_unit, l3_intf);
     if (OPENNSL_FAILURE(rc)) {
-        log_event("SUBINTERFACE_L3INTF_DELETE_ERR",
-                  EV_KV("interface", "%s", netdev_get_name(netdev)),
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         VLOG_ERR("Failed at opennsl_l3_intf_delete: unit=%d port=%d vlan=%d"
                  " vrf=%d rc=%s",
                  hw_unit, hw_port, vlan_id, vrf_id, opennsl_errmsg(rc));
@@ -1132,10 +919,6 @@ ops_routing_disable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
         VLOG_DBG("Vlan %d is empty\n", vlan_id);
         rc = bcmsdk_destroy_vlan(vlan_id, false);
         if (rc < 0) {
-            log_event("SUBINTERFACE_VLAN_DESTROY_ERR",
-                      EV_KV("interface", "%s", netdev_get_name(netdev)),
-                      EV_KV("vlanid", "%d", vlan_id),
-                      EV_KV("err", "%s", opennsl_errmsg(rc)));
             VLOG_ERR("Failed at bcmsdk_destroy_vlan: unit=%d port=%d vlan=%d"
                      " rc=%d",
                      hw_unit, hw_port, vlan_id, rc);
@@ -1144,21 +927,8 @@ ops_routing_disable_l3_subinterface(int hw_unit, opennsl_port_t hw_port,
 
     SW_L3_DBG("Disabled L3 on unit=%d port=%d vrf=%d", hw_unit, hw_port, vrf_id);
 
-    netdev_bcmsdk_update_subint_count(netdev, false);
-
     VLOG_DBG("Delete subinterface knet filter\n");
-    if (netdev_bcmsdk_get_subint_count(netdev) == 0) {
-        handle_bcmsdk_knet_subinterface_filters(netdev, false);
-        /* Delete subinterface entry from group*/
-        rc = ops_update_subint_fp_entry(hw_unit, hw_port, false);
-        if (OPENNSL_FAILURE(rc)) {
-            VLOG_ERR("Failed to delete port to entry = %d for group = %d,\
-                    Unit=%d port=%d rc=%s",
-                    l3_fp_grp_info[hw_unit].subint_fp_entry_id,
-                    l3_fp_grp_info[hw_unit].l3_fp_grpid,
-                    hw_unit, hw_port, opennsl_errmsg(rc));
-        }
-    }
+    handle_bcmsdk_knet_subinterface_filters(netdev, false);
 }
 
 opennsl_l3_intf_t *
@@ -1180,9 +950,6 @@ ops_routing_enable_l3_vlan_interface(int hw_unit, opennsl_vrf_t vrf_id,
     /* Create l3 interface and add the mac to station tcam */
     rc = ops_routing_create_l3_intf(hw_unit, vrf_id, vlan_id, mac, l3_intf);
     if (OPENNSL_FAILURE(rc)) {
-        log_event("VLANINTERFACE_L3INTF_CREATE_ERR",
-                  EV_KV("vlan", "%d", vlan_id),
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         free(l3_intf);
         return NULL;
     }
@@ -1219,11 +986,7 @@ ops_nexthop_add(struct ops_route *route,  struct ofproto_route_nexthop *of_nh)
     route->n_nexthops++;
 
     VLOG_DBG("Add NH %s, egress_id %d, for route %s",
-            nh->id, nh->l3_egress_id, route->prefix);
-    log_event("L3INTERFACE_NEXTHOP_ADD",
-            EV_KV("nexthop", "%s", nh->id),
-            EV_KV("egress_id", "%d", nh->l3_egress_id),
-            EV_KV("prefix", "%s", route->prefix));
+              nh->id, nh->l3_egress_id, route->prefix);
 } /* ops_nexthop_add */
 
 /* Delete nexthop into route entry */
@@ -1235,9 +998,6 @@ ops_nexthop_delete(struct ops_route *route, struct ops_nexthop *nh)
     }
 
     VLOG_DBG("Delete NH %s in route %s", nh->id, route->prefix);
-    log_event("L3INTERFACE_NEXTHOP_DELETE",
-            EV_KV("nexthop", "%s", nh->id),
-            EV_KV("prefix", "%s", route->prefix));
 
     hmap_remove(&route->nexthops, &nh->node);
     if (nh->id) {
@@ -1375,8 +1135,6 @@ ops_route_add(int vrf, struct ofproto_route *of_routep)
     ops_route_hash(vrf, of_routep->prefix, hashstr, sizeof(hashstr));
     hmap_insert(&ops_rtable.routes, &routep->node, hash_string(hashstr, 0));
     VLOG_DBG("Add route %s", of_routep->prefix);
-    log_event("L3INTERFACE_ROUTE_ADD",
-            EV_KV("prefix", "%s", of_routep->prefix));
     return routep;
 } /* ops_route_add */
 
@@ -1402,11 +1160,7 @@ ops_route_update(int vrf, struct ops_route *routep,
             } else {
                 /* update is currently resolved on unreoslved */
                 nh->l3_egress_id = (of_nh->state == OFPROTO_NH_RESOLVED) ?
-                    of_nh->l3_egress_id : local_nhid ;
-                log_event("L3INTERFACE_ROUTE_UPDATE",
-                        EV_KV("state", "%s",
-                              (of_nh->state == OFPROTO_NH_RESOLVED) ?
-                              "Resoled with egress id" : "not resolved go to CPU"));
+                                    of_nh->l3_egress_id : local_nhid ;
             }
         }
     }
@@ -1423,8 +1177,6 @@ ops_route_delete(struct ops_route *routep)
     }
 
     VLOG_DBG("delete route %s", routep->prefix);
-    log_event("L3INTERFACE_ROUTE_DELETE",
-            EV_KV("prefix", "%s", routep->prefix));
 
     hmap_remove(&ops_rtable.routes, &routep->node);
 
@@ -1506,15 +1258,8 @@ ops_routing_add_host_entry(int hw_unit, opennsl_port_t hw_port,
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Error, create egress object, out_port=%d, rc=%s", hw_port,
                  opennsl_errmsg(rc));
-        log_event("L3INTERFACE_CREATE_EGRESS_OBJ_ERR",
-                  EV_KV("port", "%d", hw_port),
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
-    log_event("L3INTERFACE_CREATE_EGRESS_OBJ",
-            EV_KV("egress_id", "%d", *l3_egress_id),
-            EV_KV("port", "%d", hw_port),
-            EV_KV("intf", "%d", l3_intf_id));
 
     VLOG_DBG("Created L3 egress ID %d for out_port: %d intf_id: %d ",
           *l3_egress_id, port, l3_intf_id);
@@ -1550,15 +1295,8 @@ ops_routing_add_host_entry(int hw_unit, opennsl_port_t hw_port,
     rc = opennsl_l3_host_add(hw_unit, &l3host);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR ("opennsl_l3_host_add failed: rc=%s", opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ADD_HOST_ERR",
-                  EV_KV("ipaddr", "%s", ip_addr),
-                  EV_KV("egressid", "%d", *l3_egress_id),
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
-    log_event("L3INTERFACE_ADD_HOST",
-              EV_KV("ipaddr", "%s", ip_addr),
-              EV_KV("egressid", "%d", *l3_egress_id));
 
     return rc;
 } /* ops_routing_add_host_entry */
@@ -1609,29 +1347,16 @@ ops_routing_delete_host_entry(int hw_unit, opennsl_port_t hw_port,
     rc = opennsl_l3_host_delete(hw_unit, &l3host);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR ("opennsl_l3_host_delete failed: %s", opennsl_errmsg(rc));
-        log_event("L3INTERFACE_DEL_HOST_ERR",
-                  EV_KV("ipaddr", "%s", ip_addr),
-                  EV_KV("egressid", "%d", *l3_egress_id),
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
-    log_event("L3INTERFACE_DEL_HOST",
-            EV_KV("ipaddr", "%s", ip_addr),
-            EV_KV("egressid", "%d", *l3_egress_id));
 
     /* Delete the egress object */
     VLOG_DBG("Deleting egress object for egress-id %d", *l3_egress_id);
     rc = opennsl_l3_egress_destroy(hw_unit, *l3_egress_id);
     if (OPENNSL_FAILURE(rc)) {
        VLOG_ERR ("opennsl_egress_destroy failed: %s", opennsl_errmsg(rc));
-        log_event("L3INTERFACE_DESTROY_EGRESS_OBJ_ERR",
-                  EV_KV("port", "%d", hw_port),
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
-    log_event("L3INTERFACE_DESTROY_EGRESS_OBJ",
-            EV_KV("egress_id", "%d", *l3_egress_id),
-            EV_KV("port", "%d", hw_port));
 
     *l3_egress_id = -1;
     return rc;
@@ -1708,7 +1433,7 @@ ops_string_to_prefix(int family, char *ip_address, void *prefix,
     int maxlen = (family == AF_INET) ? IPV4_PREFIX_LEN :
                                        IPV6_PREFIX_LEN;
     *prefixlen = maxlen;
-    tmp_ip_addr = xstrdup(ip_address);
+    tmp_ip_addr = strdup(ip_address);
 
     if ((p = strchr(tmp_ip_addr, '/'))) {
         *p++ = '\0';
@@ -1780,13 +1505,7 @@ ops_create_or_update_ecmp_object(int hw_unit, struct ops_route *routep,
         if (OPENNSL_FAILURE(rc)) {
             VLOG_ERR("Failed to update ecmp object for route %s: rc=%s",
                      routep->prefix, opennsl_errmsg(rc));
-            log_event("ECMP_CREATE_ERR",
-                      EV_KV("route", "%s", routep->prefix),
-                      EV_KV("err", "%s", opennsl_errmsg(rc)));
             return rc;
-        } else {
-            log_event("ECMP_CREATE",
-                      EV_KV("route", "%s", routep->prefix));
         }
     } else {
         opennsl_l3_egress_ecmp_t_init(&ecmp_grp);
@@ -1796,13 +1515,7 @@ ops_create_or_update_ecmp_object(int hw_unit, struct ops_route *routep,
         if (OPENNSL_FAILURE(rc)) {
             VLOG_ERR("Failed to create ecmp object for route %s: rc=%s",
                      routep->prefix, opennsl_errmsg(rc));
-            log_event("ECMP_CREATE_ERR",
-                      EV_KV("route", "%s", routep->prefix),
-                      EV_KV("err", "%s", opennsl_errmsg(rc)));
             return rc;
-        } else {
-            log_event("ECMP_CREATE",
-                      EV_KV("route", "%s", routep->prefix));
         }
         *ecmp_intfp = ecmp_grp.ecmp_intf;
     }
@@ -1822,15 +1535,9 @@ ops_delete_ecmp_object(int hw_unit, opennsl_if_t ecmp_intf)
     rc = opennsl_l3_egress_ecmp_destroy(hw_unit, &ecmp_grp);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to delete ecmp egress object %d: %s",
-                ecmp_intf, opennsl_errmsg(rc));
-        log_event("ECMP_DELETE_ERR",
-                EV_KV("egressid", "%d", ecmp_intf),
-                EV_KV("err", "%s", opennsl_errmsg(rc)));
+                  ecmp_intf, opennsl_errmsg(rc));
         return rc;
     }
-    log_event("ECMP_DELETE",
-            EV_KV("egressid", "%d", ecmp_intf));
-
     return rc;
 } /* ops_delete_ecmp_object */
 
@@ -1845,7 +1552,6 @@ ops_add_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
     opennsl_if_t l3_intf;
     int rc;
     bool add_route = false;
-    struct ofproto_route_nexthop *of_nh;
 
     /* assert for zero nexthop */
     assert(of_routep && (of_routep->n_nexthops > 0));
@@ -1879,24 +1585,6 @@ ops_add_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
             }
         }
         add_route = true;
-
-        /* If there is only 1 nexthop and if the arp is unresolved,
-         * set the OPENNSL_L3_RPE flag and set the priority in the l3a_pri
-         * field to 15. (This is used by copp to identify if the packet is
-         * destined to unknown IP cpu queue or not)
-         * We set this only for non-ecmp next hops and directly connected
-         * routes
-         * FIXME: Need to take care of ECMP next hops case
-         */
-        if (of_routep->n_nexthops == 1) {
-            of_nh = &of_routep->nexthops[0];
-            VLOG_INFO("of_nh->state = %d", of_nh->state);
-            if (of_nh->state != OFPROTO_NH_RESOLVED) {
-                routep->l3a_flags |= OPENNSL_L3_RPE;
-                routep->l3a_pri = OPS_COPP_UNKNOWN_IP_COS_RESERVED;
-            }
-        }
-
     } else {
         /* update route in local data structure */
         ops_routep = ops_route_lookup(vrf_id, of_routep);
@@ -1953,24 +1641,12 @@ ops_add_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
     rc = opennsl_l3_route_add(hw_unit, routep);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to %s route %s: %s",
-                add_route ? "add" : "update", of_routep->prefix,
-                opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ROUTE_ADD_ERR",
-                  EV_KV("prefix", "%s", of_routep->prefix),
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
+                  add_route ? "add" : "update", of_routep->prefix,
+                  opennsl_errmsg(rc));
     } else {
         VLOG_DBG("Success to %s route %s: %s",
-                add_route ? "add" : "update", of_routep->prefix,
-                opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ROUTE_UPDATE",
-                EV_KV("state", "%s",
-                    ((add_route == true) ?
-                     ((ops_routep->n_nexthops > 1) ?
-                                   "add route state as ECMP" :
-                                   "add route state as NON ECMP") :
-                     ((ops_routep->n_nexthops > 1) ?
-                                   "update route state as ECMP" :
-                                   "update route state as NON ECMP"))));
+                  add_route ? "add" : "update", of_routep->prefix,
+                  opennsl_errmsg(rc));
     }
     return rc;
 } /* ops_add_route_entry */
@@ -1985,7 +1661,6 @@ ops_delete_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
     opennsl_if_t l3_intf ;
     bool is_delete_ecmp = false;
     int rc;
-    int reprogram_def_route;
 
     assert(of_routep);
 
@@ -2003,11 +1678,6 @@ ops_delete_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
         return EINVAL;
     }
 
-    /* Check if this is same as default route */
-    reprogram_def_route = is_default_route(hw_unit, of_routep,
-                                           routep);
-
-    /* Remove from local hash */
     ops_route_delete(ops_routep);
 
     if (routep->l3a_flags & OPENNSL_L3_MULTIPATH) {
@@ -2019,27 +1689,14 @@ ops_delete_route_entry(int hw_unit, opennsl_vrf_t vrf_id,
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to delete route %s: %s", of_routep->prefix,
                   opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ROUTE_DELETE_ERR",
-                  EV_KV("prefix", "%s", of_routep->prefix),
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
     } else {
         VLOG_DBG("Success to delete route %s: %s", of_routep->prefix,
-                opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ROUTE_DELETE",
-                EV_KV("prefix", "%s", of_routep->prefix));
+                 opennsl_errmsg(rc));
     }
 
     if (is_delete_ecmp) {
         rc = ops_delete_ecmp_object(hw_unit, l3_intf);
-        log_event("ECMP_DELETE",
-                EV_KV("route", "%s", of_routep->prefix));
     }
-
-    /* Reprogram default route for ALPM mode */
-    if (reprogram_def_route) {
-        ops_add_default_routes(hw_unit);
-    }
-
     return rc;
 } /* ops_delete_route_entry */
 
@@ -2122,15 +1779,10 @@ ops_delete_nh_entry(int hw_unit, opennsl_vrf_t vrf_id,
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to (delete NH) update route %s: %s",
                   of_routep->prefix, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ROUTE_DELETE_ERR",
-                  EV_KV("prefix", "%s", of_routep->prefix),
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     } else {
         VLOG_DBG("Success to (delete NH) update route %s: %s",
                   of_routep->prefix, opennsl_errmsg(rc));
-        log_event("L3INTERFACE_ROUTE_DELETE",
-                EV_KV("prefix", "%s", of_routep->prefix));
     }
 
     if (is_delete_ecmp) {
@@ -2252,8 +1904,6 @@ ops_routing_ecmp_set(int hw_unit, bool enable)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to get opennslSwitchHashMultipath : unit=%d, rc=%s",
                  hw_unit, opennsl_errmsg(rc));
-        log_event("ECMP_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
 
@@ -2270,8 +1920,6 @@ ops_routing_ecmp_set(int hw_unit, bool enable)
         if (OPENNSL_FAILURE(rc)) {
             VLOG_ERR("Failed to set opennslSwitchHashMultipath : unit=%d, rc=%s",
                      hw_unit, opennsl_errmsg(rc));
-        log_event("ECMP_ERR",
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
             return rc;
         }
     } else { /* Disable ECMP */
@@ -2281,9 +1929,7 @@ ops_routing_ecmp_set(int hw_unit, bool enable)
                                         OPENNSL_HASH_ZERO);
         if (OPENNSL_FAILURE(rc)) {
             VLOG_ERR("Failed to clear opennslSwitchHashMultipath : unit=%d, rc=%s",
-                    hw_unit, opennsl_errmsg(rc));
-            log_event("ECMP_ERR",
-                    EV_KV("err", "%s", opennsl_errmsg(rc)));
+                     hw_unit, opennsl_errmsg(rc));
             return rc;
         }
     }
@@ -2301,9 +1947,7 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
                                     &cur_hash_ip4);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to get opennslSwitchHashIP4Field0 : unit=%d, rc=%s",
-                hw_unit, opennsl_errmsg(rc));
-        log_event("ECMP_ERR",
-                EV_KV("err", "%s", opennsl_errmsg(rc)));
+                 hw_unit, opennsl_errmsg(rc));
         return rc;
     }
     rc = opennsl_switch_control_get(hw_unit, opennslSwitchHashIP6Field0,
@@ -2311,8 +1955,6 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to get opennslSwitchHashIP6Field0 : unit=%d, rc=%s",
                  hw_unit, opennsl_errmsg(rc));
-        log_event("ECMP_ERR",
-                EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
 
@@ -2340,9 +1982,7 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
                                       ops_update_l3ecmp_egress_resilient, NULL);
             if (OPENNSL_FAILURE(rc)) {
                 VLOG_ERR("Failed to traverse ECMP groups rc=%s",
-                        opennsl_errmsg(rc));
-                log_event("ECMP_ERR",
-                        EV_KV("err", "%s", opennsl_errmsg(rc)));
+                                                  opennsl_errmsg(rc));
             }
         }
     }
@@ -2363,8 +2003,6 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
         VLOG_ERR("Failed to set opennslSwitchHashIP4TcpUdpPortsEqualField0:"
                  "unit=%d, hash=%x, rc=%s",
                  hw_unit, cur_hash_ip4, opennsl_errmsg(rc));
-        log_event("ECMP_ERR",
-                EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(hw_unit,
@@ -2374,8 +2012,6 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
         VLOG_ERR("Failed to set opennslSwitchHashIP4TcpUdpPortsEqualField0:"
                  "unit=%d, hash=%x, rc=%s",
                  hw_unit, cur_hash_ip4, opennsl_errmsg(rc));
-        log_event("ECMP_ERR",
-                EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(hw_unit, opennslSwitchHashIP4Field0,
@@ -2383,8 +2019,6 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashIP4Field0 : unit=%d, hash=%x, rc=%s",
                  hw_unit, cur_hash_ip4, opennsl_errmsg(rc));
-        log_event("ECMP_ERR",
-                EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
 
@@ -2395,8 +2029,6 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
         VLOG_ERR("Failed to set opennslSwitchHashIP6TcpUdpPortsEqualField0:"
                  "unit=%d, hash=%x, rc=%s",
                  hw_unit, cur_hash_ip6, opennsl_errmsg(rc));
-        log_event("ECMP_ERR",
-                EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(hw_unit,
@@ -2406,8 +2038,6 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
         VLOG_ERR("Failed to set opennslSwitchHashIP6TcpUdpPortsEqualField0:"
                  "unit=%d, hash=%x, rc=%s",
                  hw_unit, cur_hash_ip6, opennsl_errmsg(rc));
-        log_event("ECMP_ERR",
-                EV_KV("err", "%s", opennsl_errmsg(rc)));
         return 1;
     }
     rc = opennsl_switch_control_set(hw_unit, opennslSwitchHashIP6Field0,
@@ -2415,8 +2045,6 @@ ops_routing_ecmp_hash_set(int hw_unit, unsigned int hash, bool status)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Failed to set opennslSwitchHashIP6Field0 : unit=%d, hash=%x, rc=%s",
                  hw_unit, cur_hash_ip6, opennsl_errmsg(rc));
-        log_event("ECMP_ERR",
-                EV_KV("err", "%s", opennsl_errmsg(rc)));
         return rc;
     }
 
@@ -2482,8 +2110,6 @@ ops_routing_host_entry_action(int hw_unit, opennsl_vrf_t vrf_id,
             rc = opennsl_l3_host_add(hw_unit, &l3host);
             if (OPENNSL_FAILURE(rc)) {
                 VLOG_ERR ("opennsl_l3_host_add failed: %s", opennsl_errmsg(rc));
-                log_event("L3INTERFACE_ERR",
-                        EV_KV("err", "%s", opennsl_errmsg(rc)));
             }
         } else {
             VLOG_DBG ("Host entry exists: 0x%x", rc);
@@ -2496,8 +2122,6 @@ ops_routing_host_entry_action(int hw_unit, opennsl_vrf_t vrf_id,
             rc = opennsl_l3_host_delete(hw_unit, &l3host);
             if (OPENNSL_FAILURE(rc)) {
                 VLOG_ERR ("opennsl_l3_host_delete failed: %s", opennsl_errmsg(rc));
-                log_event("L3INTERFACE_ERR",
-                        EV_KV("err", "%s", opennsl_errmsg(rc)));
             }
         } else {
             VLOG_DBG ("Host entry doesn't exists: 0x%x", rc);
@@ -2586,11 +2210,9 @@ ops_l3_mac_move_add(int   unit,
 
    if (OPENNSL_FAILURE(rc)) {
        VLOG_ERR("Egress object not found in ASIC for given vlan/mac. rc=%s "
-               "unit=%d, key=%s, vlan=%d, mac=" ETH_ADDR_FMT ", egr-id: %d",
-               opennsl_errmsg(rc), unit, egress_id_key, l2addr->vid,
-               ETH_ADDR_BYTES_ARGS(l2addr->mac), egress_id_node->egress_object_id);
-       log_event("L3INTERFACE_ERR",
-               EV_KV("err", "%s", opennsl_errmsg(rc)));
+                 "unit=%d, key=%s, vlan=%d, mac=" ETH_ADDR_FMT ", egr-id: %d",
+                 opennsl_errmsg(rc), unit, egress_id_key, l2addr->vid,
+                 ETH_ADDR_BYTES_ARGS(l2addr->mac), egress_id_node->egress_object_id);
 
        goto done;
    }
@@ -2608,15 +2230,8 @@ ops_l3_mac_move_add(int   unit,
                                    &(egress_id_node->egress_object_id));
    if (OPENNSL_FAILURE(rc)) {
        VLOG_ERR("Failed creation of egress object: rc=%s, unit=%d", opennsl_errmsg(rc), unit);
-        log_event("L3INTERFACE_CREATE_EGRESS_OBJ_ERR",
-                  EV_KV("port", "%d", egress_object.port),
-                  EV_KV("err", "%s", opennsl_errmsg(rc)));
        goto done;
    }
-   log_event("L3INTERFACE_CREATE_EGRESS_OBJ",
-           EV_KV("egress_id", "%d", egress_id_node->egress_object_id),
-           EV_KV("port", "%d", egress_object.port),
-           EV_KV("intf", "%d", egress_object.intf));
 
 done:
    /* remove hmap entry for given mac/vlan */
@@ -3097,314 +2712,3 @@ ops_l3ecmp_egress_dump(struct ds *ds, int ecmpid)
         }
     }
 } /* ops_l3ecmp_egress_dump */
-
-/* Create group for l3 feature. A common group is maintained for
- * l3 related feature and stats with the highest priority.
- * This group is used to create feature specific rules.
- */
-opennsl_error_t
-ops_create_l3_fp_group(int hw_unit)
-{
-    /* FP groups for subinterface and L3 stats*/
-    opennsl_error_t rc = OPENNSL_E_NONE;
-    /* Qset for l3 feature */
-    opennsl_field_qset_t l3_qset;
-
-
-    VLOG_DBG("Create group, Check group = %d", l3_fp_grp_info[hw_unit].l3_fp_grpid);
-    /* If group is already created then don't create again */
-    if (l3_fp_grp_info[hw_unit].l3_fp_grpid == -1) {
-
-        OPENNSL_FIELD_QSET_INIT(l3_qset);
-        /* for subinterface */
-        OPENNSL_FIELD_QSET_ADD (l3_qset,
-                                opennslFieldQualifyMyStationHit);
-        OPENNSL_FIELD_QSET_ADD (l3_qset, opennslFieldQualifyInPorts);
-
-        /* RX counter stats */
-        OPENNSL_FIELD_QSET_ADD (l3_qset, opennslFieldQualifyIpType);
-        OPENNSL_FIELD_QSET_ADD (l3_qset, opennslFieldQualifyL3Ingress);
-        OPENNSL_FIELD_QSET_ADD (l3_qset, opennslFieldQualifyPacketRes);
-
-        /* TX counter stats */
-        OPENNSL_FIELD_QSET_ADD (l3_qset, opennslFieldQualifyIpType);
-        OPENNSL_FIELD_QSET_ADD (l3_qset, opennslFieldQualifyDstPort);
-        OPENNSL_FIELD_QSET_ADD (l3_qset, opennslFieldQualifyPacketRes);
-
-        VLOG_DBG("%s, Create FP for unit = %d", __FUNCTION__, hw_unit);
-        rc = opennsl_field_group_create(hw_unit, l3_qset,
-                                        FP_GROUP_PRIORITY_0,
-                                        &l3_fp_grp_info[hw_unit].l3_fp_grpid);
-        if (OPENNSL_FAILURE(rc)) {
-            VLOG_ERR("Failed to create FP group Unit=%d, rc=%s",
-                    hw_unit, opennsl_errmsg(rc));
-            return rc;
-        }
-        VLOG_DBG("%s, Created FP Group = %d for unit = %d",
-                 __FUNCTION__, l3_fp_grp_info[hw_unit].l3_fp_grpid, hw_unit);
-    }
-
-    return rc;
-}
-
-/*
- * FP creation to stop subinterface switching traffic.
- */
-static opennsl_error_t
-ops_subinterface_fp_entry_create(opennsl_port_t hw_port, int hw_unit)
-{
-    /* FP groups for subinterface */
-    opennsl_error_t rc = OPENNSL_E_NONE;
-    opennsl_pbmp_t pbm;
-    opennsl_pbmp_t pbm_mask;
-
-    rc = ops_create_l3_fp_group(hw_unit);
-    if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("Failed to create FP group for L3 features \
-                Unit=%d port=%d rc=%s",
-                hw_unit, hw_port, opennsl_errmsg(rc));
-        return rc;
-    }
-
-    /* If the entry was not created then create the entry,
-       else update the port bit map and reinstall the entry */
-    if (l3_fp_grp_info[hw_unit].subint_fp_entry_id == -1) {
-
-        /* add hw_port to the rule */
-        OPENNSL_PBMP_CLEAR(pbm);
-        OPENNSL_PBMP_CLEAR(pbm_mask);
-        OPENNSL_PBMP_PORT_ADD(pbm, hw_port);
-        OPENNSL_PBMP_PORT_ADD(pbm_mask, hw_port);
-
-        VLOG_DBG("%s, Create entry unit = %d, port %d",
-                __FUNCTION__, hw_unit, hw_port);
-        rc =  opennsl_field_entry_create(hw_unit,
-                l3_fp_grp_info[hw_unit].l3_fp_grpid,
-                &l3_fp_grp_info[hw_unit].subint_fp_entry_id);
-        if (OPENNSL_FAILURE(rc)) {
-            VLOG_ERR("Failed to create FP entry for subinterface \
-                    Unit=%d port=%d rc=%s",
-                    hw_unit, hw_port, opennsl_errmsg(rc));
-            return rc;
-        }
-
-        VLOG_DBG("%s, Create qualify my station hit unit = %d, port %d",
-                __FUNCTION__, hw_unit, hw_port);
-        rc = opennsl_field_qualify_MyStationHit(hw_unit,
-                l3_fp_grp_info[hw_unit].subint_fp_entry_id,
-                0x0, 0x1); /* NOT hit */
-        if (OPENNSL_FAILURE(rc)) {
-            VLOG_ERR("Failed to set qualify for my station hit \
-                    Unit=%d port=%d rc=%s",
-                    hw_unit, hw_port, opennsl_errmsg(rc));
-            ops_destroy_l3_fp_entry(hw_unit,
-            l3_fp_grp_info[hw_unit].subint_fp_entry_id);
-            return rc;
-        }
-
-        VLOG_DBG("%s, Create qualify Inport unit = %d, port %d",
-                __FUNCTION__, hw_unit, hw_port);
-        rc = opennsl_field_qualify_InPorts(hw_unit,
-                l3_fp_grp_info[hw_unit].subint_fp_entry_id,
-                pbm, pbm_mask);
-        if (OPENNSL_FAILURE(rc)) {
-            VLOG_ERR("Failed to set qualify for InPort \
-                    Unit=%d port=%d rc=%s",
-                    hw_unit, hw_port, opennsl_errmsg(rc));
-            ops_destroy_l3_fp_entry(hw_unit,
-                                             l3_fp_grp_info[hw_unit].subint_fp_entry_id);
-            return rc;
-        }
-
-        VLOG_DBG("%s, Set action unit = %d, port %d",
-                __FUNCTION__, hw_unit, hw_port);
-        rc = opennsl_field_action_add(hw_unit,
-                l3_fp_grp_info[hw_unit].subint_fp_entry_id,
-                opennslFieldActionDrop, 0, 0);
-        if (OPENNSL_FAILURE(rc)) {
-            VLOG_ERR("Failed to set action to drop all packets \
-                    Unit=%d port=%d rc=%s",
-                    hw_unit, hw_port, opennsl_errmsg(rc));
-            ops_destroy_l3_fp_entry(hw_unit,
-                                             l3_fp_grp_info[hw_unit].subint_fp_entry_id);
-            return rc;
-        }
-
-        rc = opennsl_field_entry_install(hw_unit, l3_fp_grp_info[hw_unit].subint_fp_entry_id);
-        if (OPENNSL_FAILURE(rc)) {
-            VLOG_ERR("Failed to install group = %d entry = %d\
-                    Unit=%d port=%d rc=%s",
-                    l3_fp_grp_info[hw_unit].l3_fp_grpid,
-                    l3_fp_grp_info[hw_unit].subint_fp_entry_id,
-                    hw_unit, hw_port, opennsl_errmsg(rc));
-            ops_destroy_l3_fp_entry(hw_unit,
-                                    l3_fp_grp_info[hw_unit].subint_fp_entry_id);
-            return rc;
-        }
-        VLOG_DBG("%s ADD hw_port = %d, added",
-                 __FUNCTION__, hw_port);
-    } else {
-
-        VLOG_DBG("Entry already created now update the entry = %d, with port = %d",
-                  l3_fp_grp_info[hw_unit].subint_fp_entry_id, hw_port);
-        /* Add multiple subinterfaces to the entry*/
-        rc = ops_update_subint_fp_entry(hw_unit, hw_port, true);
-        if (OPENNSL_FAILURE(rc)) {
-            VLOG_ERR("Failed to add port to entry = %d for group = %d,\
-                    Unit=%d port=%d rc=%s",
-                    l3_fp_grp_info[hw_unit].subint_fp_entry_id,
-                    l3_fp_grp_info[hw_unit].l3_fp_grpid,
-                    hw_unit, hw_port, opennsl_errmsg(rc));
-            return rc;
-        }
-    }
-
-    VLOG_DBG("%s, Group entry  = %d install success unit = %d, port %d",
-               __FUNCTION__,
-               l3_fp_grp_info[hw_unit].subint_fp_entry_id,
-               hw_unit, hw_port);
-
-    return rc;
-}
-
-static opennsl_error_t
-ops_update_subint_fp_entry(int hw_unit, opennsl_port_t hw_port, bool add)
-{
-    opennsl_error_t rc = OPENNSL_E_NONE;
-    opennsl_pbmp_t pbm;
-    opennsl_pbmp_t pbm_mask;
-    char pfmt[_SHR_PBMP_FMT_LEN];
-
-    VLOG_DBG("%s, Get Inport bitmask unit = %d",
-            __FUNCTION__, hw_unit);
-    rc = opennsl_field_qualify_InPorts_get(hw_unit,
-            l3_fp_grp_info[hw_unit].subint_fp_entry_id,
-            &pbm, &pbm_mask);
-    if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("Failed to set qualify for InPort \
-                Unit=%d port=%d rc=%s",
-                hw_unit, hw_port, opennsl_errmsg(rc));
-    }
-    VLOG_DBG("%s, Get Inport bitmask unit = %d pbm = %s",
-            __FUNCTION__, hw_unit, _SHR_PBMP_FMT(pbm, pfmt));
-
-    if (add) {
-        /* add hw_port to the rule */
-        OPENNSL_PBMP_PORT_ADD(pbm, hw_port);
-        OPENNSL_PBMP_PORT_ADD(pbm_mask, hw_port);
-        VLOG_DBG("%s After adding hw_port = %d, added to pbm = %s",
-                 __FUNCTION__, hw_port, _SHR_PBMP_FMT(pbm, pfmt));
-    } else {
-        /* del hw_port to the rule */
-        OPENNSL_PBMP_PORT_REMOVE(pbm, hw_port);
-        OPENNSL_PBMP_PORT_REMOVE(pbm_mask, hw_port);
-        VLOG_DBG("%s After deleting hw_port = %d, pbm = %s",
-                __FUNCTION__, hw_port, _SHR_PBMP_FMT(pbm, pfmt));
-        if (OPENNSL_PBMP_IS_NULL(pbm)) {
-            VLOG_DBG("pbm is empty so delete the entry = %d",
-                    l3_fp_grp_info[hw_unit].subint_fp_entry_id);
-            rc = ops_destroy_l3_fp_entry(hw_unit,
-                    l3_fp_grp_info[hw_unit].subint_fp_entry_id);
-            if (OPENNSL_FAILURE(rc)) {
-                VLOG_ERR("Failed to delete FP entry for subinterface \
-                        Unit=%d rc=%s",
-                        hw_unit, opennsl_errmsg(rc));
-            }
-            l3_fp_grp_info[hw_unit].subint_fp_entry_id = -1;
-            return rc;
-        }
-    }
-    VLOG_DBG("%s, Create qualify Inport unit = %d, port %d",
-            __FUNCTION__, hw_unit, hw_port);
-    rc = opennsl_field_qualify_InPorts(hw_unit,
-            l3_fp_grp_info[hw_unit].subint_fp_entry_id,
-            pbm, pbm_mask);
-    if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("Failed to set qualify for InPort \
-                Unit=%d port=%d rc=%s",
-                hw_unit, hw_port, opennsl_errmsg(rc));
-        ops_destroy_l3_fp_entry(hw_unit, l3_fp_grp_info[hw_unit].subint_fp_entry_id);
-        return rc;
-    }
-    VLOG_DBG("reinstall entry = %d", l3_fp_grp_info[hw_unit].subint_fp_entry_id);
-    rc = opennsl_field_entry_reinstall(hw_unit, l3_fp_grp_info[hw_unit].subint_fp_entry_id);
-    if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("Failed to install group = %d entry = %d\
-                Unit=%d port=%d rc=%s",
-                l3_fp_grp_info[hw_unit].l3_fp_grpid,
-                l3_fp_grp_info[hw_unit].subint_fp_entry_id,
-                hw_unit, hw_port, opennsl_errmsg(rc));
-        ops_destroy_l3_fp_entry(hw_unit, l3_fp_grp_info[hw_unit].subint_fp_entry_id);
-        return rc;
-    }
-    return rc;
-}
-/*
- * Function deletes the l3 group entries.
- * If no entry exists then the group is deleted.
- */
-opennsl_error_t
-ops_destroy_l3_fp_entry(int hw_unit, opennsl_field_entry_t entryid)
-{
-    opennsl_error_t rc = OPENNSL_E_NONE;
-    int entry_count = 0;
-
-    VLOG_DBG("%s, Delete entry %d, unit = %d",
-              __FUNCTION__,
-              l3_fp_grp_info[hw_unit].subint_fp_entry_id,
-              hw_unit);
-    rc = opennsl_field_entry_destroy(hw_unit, entryid);
-    if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("Failed to delete FP entry for subinterface \
-                Unit=%d rc=%s",
-                hw_unit, opennsl_errmsg(rc));
-        return rc;
-    }
-
-    /* check if the group has more entries,
-       if not, then destroy the group */
-    rc = opennsl_field_entry_multi_get(hw_unit,
-                                       l3_fp_grp_info[hw_unit].l3_fp_grpid,
-                                       0, /* get all entries in the grp */
-                                       NULL, /* Array for entries */
-                                       &entry_count);
-    if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("Failed to get FP entries for l3 feature group = %d \
-                Unit=%d entry_count = %d rc=%s",
-                l3_fp_grp_info[hw_unit].l3_fp_grpid,
-                hw_unit, entry_count, opennsl_errmsg(rc));
-        return rc;
-    }
-    VLOG_DBG("%s group = %d entry_count = %d\n",
-              __FUNCTION__, l3_fp_grp_info[hw_unit].l3_fp_grpid, entry_count);
-
-    if (entry_count == 0) {
-
-        VLOG_DBG("%s, Delete group = %d, unit = %d",
-                __FUNCTION__, l3_fp_grp_info[hw_unit].l3_fp_grpid, hw_unit);
-        rc = opennsl_field_group_destroy(hw_unit,
-                                         l3_fp_grp_info[hw_unit].l3_fp_grpid);
-        if (OPENNSL_FAILURE(rc)) {
-            VLOG_ERR("Failed to delete FP group for subinterface \
-                    Unit=%d rc=%s",
-                    hw_unit, opennsl_errmsg(rc));
-            return rc;
-        }
-        l3_fp_grp_info[hw_unit].l3_fp_grpid = -1;
-    }
-    return rc;
-}
-
-/*
- * Function initializes l3 group and subinterface info.
- */
-int
-ops_l3_fp_init(int hw_unit)
-{
-    VLOG_DBG("%s Hw_unit = %d", __FUNCTION__, hw_unit);
-    /* Group ID for l3 feature */
-    l3_fp_grp_info[hw_unit].l3_fp_grpid = -1;
-    /* Entry id for all subinterface */
-    l3_fp_grp_info[hw_unit].subint_fp_entry_id = -1;
-    return 0;
-}

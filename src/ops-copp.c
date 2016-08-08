@@ -34,7 +34,6 @@
 #include <opennsl/rx.h>
 #include "ops-copp.h"
 #include "eventlog.h"
-#include "ops-fp.h"
 
 /*
  * Logging module for CoPP.
@@ -128,7 +127,7 @@ char ops_copp_all_packet_stat_buffer[COPP_MAX_PACKET_STAT_BUFFER_SIZE
  * Array of strings for names for CPU queue numbers
  */
 char* ops_cpu_queue_name[OPS_COPP_QOS_QUEUE_MAX + 1] = {
-                                                          "Acl-logging",
+                                                          "Execption",
                                                           "Default",
                                                           "Snooping",
                                                           "Sflow",
@@ -150,7 +149,7 @@ char* ops_cpu_queue_name[OPS_COPP_QOS_QUEUE_MAX + 1] = {
 opennsl_field_group_t ops_copp_get_ingress_group_id_for_hw_unit (
                                                     int hardware_unit)
 {
-    if ((hardware_unit >= OPS_COPP_MAX_UNITS) ||
+    if ((hardware_unit > OPS_COPP_MAX_UNITS) ||
         (hardware_unit < 0))  {
         return(-1);
     }
@@ -167,7 +166,7 @@ opennsl_field_group_t ops_copp_get_ingress_group_id_for_hw_unit (
 opennsl_field_group_t ops_copp_get_egress_group_id_for_hw_unit (
                                                     int hardware_unit)
 {
-    if ((hardware_unit >= OPS_COPP_MAX_UNITS) ||
+    if ((hardware_unit > OPS_COPP_MAX_UNITS) ||
         (hardware_unit < 0))  {
         return(-1);
     }
@@ -2337,6 +2336,8 @@ int ops_copp_ingress_fp_ipv4_options (
                                 uint32 unit,
                                 opennsl_field_entry_t* ingress_fp_entry)
 {
+    uint8                  address_data = OPS_COPP_DST_IP_LOCAL_DATA;
+    uint8                  address_mask = OPS_COPP_DST_IP_LOCAL_MASK;
     int32                  retval = -1;
 
     if (!ingress_fp_entry) {
@@ -2348,6 +2349,7 @@ int ops_copp_ingress_fp_ipv4_options (
      * IPv4 options packets on the following rules:-
      * 1. The packet should be an IPv4 packet
      * 2. The IP packet should have options feild should be set.
+     * 3. The destination IP address is local to the box
      */
     retval = opennsl_field_qualify_IpType(unit, *ingress_fp_entry,
                                           opennslFieldIpTypeIpv4Any);
@@ -2362,6 +2364,14 @@ int ops_copp_ingress_fp_ipv4_options (
     if (OPENNSL_FAILURE(retval)) {
         VLOG_ERR("     Ingress: Failed to qualify on ipv4 options"
                  " %s \n", opennsl_errmsg(retval));
+        return(OPS_COPP_FAILURE_CODE);
+    }
+
+    retval = opennsl_field_qualify_DstIpLocal(unit, *ingress_fp_entry,
+                                              address_data, address_mask);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("     Ingress: Failed to qualify on destination "
+                 "IP being Local %s \n", opennsl_errmsg(retval));
         return(OPS_COPP_FAILURE_CODE);
     }
 
@@ -2440,6 +2450,8 @@ int ops_copp_ingress_fp_ipv6_options (
                                 uint32 unit,
                                 opennsl_field_entry_t* ingress_fp_entry)
 {
+    uint8                  address_data = OPS_COPP_DST_IP_LOCAL_DATA;
+    uint8                  address_mask = OPS_COPP_DST_IP_LOCAL_MASK;
     int32                  retval = -1;
 
     if (!ingress_fp_entry) {
@@ -2451,6 +2463,7 @@ int ops_copp_ingress_fp_ipv6_options (
      * IPv4 options packets on the following rules:-
      * 1. The packet should be an IPv6 packet
      * 2. The IPv6 packet should have options feild should be set.
+     * 3. The destination IPv6 address is local to the box
      */
     retval = opennsl_field_qualify_IpType(unit, *ingress_fp_entry,
                                           opennslFieldIpTypeIpv6);
@@ -2465,6 +2478,14 @@ int ops_copp_ingress_fp_ipv6_options (
     if (OPENNSL_FAILURE(retval)) {
         VLOG_ERR("     Ingress: Failed to qualify on ipv6 options"
                  " %s \n", opennsl_errmsg(retval));
+        return(OPS_COPP_FAILURE_CODE);
+    }
+
+    retval = opennsl_field_qualify_DstIpLocal(unit, *ingress_fp_entry,
+                                              address_data, address_mask);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("     Ingress: Failed to qualify on destination "
+                 "IPv6 being Local %s \n", opennsl_errmsg(retval));
         return(OPS_COPP_FAILURE_CODE);
     }
 
@@ -2676,33 +2697,6 @@ int ops_copp_unknown_ip_unicast (uint32 unit)
     if (OPENNSL_FAILURE(retval)) {
         VLOG_ERR("     Packet class: Failed to program the "
                  "packet class rule for dest unknown IP %s\n",
-                 opennsl_errmsg(retval));
-        return(OPS_COPP_FAILURE_CODE);
-    }
-
-    /*
-     * Increment the rx index counter
-     */
-    ops_copp_packet_class_rx_index[unit]++;
-
-    /*
-     * Program the rx rule to send packets with priroty
-     * OPS_COPP_UNKNOWN_IP_COS_RESERVED to unknown IP cpuq
-     */
-    int_prio = OPS_COPP_UNKNOWN_IP_COS_RESERVED;
-    int_prio_mask = 0xff;
-
-    OPENNSL_RX_REASON_CLEAR_ALL(rx_reasons);
-    OPENNSL_RX_REASON_CLEAR_ALL(rx_reasons_mask);
-    retval  = opennsl_rx_cosq_mapping_set(unit,
-                                             ops_copp_packet_class_rx_index[unit],
-                                             rx_reasons, rx_reasons_mask,
-                                             int_prio, int_prio_mask, packet_type,
-                                             packet_type_mask, cpu_cosq);
-
-    if (OPENNSL_FAILURE(retval)) {
-        VLOG_ERR("     Packet class: Failed to program the packet"
-                 "class rule for glean packets  %s\n",
                  opennsl_errmsg(retval));
         return(OPS_COPP_FAILURE_CODE);
     }
@@ -3667,7 +3661,7 @@ static int ops_copp_ingress_fp_group_create ()
                                                 ++unit_iterator) {
         retval = opennsl_field_group_create(
                                 unit_iterator, OpennslFPQualSetIngress,
-                                FP_GROUP_PRIORITY_2,
+                                OPS_COPP_INGRESS_GROUP_PRIORITY,
                                 &ops_copp_ingress_fp_group_array[
                                                         unit_iterator]);
 
@@ -3724,7 +3718,7 @@ static int ops_copp_egress_fp_group_create ()
                                                     ++unit_iterator) {
         retval = opennsl_field_group_create(
                                     unit_iterator, OpennslFPQualSetEgress,
-                                    FP_GROUP_PRIORITY_2,
+                                    OPS_COPP_EGRESS_GROUP_PRIORITY,
                                     &ops_copp_egress_fp_group_array[
                                                             unit_iterator]);
 
@@ -4125,10 +4119,6 @@ copp_packet_class_mapper(enum copp_protocol_class ops_class)
             return PLUGIN_COPP_STP_PACKET;
         case COPP_UNKNOWN_IP_UNICAST:
             return PLUGIN_COPP_UNKNOWN_IP_UNICAST_PACKET;
-        case COPP_IPv4_OPTIONS:
-            return PLUGIN_COPP_IPV4_OPTIONS_PACKET;
-        case COPP_IPv6_OPTIONS:
-            return PLUGIN_COPP_IPV6_OPTIONS_PACKET;
         default:
             return PLUGIN_COPP_MAX_CLASSES;
     }

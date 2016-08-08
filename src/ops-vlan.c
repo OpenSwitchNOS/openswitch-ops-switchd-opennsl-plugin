@@ -33,7 +33,6 @@
 #include "ops-pbmp.h"
 #include "ops-port.h"
 #include "ops-vlan.h"
-#include "eventlog.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_vlan);
 
@@ -149,48 +148,6 @@ ops_vlan_dump(struct ds *ds, int vid)
     }
 
 } // ops_vlan_dump
-
-void
-ops_hw_vlan_dump(struct ds *ds)
-{
-    int unit;
-    char pfmt[_SHR_PBMP_FMT_LEN];
-    opennsl_vlan_data_t *vlan_list = NULL;
-    opennsl_error_t rc = OPENNSL_E_NONE;
-    int min_count = 0, vlan_count = 0;
-
-    for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
-        ds_put_format(ds, "Unit %d linked up ports = %s\n", unit,
-                      _SHR_PBMP_FMT(ops_get_link_up_pbm(unit), pfmt));
-        rc = opennsl_vlan_list (unit, &vlan_list, &vlan_count);
-        if (OPENNSL_FAILURE(rc)) {
-            ds_put_format(ds, "Unit %d, hardware vlan get error, rc=%d (%s)\n",
-                    unit, rc, opennsl_errmsg(rc));
-            return ;
-        }
-        if (vlan_count) {
-            ds_put_format(ds, "Total VLAN's :%d\n", vlan_count);
-            for (min_count = 0; min_count < vlan_count; min_count++) {
-                 char pfmt[_SHR_PBMP_FMT_LEN];
-                 ds_put_format(ds, "\nVLAN : %d\n",
-                                   vlan_list[min_count].vlan_tag);
-                 ds_put_format(ds, "PBM: %s ",
-                     _SHR_PBMP_FMT(vlan_list[min_count].port_bitmap, pfmt));
-                 ds_put_format(ds, "UBM: %s ",
-                     _SHR_PBMP_FMT(vlan_list[min_count].ut_port_bitmap, pfmt));
-            }
-            rc = OPENNSL_E_NONE;
-            rc = opennsl_vlan_list_destroy(unit, vlan_list, vlan_count);
-            if (OPENNSL_FAILURE(rc)) {
-                ds_put_format(ds, "Unit %d, hardware vlan list error,"
-                                 " rc=%d (%s)\n", unit, rc, opennsl_errmsg(rc));
-                return ;
-            }
-        }
-        ds_put_format(ds, "\n\n");
-    }
-} // ops_hw_vlan_dump
-
 
 ////////////////////////////////// HW API //////////////////////////////////
 
@@ -372,10 +329,8 @@ hw_create_vlan(int unit, int vid)
         // Ignore duplicated create requests.
         VLOG_ERR("Unit %d VLAN %d create error, rc=%d (%s)",
                  unit, vid, rc, opennsl_errmsg(rc));
-        log_event("HW_CREATE_VLAN_FAILURE", EV_KV("vid", "%d", vid));
-    }else {
-        log_event("HW_CREATE_VLAN_SUCCESS", EV_KV("vid", "%d", vid));
     }
+
     SW_VLAN_DBG("done: rc=%s", opennsl_errmsg(rc));
 
 } // hw_create_vlan
@@ -391,9 +346,6 @@ hw_destroy_vlan(int unit, int vid)
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Unit %d, VLAN %d destroy error, rc=%d (%s)",
                  unit, vid, rc, opennsl_errmsg(rc));
-        log_event("HW_DESTROY_VLAN_FAILURE", EV_KV("vid", "%d", vid));
-    }else {
-        log_event("HW_DESTROY_VLAN_SUCCESS", EV_KV("vid", "%d", vid));
     }
 
     SW_VLAN_DBG("done: rc=%s", opennsl_errmsg(rc));
@@ -486,13 +438,13 @@ get_vlan_data(int vid, bool internal)
 
     // VLAN data hasn't been created yet.
     vlanp = malloc(sizeof(ops_vlan_data_t));
+    vlanp->user_created = 0;
     if (!vlanp) {
         VLOG_ERR("Failed to allocate memory for %s VLAN vid=%d",
                  internal ? "internal" : "", vid);
         return NULL;
     }
 
-    vlanp->user_created = 0;
     vlanp->vid = vid;
     vlanp->hw_created = 0;
 
@@ -1289,6 +1241,7 @@ vlan_reconfig_on_link_change(int unit, opennsl_port_t hw_port, int link_is_up)
 bool is_user_created_vlan(int vid)
 {
     ops_vlan_data_t *vlanp = ops_vlans[vid];
+    vlanp = ops_vlans[vid];
 
     return vlanp->user_created;
 }
@@ -1296,6 +1249,7 @@ bool is_user_created_vlan(int vid)
 void set_created_by_user(int vid, bool status)
 {
     ops_vlan_data_t *vlanp = ops_vlans[vid];
+    vlanp = ops_vlans[vid];
 
     if (vlanp) {
         vlanp->user_created = status;
