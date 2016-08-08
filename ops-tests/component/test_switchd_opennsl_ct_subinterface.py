@@ -449,8 +449,8 @@ def test_switchd_opennsl_plugin_subinterface_creation(topology, step):
     command = "ovs-appctl plugin/debug vlan 20"
     sleep(5)
     bufferout = sw1(command, shell='bash')
-    assert output_trunk in bufferout
-    assert output_subinterface in bufferout
+    assert output_trunk_zero in bufferout
+    assert output_subinterface_zero in bufferout
     assert l2_port_bitmap in bufferout
 
     # enable the subinterface
