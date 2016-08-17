@@ -116,6 +116,555 @@ bcmsdk_provider_node_cast(const struct ofproto *ofproto)
 static struct hmap all_bcmsdk_provider_nodes =
               HMAP_INITIALIZER(&all_bcmsdk_provider_nodes);
 
+static int ofproto_is_ofdpa(const struct ofproto *ofproto)
+{
+    int is_ofdpa = 0;
+
+    if (ofproto) {
+        if (strcmp(ofproto->type, OFDPA_DATAPATH_TYPE) == 0) {
+            is_ofdpa = 1;
+        }
+    }
+    return(is_ofdpa);
+}
+
+static enum ofperr ovs_ofdpa_match_fields_masks_get(const struct match *match, ofdpaFlowEntry_t *flow)
+{
+    enum ofperr err = 0;
+    uint16_t vid, vid_mask;
+
+    switch (flow->tableId) {
+    case OFDPA_FLOW_TABLE_ID_VLAN:
+        flow->flowData.vlanFlowEntry.match_criteria.inPort = match->flow.in_port.ofp_port;
+        if (match->wc.masks.in_port.ofp_port == 0xFFFF) {
+            flow->flowData.vlanFlowEntry.match_criteria.inPortMask = OFDPA_INPORT_EXACT_MASK;
+        } else {
+            flow->flowData.vlanFlowEntry.match_criteria.inPortMask = match->wc.masks.in_port.ofp_port;
+        }
+
+        /* DEI bit indicating 'present' is included in the VID match field */
+        vid = ntohs(match->flow.vlan_tci) & (VLAN_VID_MASK | VLAN_CFI);
+        vid_mask = ntohs(match->wc.masks.vlan_tci) & (VLAN_VID_MASK | VLAN_CFI);
+
+        flow->flowData.vlanFlowEntry.match_criteria.vlanId = vid;
+
+        if (vid_mask != 0) {
+            if (vid == OFDPA_VID_PRESENT) {   /* All */
+                flow->flowData.vlanFlowEntry.match_criteria.vlanIdMask = OFDPA_VID_PRESENT;
+            } else if ((vid & OFDPA_VID_EXACT_MASK) == OFDPA_VID_NONE) {      /* untagged */
+                flow->flowData.vlanFlowEntry.match_criteria.vlanIdMask = OFDPA_VID_EXACT_MASK;
+            } else {     /* tagged */
+                flow->flowData.vlanFlowEntry.match_criteria.vlanIdMask = (OFDPA_VID_PRESENT | OFDPA_VID_EXACT_MASK);
+            }
+        } else {         /* ALL */
+            flow->flowData.vlanFlowEntry.match_criteria.vlanId = OFDPA_VID_NONE;
+            flow->flowData.vlanFlowEntry.match_criteria.vlanIdMask = OFDPA_VID_FIELD_MASK;
+        }
+
+        break;
+
+    case OFDPA_FLOW_TABLE_ID_BRIDGING:
+        flow->flowData.bridgingFlowEntry.match_criteria.tunnelId     = ntohll(match->flow.tunnel.tun_id);
+        flow->flowData.bridgingFlowEntry.match_criteria.tunnelIdMask = ntohll(match->wc.masks.tunnel.tun_id);
+
+        memcpy(&flow->flowData.bridgingFlowEntry.match_criteria.destMac, &match->flow.dl_dst, OFDPA_MAC_ADDR_LEN);
+        memcpy(&flow->flowData.bridgingFlowEntry.match_criteria.destMacMask, &match->wc.masks.dl_dst, OFDPA_MAC_ADDR_LEN);
+
+        break;
+
+    default:
+        VLOG_ERR("Invalid table id %d", flow->tableId);
+        err = OFPERR_OFPBRC_BAD_TYPE;
+        break;
+    }
+
+    return err;
+}
+
+static enum ofperr ovs_ofdpa_translate_openflow_actions(const struct ofpact *act, ofdpaFlowEntry_t *flow)
+{
+    ofp_port_t port_no;
+
+    switch (act->type) {
+    case OFPACT_OUTPUT:
+    {
+        port_no = ofpact_get_OUTPUT(act)->port;
+
+        switch (port_no) {
+        case OFPP_CONTROLLER:
+        {
+            switch (flow->tableId) {
+            case OFDPA_FLOW_TABLE_ID_BRIDGING:
+                flow->flowData.bridgingFlowEntry.outputPort = OFDPA_PORT_CONTROLLER;
+                break;
+            default:
+                VLOG_ERR("Unsupported output port action (OFPP_CONTROLLER) for Table: %d", flow->tableId);
+                return OFPERR_OFPHFC_INCOMPATIBLE;
+            }
+
+            break;
+        }
+
+        case OFPP_LOCAL:
+        case OFPP_FLOOD:
+        case OFPP_ALL:
+        case OFPP_TABLE:
+        case OFPP_IN_PORT:
+        case OFPP_NORMAL:
+            VLOG_ERR("Unsupported port type for output port action 0x%x", port_no);
+            return OFPERR_OFPBIC_UNSUP_INST;
+
+        default:
+            /* Physical or logical port as output port */
+
+            /* NOTE: currently no flow entry types support output to physical or logical port (only OFPP_CONTROLLER) */
+            VLOG_ERR("Unsupported port type for output port action 0x%x", port_no);
+            return OFPERR_OFPBIC_UNSUP_INST;
+            break;
+        }
+        break;
+    }
+
+    case OFPACT_SET_FIELD:
+    {
+        enum mf_field_id id = ofpact_get_SET_FIELD(act)->field->id;
+        switch (id) {
+        case MFF_TUN_ID:
+        {
+            ovs_be64 tunnel_id;
+
+            tunnel_id = ntohll(ofpact_get_SET_FIELD(act)->value.be64);
+
+            if (flow->tableId == OFDPA_FLOW_TABLE_ID_VLAN) {
+                flow->flowData.vlanFlowEntry.tunnelIdAction = 1;
+                flow->flowData.vlanFlowEntry.tunnelId = tunnel_id;
+            } else {
+                VLOG_ERR("Unsupported set-field %d for table %d", id, flow->tableId);
+                return OFPERR_OFPHFC_INCOMPATIBLE;
+            }
+
+            break;
+        }
+
+        default:
+            VLOG_ERR("Unsupported set-field %d for table %d", id, flow->tableId);
+            return OFPERR_OFPHFC_INCOMPATIBLE;
+        }
+        break;
+    }
+
+    case OFPACT_GROUP:
+    {
+        uint32_t group_id;
+
+        group_id = ofpact_get_GROUP(act)->group_id;
+
+        switch (flow->tableId) {
+        case OFDPA_FLOW_TABLE_ID_BRIDGING:
+            flow->flowData.bridgingFlowEntry.groupID = group_id;
+            break;
+
+        default:
+            VLOG_ERR("Unsupported action: '%s' (%d), table %d", ofpact_name(act->type), act->type, flow->tableId);
+            return OFPERR_OFPHFC_INCOMPATIBLE;
+        }
+        break;
+    }
+
+    default:
+        VLOG_ERR("Unsupported action: '%s' (%d), table %d", ofpact_name(act->type), act->type, flow->tableId);
+        return OFPERR_OFPHFC_INCOMPATIBLE;
+    }
+
+    return 0;
+}
+
+static enum ofperr
+ovs_ofdpa_instructions_get(const struct rule_actions *rule_action, ofdpaFlowEntry_t *flow)
+{
+    enum ofperr err;
+    uint8_t next_table_id;
+    const struct ofpact *act;
+    const struct ofpact *write_act;
+
+    OFPACT_FOR_EACH(act, rule_action->ofpacts, rule_action->ofpacts_len) {
+        switch (ovs_instruction_type_from_ofpact_type(act->type)) {
+        case OVSINST_OFPIT11_WRITE_ACTIONS:
+            switch (flow->tableId) {
+            case OFDPA_FLOW_TABLE_ID_VLAN:
+            case OFDPA_FLOW_TABLE_ID_BRIDGING:
+                break;
+            default:
+                VLOG_ERR("Unsupported instruction: '%s' (%d), table %d", ofpact_name(act->type), act->type, flow->tableId);
+                return OFPERR_OFPHFC_INCOMPATIBLE;
+            }
+            write_act = ofpact_get_WRITE_ACTIONS(act)->actions;
+            err = ovs_ofdpa_translate_openflow_actions(write_act, flow);
+            if (err != 0) {
+                return err;
+            }
+            break;
+
+        case OVSINST_OFPIT11_GOTO_TABLE:
+            next_table_id = ofpact_get_GOTO_TABLE(act)->table_id;
+            switch (flow->tableId) {
+            case OFDPA_FLOW_TABLE_ID_VLAN:
+                flow->flowData.vlanFlowEntry.gotoTableId = next_table_id;
+                break;
+            case OFDPA_FLOW_TABLE_ID_BRIDGING:
+                flow->flowData.bridgingFlowEntry.gotoTableId = next_table_id;
+                break;
+            default:
+                VLOG_ERR("Unsupported instruction: '%s' (%d), table %d", ofpact_name(act->type), act->type, flow->tableId);
+                return OFPERR_OFPHFC_INCOMPATIBLE;
+            }
+            break;
+
+        case OVSINST_OFPIT11_APPLY_ACTIONS:
+            switch (flow->tableId) {
+            case OFDPA_FLOW_TABLE_ID_INGRESS_PORT:
+            case OFDPA_FLOW_TABLE_ID_VLAN:
+            case OFDPA_FLOW_TABLE_ID_TERMINATION_MAC:
+            case OFDPA_FLOW_TABLE_ID_BRIDGING:
+            case OFDPA_FLOW_TABLE_ID_ACL_POLICY:
+                break;
+            default:
+                VLOG_ERR("Unsupported instruction: '%s' (%d), table %d", ofpact_name(act->type), act->type, flow->tableId);
+                return OFPERR_OFPHFC_INCOMPATIBLE;
+            }
+
+            err = ovs_ofdpa_translate_openflow_actions(act, flow);
+            if (err != 0) {
+                return err;
+            }
+            break;
+        default:
+            VLOG_ERR("Unsupported instruction: '%s' (%d), table %d", ofpact_name(act->type), act->type, flow->tableId);
+            return OFPERR_OFPHFC_INCOMPATIBLE;
+        }
+    }
+    return 0;
+}
+
+static enum ofperr
+ofdpa_flow_add(struct rule *rule_)
+{
+    enum ofperr err;
+    struct match megamatch;
+    ofdpaFlowEntry_t flow;
+    OFDPA_ERROR_t ofdpa_rv = OFDPA_E_NONE;
+
+    memset(&flow, 0, sizeof(flow));
+    minimatch_expand(&rule_->cr.match, &megamatch);
+    flow.tableId   = rule_->table_id;
+    flow.hard_time = rule_->hard_timeout;
+    flow.idle_time = rule_->idle_timeout;
+    flow.priority  = rule_->cr.priority;
+    flow.cookie    = rule_->flow_cookie;
+
+    /* Get the match fields and masks from LOCI match structure */
+    err = ovs_ofdpa_match_fields_masks_get(&megamatch, &flow);
+    if (err) {
+        VLOG_ERR("Error getting match fields and masks. (err = %d)", err);
+        return err;
+    }
+
+    /* Get the instructions set from the flow add object */
+    err = ovs_ofdpa_instructions_get(rule_->actions, &flow);
+    if (err) {
+        VLOG_ERR("Failed to get flow instructions. (err = 0x%8x)", err);
+        return err;
+    }
+
+    /* Submit the changes to ofdpa */
+    ofdpa_rv = ofdpaFlowAdd(&flow);
+    if (ofdpa_rv != OFDPA_E_NONE) {
+        VLOG_ERR("Failed to add flow. (ofdpa_rv = %d)", ofdpa_rv);
+    } else {
+        VLOG_DBG("Flow added successfully. (ofdpa_rv = %d)", ofdpa_rv);
+    }
+
+    if (ofdpa_rv == OFDPA_E_NONE)
+        return 0;
+    else
+        return OFPERR_OFPHFC_INCOMPATIBLE;
+}
+
+static enum
+ofperr ofdpa_flow_modify(struct rule *rule_)
+{
+    enum ofperr err;
+    struct match megamatch;
+    ofdpaFlowEntry_t flow;
+    OFDPA_ERROR_t ofdpa_rv = OFDPA_E_NONE;
+
+    memset(&flow, 0, sizeof(flow));
+
+    minimatch_expand(&rule_->cr.match, &megamatch);
+    flow.tableId   = rule_->table_id;
+    flow.hard_time = rule_->hard_timeout;
+    flow.idle_time = rule_->idle_timeout;
+    flow.priority  = rule_->cr.priority;
+    flow.cookie    = rule_->flow_cookie;
+
+    /* Get the match fields and masks from LOCI match structure */
+    err = ovs_ofdpa_match_fields_masks_get(&megamatch, &flow);
+    if (err) {
+        VLOG_ERR("Error getting match fields and masks. (err = %d)", err);
+        return err;
+    }
+
+    /* Get the instructions set from the flow add object */
+    err = ovs_ofdpa_instructions_get(rule_->actions, &flow);
+    if (err) {
+        VLOG_ERR("Failed to get flow instructions. (err = 0x%8x)", err);
+        return err;
+    }
+
+    /* Submit the changes to ofdpa */
+    ofdpa_rv = ofdpaFlowModify(&flow);
+    if (ofdpa_rv != OFDPA_E_NONE) {
+        VLOG_ERR("Failed to modify flow. (ofdpa_rv = %d)", ofdpa_rv);
+    } else {
+        VLOG_DBG("Flow modified successfully. (ofdpa_rv = %d)", ofdpa_rv);
+    }
+
+    if (ofdpa_rv == OFDPA_E_NONE)
+        return 0;
+    else
+        return OFPERR_OFPHFC_INCOMPATIBLE;
+}
+
+enum ofperr ofdpa_flow_delete(struct rule *rule_)
+{
+    enum ofperr err;
+    struct match megamatch;
+    ofdpaFlowEntry_t flow;
+    OFDPA_ERROR_t ofdpa_rv = OFDPA_E_NONE;
+
+    memset(&flow, 0, sizeof(flow));
+
+    minimatch_expand(&rule_->cr.match, &megamatch);
+    flow.tableId   = rule_->table_id;
+    flow.hard_time = rule_->hard_timeout;
+    flow.idle_time = rule_->idle_timeout;
+    flow.priority  = rule_->cr.priority;
+    flow.cookie    = rule_->flow_cookie;
+
+
+    /* Get the match fields and masks from LOCI match structure */
+    err = ovs_ofdpa_match_fields_masks_get(&megamatch, &flow);
+    if (err) {
+        VLOG_ERR("Error getting match fields and masks. (err = %d)", err);
+        return err;
+    }
+
+    /* Get the instructions set from the LOCI flow add object */
+    err = ovs_ofdpa_instructions_get(rule_->actions, &flow);
+    if (err) {
+        VLOG_ERR("Failed to get flow instructions. (err = 0x%8x)", err);
+        return err;
+    }
+
+    /* Delete the flow entry */
+    ofdpa_rv = ofdpaFlowDelete(&flow);
+    if (ofdpa_rv != OFDPA_E_NONE) {
+        VLOG_ERR("Failed to delete flow. (ofdpa_rv = %d)", ofdpa_rv);
+    } else {
+        VLOG_DBG("Flow deleted successfully. (ofdpa_rv = %d)", ofdpa_rv);
+    }
+
+    if (ofdpa_rv == OFDPA_E_NONE)
+        return 0;
+    else
+        return OFPERR_OFPHFC_INCOMPATIBLE;
+}
+
+static enum ofperr
+ovs_ofdpa_translate_group_actions(struct ofputil_bucket *bucket,
+                                  ovs_ofdpa_group_bucket_t *group_bucket,
+                                  uint64_t *group_action_bitmap,
+                                  uint64_t *group_action_sf_bitmap)
+{
+    ofp_port_t port_no;
+    const struct ofpact *act;
+
+    OFPACT_FOR_EACH(act, bucket->ofpacts, bucket->ofpacts_len) {
+        switch (act->type) {
+        case OFPACT_OUTPUT:
+        {
+            port_no = ofpact_get_OUTPUT(act)->port;
+            switch (port_no) {
+            case OFPP_CONTROLLER:
+            case OFPP_FLOOD:
+            case OFPP_ALL:
+            case OFPP_TABLE:
+            case OFPP_LOCAL:
+            case OFPP_IN_PORT:
+            case OFPP_NORMAL:
+                VLOG_ERR("Unsupported port for group output port action 0x%x", port_no);
+                return OFPERR_OFPHFC_INCOMPATIBLE;
+            default:
+                group_bucket->outputPort = port_no;
+                break;
+            }
+            break;
+        }
+
+        case OFPACT_STRIP_VLAN: /*OF_ACTION_POP_VLAN*/
+            group_bucket->popVlanTag = 1;
+            break;
+
+        default:
+            VLOG_ERR("unsupported action type %d", act->type);
+            return OFPERR_OFPHFC_INCOMPATIBLE;
+        }
+    }
+
+    VLOG_DBG("group_action_bitmap is 0x%" PRIx64 ", group_action_sf_bitmap is 0x%" PRIx64 "",
+             *group_action_bitmap, *group_action_sf_bitmap);
+
+    return 0;
+}
+
+static enum ofperr
+ovs_ofdpa_translate_group_buckets(uint32_t group_id,
+                                  struct ovs_list *of_buckets,
+                                  int is_add_cmd)
+{
+    enum ofperr err;
+    uint16_t bucket_index = 0;
+    ovs_ofdpa_group_bucket_t group_bucket;
+    uint32_t group_type;
+    ofdpaGroupEntry_t group_entry;
+    ofdpaGroupBucketEntry_t group_bucket_entry;
+    OFDPA_ERROR_t ofdpa_rv = OFDPA_E_FAIL;
+    int group_added = 0;
+
+    uint64_t group_action_bitmap = 0;
+    uint64_t group_action_sf_bitmap = 0;
+    struct ofputil_bucket *bucket;
+
+    LIST_FOR_EACH(bucket, list_node, of_buckets) {
+        VLOG_DBG("bucket weight %d watch_port %d watch_group %d act_length %zd",
+                 bucket->weight, bucket->watch_port,
+                 bucket->watch_group, bucket->ofpacts_len);
+
+        memset(&group_bucket, 0, sizeof(group_bucket));
+
+        err = ovs_ofdpa_translate_group_actions(bucket, &group_bucket, &group_action_bitmap, &group_action_sf_bitmap);
+
+        if (err < 0) {
+            VLOG_ERR("Error in translating group actions error %d", err);
+            if (group_added == 1) {
+                /* Delete the added group */
+                (void)ofdpaGroupDelete(group_id);
+            }
+            return err;
+        }
+
+        ofdpaGroupTypeGet(group_id, &group_type);
+
+        memset(&group_bucket_entry, 0, sizeof(group_bucket_entry));
+        group_bucket_entry.groupId = group_id;
+        group_bucket_entry.bucketIndex = bucket_index;
+
+        switch (group_type) {
+
+        case OFDPA_GROUP_ENTRY_TYPE_L2_INTERFACE:
+            group_bucket_entry.bucketData.l2Interface.outputPort = group_bucket.outputPort;
+            group_bucket_entry.bucketData.l2Interface.popVlanTag = group_bucket.popVlanTag;
+
+            break;
+
+        default:
+            err = OFPERR_OFPHFC_EPERM;
+            VLOG_ERR("Invalid GROUP_TYPE %d", group_type);
+            break;
+        }
+
+        if (err) {
+            if (err == OFPERR_OFPHFC_INCOMPATIBLE) {
+                VLOG_ERR("Incompatible fields for Group Type err %d", err);
+            }
+            if (group_added == 1) {
+                /* Delete the added group */
+                (void)ofdpaGroupDelete(group_id);
+            }
+            return err;
+        }
+
+        if (is_add_cmd == true) {
+            if (bucket_index == 0) {
+                /* First Bucket; Add Group first*/
+                group_entry.groupId = group_id;
+                ofdpa_rv = ofdpaGroupAdd(&group_entry);
+                if (ofdpa_rv != OFDPA_E_NONE) {
+                    VLOG_ERR("Error in adding Group, rv = %d", ofdpa_rv);
+                    break;
+                }
+                group_added = 1;
+            }
+        } else {      /* OF_GROUP_MODIFY */
+            if (bucket_index == 0) {
+                /* First Bucket; Delete all buckets first */
+                ofdpa_rv = ofdpaGroupBucketsDeleteAll(group_id);
+                if (ofdpa_rv != OFDPA_E_NONE) {
+                    VLOG_ERR("Error in deleting Group buckets, rv = %d", ofdpa_rv);
+                    break;
+                }
+            }
+        }
+
+        ofdpa_rv = ofdpaGroupBucketEntryAdd(&group_bucket_entry);
+        if (ofdpa_rv != OFDPA_E_NONE) {
+            VLOG_ERR("Error in adding Group bucket, rv = %d",ofdpa_rv);
+            if (group_added == 1) {
+                /* Delete the added group */
+                (void)ofdpaGroupDelete(group_id);
+            } else {    /* OF_GROUP_MODIFY */
+                /* Need to clean up and delete Group here as well.
+                Will be done by the caller as the Group also needs to
+                be deleted from the Indigo database. */
+            }
+            break;
+        }
+
+        bucket_index++;
+    }
+
+    if (ofdpa_rv == OFDPA_E_NONE)
+        return 0;
+    else
+        return OFPERR_OFPHFC_INCOMPATIBLE;
+}
+
+enum ofperr ofdpa_group_add(struct bcmsdk_provider_group *group)
+{
+    if (group->up.type != OFPGT11_ALL) {
+        return OFPERR_OFPBIC_UNSUP_INST;
+    }
+
+    return ovs_ofdpa_translate_group_buckets(group->up.group_id, &group->up.buckets, 1 /*add*/);
+}
+
+enum ofperr ofdpa_group_modify(struct bcmsdk_provider_group *group)
+{
+    return ovs_ofdpa_translate_group_buckets(group->up.group_id, &group->up.buckets, 0 /*modify*/);
+}
+
+void ofdpa_group_delete(uint32_t id)
+{
+    OFDPA_ERROR_t ofdpa_rv;
+
+    ofdpa_rv = ofdpaGroupDelete(id);
+    if (ofdpa_rv != OFDPA_E_NONE) {
+        VLOG_ERR("Group Delete failed, rv = %d",ofdpa_rv);
+    }
+
+    return;
+}
+
 /* Factory functions. */
 
 static void
@@ -605,7 +1154,6 @@ bundle_destroy(struct ofbundle *bundle)
 
         type = netdev_get_type(port->up.netdev);
 
-        port_unconfigure_ips(bundle);
         if (strcmp(type, OVSREC_INTERFACE_TYPE_SYSTEM) == 0) {
 
             if (bundle->l3_intf) {
@@ -631,6 +1179,7 @@ bundle_destroy(struct ofbundle *bundle)
                             bundle->l3_intf->l3a_vid,
                             false);
                 } else {
+                    port_unconfigure_ips(bundle);
                     netdev_bcmsdk_get_hw_info(port->up.netdev, &hw_unit, &hw_port, mac);
                     VLOG_DBG("%s destroy the l3 interface hw_port = %d", __FUNCTION__, hw_port);
                     ops_routing_disable_l3_interface(hw_unit,
@@ -652,6 +1201,7 @@ bundle_destroy(struct ofbundle *bundle)
         } else if (strcmp(type, OVSREC_INTERFACE_TYPE_VLANSUBINT) == 0) {
             VLOG_DBG("%s destroy the subinterface %s", __FUNCTION__, bundle->name);
             if (bundle->l3_intf) {
+                port_unconfigure_ips(bundle);
                 ops_routing_disable_l3_subinterface(bundle->hw_unit,
                         bundle->hw_port,
                         bundle->l3_intf,
@@ -662,6 +1212,7 @@ bundle_destroy(struct ofbundle *bundle)
         } else if (strcmp(type, OVSREC_INTERFACE_TYPE_INTERNAL) == 0) {
             VLOG_DBG("%s destroy the internal interface",__FUNCTION__);
             if (bundle->l3_intf) {
+                port_unconfigure_ips(bundle);
                 opennsl_l3_intf_delete(bundle->hw_unit, bundle->l3_intf);
                 bundle->l3_intf = NULL;
             }
@@ -1302,8 +1853,9 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     }
 
     /* Check for ip changes */
-    /* if ( (bundle->l3_intf) ) */
-    port_ip_reconfigure(ofproto_, bundle, s);
+    if ( (bundle->l3_intf) ) {
+        port_ip_reconfigure(ofproto_, bundle, s);
+    }
 
     /* Look for port configuration options
      * FIXME: - fill up stubs with actual actions */
@@ -2118,6 +2670,20 @@ static struct bcmsdk_provider_rule
     return NULL;
 }
 
+static inline void bcmsdk_provider_rule_ref(struct bcmsdk_provider_rule *rule)
+{
+    if (rule) {
+        ofproto_rule_ref(&(rule->up));
+    }
+}
+
+static inline void bcmsdk_provider_rule_unref(struct bcmsdk_provider_rule *rule)
+{
+    if (rule) {
+        ofproto_rule_unref(&(rule->up));
+    }
+}
+
 static struct rule *
 rule_alloc(void)
 {
@@ -2136,13 +2702,61 @@ static enum ofperr
 rule_construct(struct rule *rule_ OVS_UNUSED)
     OVS_NO_THREAD_SAFETY_ANALYSIS
 {
+    struct bcmsdk_provider_rule *rule = bcmsdk_provider_rule_cast(rule_);
+
+    VLOG_DBG("==========in ofdpa %s, %d", __FUNCTION__,__LINE__);
+    ovs_mutex_init(&rule->stats_mutex);
+    rule->new_rule = NULL;
+
     return 0;
 }
 
-static void rule_insert(struct rule *rule, struct rule *old_rule,
-                    bool forward_stats)
+static void rule_insert(struct rule *rule_, struct rule *old_rule_,
+                        bool forward_stats)
 OVS_REQUIRES(ofproto_mutex)
 {
+    struct bcmsdk_provider_rule *rule = bcmsdk_provider_rule_cast(rule_);
+    enum ofperr error;
+
+    if (ofproto_is_ofdpa(rule->up.ofproto)) {
+        VLOG_DBG("==========in ofdpa %s, %d", __FUNCTION__,__LINE__);
+
+        if (old_rule_ == NULL) {
+            VLOG_DBG("==========in ofdpa %s, %d", __FUNCTION__,__LINE__);
+
+            ovs_mutex_lock(&rule->stats_mutex);
+
+            error = ofdpa_flow_add(rule_);
+
+            ovs_mutex_unlock(&rule->stats_mutex);
+
+            if (error) {
+                VLOG_ERR("Error adding flow. [error = %d]", error);
+            }
+        } else {
+            struct bcmsdk_provider_rule *old_rule = bcmsdk_provider_rule_cast(old_rule_);
+
+            VLOG_DBG("==========in ofdpa %s, %d", __FUNCTION__,__LINE__);
+
+           /* Take a reference to the new rule, and refer all stats updates from
+            * the old rule to the new rule. */
+            bcmsdk_provider_rule_ref(rule);
+
+            ovs_mutex_lock(&old_rule->stats_mutex);
+            ovs_mutex_lock(&rule->stats_mutex);
+
+            error = ofdpa_flow_modify(rule_);
+            old_rule->new_rule = rule;
+
+            ovs_mutex_unlock(&rule->stats_mutex);
+            ovs_mutex_unlock(&old_rule->stats_mutex);
+
+            if (error) {
+                VLOG_ERR("Error modifying flow. [error = %d]", error);
+            }
+        }
+    }
+
     return;
 }
 
@@ -2150,12 +2764,44 @@ static void
 rule_delete(struct rule *rule_ OVS_UNUSED)
     OVS_REQUIRES(ofproto_mutex)
 {
+    struct bcmsdk_provider_rule *rule = bcmsdk_provider_rule_cast(rule_);
+    enum ofperr error;
+
+    if (ofproto_is_ofdpa(rule->up.ofproto)) {
+        VLOG_DBG("==========in ofdpa %s, %d", __FUNCTION__,__LINE__);
+
+        ovs_mutex_lock(&rule->stats_mutex);
+
+       /*
+        * Do not delete flows that were the "old" rule in a call to
+        * rule_insert() for a modify operation. This is because OF-DPA
+        * modifies the rule in place, rather than adding the new rule
+        * along with the old rule. When OVS invokes rule_delete() for
+        * the "old" rule, there is no "old" rule in OF-DPA to delete.
+        */
+        if (!rule->new_rule) {
+            error = ofdpa_flow_delete(rule_);
+            if (error) {
+                VLOG_ERR("Error deleting flow. [error = %d]", error);
+            }
+        }
+        ovs_mutex_unlock(&rule->stats_mutex);
+    }
     return;
 }
 
 static void
 rule_destruct(struct rule *rule_ OVS_UNUSED)
 {
+    struct bcmsdk_provider_rule *rule = bcmsdk_provider_rule_cast(rule_);
+
+    ovs_mutex_destroy(&rule->stats_mutex);
+
+    /* Release reference to the new rule, if any. */
+    if (rule->new_rule) {
+        bcmsdk_provider_rule_unref(rule->new_rule);
+    }
+
     return;
 }
 

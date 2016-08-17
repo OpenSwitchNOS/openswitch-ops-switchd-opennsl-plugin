@@ -200,6 +200,9 @@ void ops_sflow_write_sampled_pkt(opennsl_pkt_t *pkt)
     SFLFlow_sample_element  hdrElem;
     SFLSampled_header       *header;
     SFLSampler              *sampler;
+    struct netdev_stats     stats;
+
+    memset(&stats, 0, sizeof stats);
 
     if (pkt == NULL) {
         VLOG_ERR("NULL sFlow pkt received. Can't be buffered.");
@@ -250,6 +253,24 @@ void ops_sflow_write_sampled_pkt(opennsl_pkt_t *pkt)
 
     fs.input = pkt->src_port;
     fs.output = pkt->dest_port;
+
+    /* Calculate the sample pool data by gathering interface statistics
+     * from ASIC and aggregating unicast, multicast and broadcast packets.
+     * NOTE: Packet counters will wrap around (this is expected behavior). */
+    if (OPENNSL_RX_REASON_GET(pkt->rx_reasons,
+                              opennslRxReasonSampleSource)) {
+        /* Packets were sampled at ingress so sample pool will include
+         * all RX packets. */
+        netdev_bcmsdk_get_interface_stats(unit, pkt->src_port, &stats);
+        fs.sample_pool = stats.rx_packets;
+    }
+    if (OPENNSL_RX_REASON_GET(pkt->rx_reasons,
+                              opennslRxReasonSampleDest)) {
+        /* Packets sampled at egress so sample pool will include
+         * all TX packets. */
+        netdev_bcmsdk_get_interface_stats(unit, pkt->dest_port, &stats);
+        fs.sample_pool = stats.tx_packets;
+    }
 
     /* Submit the flow sample to be encoded into the next datagram. */
     SFLADD_ELEMENT(&fs, &hdrElem);
