@@ -1455,7 +1455,8 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     }
 
     /* Update set of ports. */
-    if ((!ofproto->vrf) || (ofproto->vrf && bundle->l3_intf)) {
+    if ((!ofproto->vrf) || (ofproto->vrf && !s->hw_bond_should_exist) ||
+        (ofproto->vrf && s->hw_bond_should_exist && bundle->l3_intf)) {
         ok = true;
         for (i = 0; i < s->n_slaves; i++) {
             if (!bundle_add_port(bundle, s->slaves[i], NULL)) {
