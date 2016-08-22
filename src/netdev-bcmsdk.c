@@ -122,7 +122,7 @@ struct netdev_bcmsdk {
     /* Pointer to parent port port_info data.
      * Valid for split children ports only. */
     struct ops_port_info *split_parent_portp;
-
+    int vport_id;
     opennsl_vlan_t subintf_vlan_id;
 
     /* Currently being used only by type "internal" interfaces */
@@ -347,6 +347,7 @@ netdev_bcmsdk_construct(struct netdev *netdev_)
     netdev->split_parent_portp = NULL;
     netdev->subintf_vlan_id = 0;
     netdev->link_state = 0;
+    netdev->vport_id = -1;
 
     hmap_init(&netdev->egress_id_map);
     memset(&netdev->ingress_stats_object, 0, sizeof(netdev->ingress_stats_object));
@@ -1415,6 +1416,39 @@ netdev_bcmsdk_link_state_callback(int hw_unit, int hw_id, int link_status)
     seq_change(connectivity_seq_get());
 }
 
+bool netdev_bcmsdk_get_vport_id(int hw_unit, int port, int *vport_id)
+{
+    struct netdev_bcmsdk *dev = netdev_from_hw_id(hw_unit, port);
+    if(dev && vport_id) {
+        ovs_mutex_lock(&dev->mutex);
+        *vport_id = dev->vport_id;
+        ovs_mutex_unlock(&dev->mutex);
+        return true;
+    }
+    return false;
+}
+
+void netdev_bcmsdk_set_vport_id(int hw_unit, int port, int vport_id)
+{
+    struct netdev_bcmsdk *dev = netdev_from_hw_id(hw_unit, port);
+    if(dev) {
+        ovs_mutex_lock(&dev->mutex);
+        dev->vport_id = vport_id;
+        ovs_mutex_unlock(&dev->mutex);
+    }
+}
+
+bool netdevv_bcmsdk_get_link_status(int hw_unit, int port)
+{
+    bool status = false;
+    struct netdev_bcmsdk *dev = netdev_from_hw_id(hw_unit, port);
+
+    if(dev) {
+        netdev_bcmsdk_get_carrier(&dev->up, &status);
+    }
+    return status;
+}
+
 static struct netdev_bcmsdk *
 netdev_find_name(const char *name)
 {
@@ -1450,6 +1484,12 @@ bool netdev_hw_id_from_name(const char *name, int *hw_unit, int *hw_id)
     else {
         return false;
     }
+}
+
+struct netdev * netdev_fr_hw_id(int hw_unit, int hw_id)
+{
+    struct netdev_bcmsdk *netdev = netdev_from_hw_id(hw_unit, hw_id);
+    return netdev? &netdev->up: NULL;
 }
 
 /* populate sflow related netdev info */

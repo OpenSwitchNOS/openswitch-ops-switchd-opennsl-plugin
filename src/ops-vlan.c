@@ -214,13 +214,15 @@ enable_vlan_translation(int unit, opennsl_port_t hw_port)
                  hw_port, opennsl_errmsg(rc));
         return rc;
     }
-    rc = opennsl_vlan_control_port_set(unit, hw_port, opennslVlanTranslateEgressEnable, 1);
+    /* Egress vlan translation need to be off for Vxlan to work. Vlan itself does not care
+     * about egress vlan translation */
+    rc = opennsl_vlan_control_port_set(unit, hw_port, opennslVlanTranslateEgressEnable, 0);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Error enabling translations on egress for hw_port=%d, rc=%s",
                  hw_port, opennsl_errmsg(rc));
         return rc;
     }
-    rc = opennsl_vlan_control_port_set(unit, hw_port, opennslVlanTranslateEgressMissDrop, 1);
+    rc = opennsl_vlan_control_port_set(unit, hw_port, opennslVlanTranslateEgressMissDrop, 0);
     if (OPENNSL_FAILURE(rc)) {
         VLOG_ERR("Error setting xlate miss-drop on egress for hw_port=%d, rc=%s",
                  hw_port, opennsl_errmsg(rc));

@@ -190,6 +190,11 @@ extern void ops_l3route_dump(struct ds *ds, int ipv6_enabled);
 extern void ops_l3egress_dump(struct ds *ds, int egressid);
 extern void ops_l3ecmp_egress_dump(struct ds *ds, int ecmpid);
 
+extern bool ops_egress_lookup_from_dst_ip(int vrf, uint32_t ip_dst,
+                                          opennsl_if_t * l3_egr_id);
+extern bool ops_egress_lookup_from_route(int vrf, char *route_prefix,
+                                         opennsl_if_t * l3_egr_id);
+
 extern opennsl_field_group_t ops_routing_get_ospf_group_id_by_hw_unit (
                                                                 int unit);
 extern void ops_l3_mac_move_add(int unit, opennsl_l2_addr_t *l2addr, void *userdata);

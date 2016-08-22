@@ -48,6 +48,8 @@
 #include "ops-pbmp.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_routing);
+
+#define IPV4_BIT_LEN 32
 /* ecmp resiliency flag */
 bool ecmp_resilient_flag = false;
 
@@ -1276,6 +1278,63 @@ ops_route_lookup(int vrf, struct ofproto_route *of_routep)
     return NULL;
 } /* ops_route_lookup */
 
+/* Get next hop egress id from routep */
+static bool
+ops_l3_egress_lookup(struct ops_route *routep, opennsl_if_t * l3_egr_id)
+{
+    struct ops_nexthop  *nh, *next;
+    if (!routep || !l3_egr_id) {
+        VLOG_ERR("%s Invalid pointer",__func__);
+        return false;
+    }
+    HMAP_FOR_EACH_SAFE(nh, next, node, &routep->nexthops) {
+        /* Take the first nexthop */
+        if(nh && nh->l3_egress_id != -1) {
+            *l3_egr_id = nh->l3_egress_id;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool
+ops_egress_lookup_from_route(int vrf, char *route_prefix,
+                             opennsl_if_t * l3_egr_id)
+{
+    struct   ofproto_route of_routep;
+    struct   ops_route * route;
+    of_routep.prefix = route_prefix;
+    route = ops_route_lookup( vrf, &of_routep);
+    if(route){
+        VLOG_DBG("%s , %s", __func__, route->prefix);
+        return ops_l3_egress_lookup(route, l3_egr_id);
+    }
+    return false;
+}
+
+/* Find egress port & egress id of nexthop
+ * given dst IPv4 in netbyte order
+ */
+bool
+ops_egress_lookup_from_dst_ip(int vrf, uint32_t ip_dst,
+                              opennsl_if_t * l3_egr_id)
+{
+    uint32_t prefix, len;
+    char     ip_prefix[INET_ADDRSTRLEN];
+    int      plen;
+    for(plen = IPV4_BIT_LEN; plen>0; plen--) {
+        prefix = ip_dst & be32_prefix_mask(plen);
+        if(prefix) {
+            inet_ntop(AF_INET, &prefix, ip_prefix, INET_ADDRSTRLEN);
+            len = strlen(ip_prefix);
+            snprintf(&ip_prefix[len], INET_ADDRSTRLEN - len, "/%d",plen);
+            if(ops_egress_lookup_from_route(vrf, ip_prefix, l3_egr_id)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
 /* Add new route and NHs */
 static struct ops_route*
 ops_route_add(int vrf, struct ofproto_route *of_routep)

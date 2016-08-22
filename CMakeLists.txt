@@ -35,6 +35,7 @@ set (SOURCES ${SRC_DIR}/bcm.c
              ${SRC_DIR}/ops-stats.c
              ${SRC_DIR}/ops-vlan.c
              ${SRC_DIR}/ops-sflow.c
+             ${SRC_DIR}/ops-vxlan.c
              ${SRC_DIR}/ops-routing.c
              ${SRC_DIR}/ops-copp.c
              ${SRC_DIR}/ops-stg.c
@@ -42,6 +43,9 @@ set (SOURCES ${SRC_DIR}/bcm.c
              ${SRC_DIR}/netdev-bcmsdk.c
              ${SRC_DIR}/ofproto-bcm-provider.c
              ${SRC_DIR}/ops-mac-learning.c
+             ${SRC_DIR}/ops-logical-switch.c
+             ${SRC_DIR}/ops-vport.c
+             ${SRC_DIR}/netdev-bcmsdk-vport.c
     )
 
 # Define and locate needed libraries and includes

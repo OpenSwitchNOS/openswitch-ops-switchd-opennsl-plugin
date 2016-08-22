@@ -36,6 +36,7 @@
 #include "ops-vlan.h"
 #include "ops-classifier.h"
 #include "ops-debug.h"
+#include "ops-vport.h"
 #include "ops-copp.h"
 #include "ops-stg.h"
 #include "ops-sflow.h"
@@ -208,7 +209,11 @@ ops_bcm_appl_init(void)
             VLOG_ERR("VLAN subsystem init failed");
             return 1;
         }
-
+        rc = ops_vport_init(unit);
+        if (rc) {
+            VLOG_ERR("vport subsystem init failed");
+            return 1;
+        }
         rc = ops_rx_init(unit);
         if (rc) {
             VLOG_ERR("RX subsystem init failed");
