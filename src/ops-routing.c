@@ -1778,6 +1778,7 @@ ops_create_or_update_ecmp_object(int hw_unit, struct ops_route *ops_routep,
         }
     } else {
         VLOG_DBG("ECMP group NOT available for route %s", ops_routep->prefix);
+        struct ecmp_egress_info *new_ecmp_egress_node = NULL;
         if (old_ecmp_egress_node) {
             if (old_ecmp_egress_node->ref_count == 1) {
                 /*
@@ -1809,13 +1810,12 @@ ops_create_or_update_ecmp_object(int hw_unit, struct ops_route *ops_routep,
         }
 
         /*
-         * Insert into the ecmp egress hashmap when new create for route
-         * and not an update on the existing ecmp egress object
+         * Insert into the ecmp egress hashmap when egress id not found in hmap
          */
-        if (!update || (old_ecmp_egress_node &&
-                       (old_ecmp_egress_node->ref_count > 1))) {
-            struct ecmp_egress_info *new_ecmp_egress_node = NULL;
-            snprintf(ecmp_grpid_str, ECMP_ID_MAX_LENGTH, "%d",ecmp_grp.ecmp_intf);
+        snprintf(ecmp_grpid_str, ECMP_ID_MAX_LENGTH, "%d",ecmp_grp.ecmp_intf);
+        new_ecmp_egress_node = ecmp_egress_node_lookup(ecmp_grpid_str,
+                                                  &ecmp_grp.ecmp_intf, hw_unit);
+        if (!new_ecmp_egress_node) {
             new_ecmp_egress_node = (struct ecmp_egress_info *)
                                xmalloc (sizeof(struct ecmp_egress_info));
             new_ecmp_egress_node->ref_count = 1;
