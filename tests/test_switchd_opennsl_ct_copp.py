@@ -65,6 +65,9 @@ STPMacAddr = '1:80:c2:0:0:0'
 # BGP related constants
 BGPL4Port = '0xb3'
 
+# BFD related constants
+BFDL4Port = '0xec8'
+
 # DHCPv4 related constants
 DHCPv4L4Port = '0x43'
 
@@ -576,6 +579,86 @@ def fp_egress_test_bgp_rule(**kwargs):
     LogOutput('info',  "Egress FP rule check passed for BGP")
 
 
+def fp_ingress_test_bfd_rule(**kwargs):
+
+    LogOutput('info', 'Verify BFD FPs in ingress pipeline')
+
+    buf = kwargs.get('show_buffer', None)
+
+    bfd_dict = dict()
+    bfd_dict['Ingress'] = dict()
+    bfd_dict['Ingress']['data'] = ''
+    bfd_dict['Ingress']['mask'] = ''
+    bfd_dict['L4DstPort'] = dict()
+    bfd_dict['L4DstPort']['data'] = BFDL4Port
+    bfd_dict['L4DstPort']['mask'] = '0xffff'
+    bfd_dict['DstIpLocal'] = dict()
+    bfd_dict['DstIpLocal']['data'] = '0x01'
+    bfd_dict['DstIpLocal']['mask'] = '0x01'
+    bfd_dict['IpProtocol'] = dict()
+    bfd_dict['IpProtocol']['data'] = IPProtocolUDP
+    bfd_dict['IpProtocol']['mask'] = '0xff'
+    bfd_dict['Action'] = dict()
+    bfd_dict['Action']['data'] = CPUQueueNewAction
+    bfd_dict['Action']['mask'] = ''
+    bfd_dict['CPUQueueNumber'] = dict()
+    bfd_dict['CPUQueueNumber']['data'] = '10'
+    bfd_dict['CPUQueueNumber']['mask'] = '0'
+
+    ret = if_fp_rule_exists_with_values_in_fp_dump(buf, bfd_dict)
+
+    assert ret is True, "Ingress FP rule check failed for BFD"
+
+    LogOutput('info',  "Ingress FP rule check passed for BFD")
+
+
+def fp_egress_test_bfd_rule(**kwargs):
+
+    LogOutput('info', 'Verify BFD FPs in egress pipeline')
+
+    buf = kwargs.get('show_buffer', None)
+
+    bfd_dict = dict()
+    bfd_dict['Egress'] = dict()
+    bfd_dict['Egress']['data'] = ''
+    bfd_dict['Egress']['mask'] = ''
+    bfd_dict['L4DstPort'] = dict()
+    bfd_dict['L4DstPort']['data'] = BFDL4Port
+    bfd_dict['L4DstPort']['mask'] = '0xffff'
+    bfd_dict['IpProtocol'] = dict()
+    bfd_dict['IpProtocol']['data'] = IPProtocolUDP
+    bfd_dict['IpProtocol']['mask'] = '0xff'
+    bfd_dict['Outport'] = dict()
+    bfd_dict['Outport']['data'] = '0x00'
+    bfd_dict['Outport']['mask'] = OutPortMask
+    bfd_dict['CPUQueue'] = dict()
+    bfd_dict['CPUQueue']['data'] = '0xa'
+    bfd_dict['CPUQueue']['mask'] = CPUQueueMask
+    bfd_dict['Action'] = dict()
+    bfd_dict['Action']['data'] = RedPacketsDropAction
+    bfd_dict['Action']['mask'] = ''
+    bfd_dict['Value'] = dict()
+    bfd_dict['Value']['data'] = '0'
+    bfd_dict['Value']['mask'] = '0'
+
+    # Add the stat types to the FP rule dictionary
+    add_stat_types_to_fp_rule_dict(bfd_dict)
+
+    ret = if_fp_rule_exists_with_values_in_fp_dump(buf, bfd_dict)
+
+    assert ret is True, "Egress FP rule check failed for BFD"
+
+    LogOutput('info',  "Egress FP rule check passed for BFD")
+
+
+def fp_ingress_test_dhcpv4_rule(**kwargs):
+
+    LogOutput('info', 'Verify DHCPv4 FPs in ingress pipeline')
+
+    buf = kwargs.get('show_buffer', None)
+
+    dhcpv4_dict = dict()
+    dhcpv4_dict['Ingress'] = dict()
 def fp_ingress_test_dhcpv4_rule(**kwargs):
 
     LogOutput('info', 'Verify DHCPv4 FPs in ingress pipeline')
@@ -1555,6 +1638,12 @@ class Test_copp_ct:
 
     def test_fp_egress_test_bgp_rule(self):
         fp_egress_test_bgp_rule(show_buffer=Test_copp_ct.FpEgressBuffer)
+
+    def test_fp_ingress_test_bfd_rule(self):
+        fp_ingress_test_bfd_rule(show_buffer=Test_copp_ct.FpIngressBuffer)
+
+    def test_fp_egress_test_bfd_rule(self):
+        fp_egress_test_bfd_rule(show_buffer=Test_copp_ct.FpEgressBuffer)
 
     def test_fp_ingress_test_dhcpv4_rule(self):
         fp_ingress_test_dhcpv4_rule(show_buffer=Test_copp_ct.FpIngressBuffer)

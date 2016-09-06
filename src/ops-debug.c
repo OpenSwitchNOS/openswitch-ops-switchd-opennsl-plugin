@@ -1068,6 +1068,8 @@ enum copp_protocol_class get_packet_class(struct ds *ds, const char* ch)
         return COPP_ARP_SNOOP;
     } else if (!strcmp(ch, "BGP")) {
         return COPP_BGP;
+    } else if (!strcmp(ch, "BFD")) {
+        return COPP_BFD;
     } else if (!strcmp(ch, "Unclassified")) {
         return COPP_DEFAULT_UNKNOWN;
     } else if (!strcmp(ch, "DHCP")) {
@@ -1575,7 +1577,7 @@ copp_config_help:
                           "{acl-logging, \n"
                           "broadcast-arp, unicast-arp,\n"
                           "LCAP, LLDP, STP,\n"
-                          "BGP, DHCP, DHCPV6,\n"
+                          "BGP, BFD, DHCP, DHCPV6,\n"
                           "ICMPV4-unicast, ICMPV4-broadcast,\n"
                           "ICMPV6-unicast, ICMPV6-multicast,\n"
                           "OSPFiV2-multicast, OSPFV2-unicast,\n"

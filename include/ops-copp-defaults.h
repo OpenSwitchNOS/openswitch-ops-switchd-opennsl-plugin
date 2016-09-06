@@ -23,7 +23,7 @@
  * |Priority  | CPU Queue |  Description                    |
  * +--------------------------------------------------------+
  * |          |           |                                 |
- * |Critical  |   Q10     |  xSTP                           |
+ * |Critical  |   Q10     |  xSTP, BFD                      |
  * |          |           |                                 |
  * +--------------------------------------------------------+
  * |          |           |                                 |
@@ -106,7 +106,9 @@
  * +---------------------------------------------------------------------------+------------+
  * | sFlow         |  Sampled sFlow packets         |  Q3         |  20000     |  20000     |
  * +---------------------------------------------------------------------------+------------+
- * | STP           |  STP packets                   |  Q9         |  1000      |  1000      |
+ * | STP           |  STP packets                   |  Q10        |  1000      |  1000      |
+ * +---------------------------------------------------------------------------+------------+
+ * | BFD           |  BFD packets                   |  Q10        |  9600      |  9600      |
  * +---------------------------------------------------------------------------+------------+
  * | IPOPTION      |  Packets with IPv4 options     |  Q5         |  250       |  250       |
  * +---------------------------------------------------------------------------+------------+
@@ -148,6 +150,7 @@ OPS_DEF_COPP_CLASS(UNICAST_ARP_PACKET, "Unicast ARPs packets", OPS_COPP_QOS_QUEU
 OPS_DEF_COPP_CLASS(LACP_PACKET, "LACP packets", OPS_COPP_QOS_QUEUE_BPDU, 1000, 1000, NULL, ops_copp_egress_fp_lacp, OPS_COPP_INGRESS_FUNC_POINTERS(ops_copp_ingress_fp_lacp))
 OPS_DEF_COPP_CLASS(LLDP_PACKET, "LLDP packets", OPS_COPP_QOS_QUEUE_BPDU, 500, 500, NULL, ops_copp_egress_fp_lldp, OPS_COPP_INGRESS_FUNC_POINTERS(ops_copp_ingress_fp_lldp, ops_copp_ingress_fp_lldp, ops_copp_ingress_fp_lldp))
 OPS_DEF_COPP_CLASS(STP_PACKET, "STP packets", OPS_COPP_QOS_QUEUE_CRITICAL, 1000, 1000, NULL, ops_copp_egress_fp_stp, OPS_COPP_INGRESS_FUNC_POINTERS(ops_copp_ingress_fp_stp))
+OPS_DEF_COPP_CLASS(BFD_PACKET, "BFD packets", OPS_COPP_QOS_QUEUE_CRITICAL, 9600, 9600, NULL, ops_copp_egress_fp_bfd, OPS_COPP_INGRESS_FUNC_POINTERS(ops_copp_ingress_fp_bfd_L4_dst_port, ops_copp_ingress_fp_bfd_L4_src_port))
 OPS_DEF_COPP_CLASS(IPV4_OPTIONS_PACKET, "IPv4 options packets", OPS_COPP_QOS_QUEUE_SWPATH, 250, 250, NULL, ops_copp_egress_fp_ipv4_options, OPS_COPP_INGRESS_FUNC_POINTERS(ops_copp_ingress_fp_ipv4_options))
 OPS_DEF_COPP_CLASS(IPV6_OPTIONS_PACKET, "IPv6 options packets", OPS_COPP_QOS_QUEUE_SWPATH, 250, 250, NULL, ops_copp_egress_fp_ipv6_options, OPS_COPP_INGRESS_FUNC_POINTERS(ops_copp_ingress_fp_ipv6_options))
 OPS_DEF_COPP_CLASS(BGP_PACKET, "BGP packets", OPS_COPP_QOS_QUEUE_IMPORTANT, 5000, 5000, NULL, ops_copp_egress_fp_bgp, OPS_COPP_INGRESS_FUNC_POINTERS(ops_copp_ingress_fp_bgp))

@@ -1087,6 +1087,166 @@ int ops_copp_egress_fp_stp (uint32 unit,
     return(OPS_COPP_SUCCESS_CODE);
 }
 
+ /*
+ * ops_copp_ingress_fp_bfd_L4_dst_port
+ *
+ * This function programs the qualifiers for identifying a BFD
+ * packet in ingress pipeline for destination port.
+ */
+int ops_copp_ingress_fp_bfd_L4_dst_port (uint32 unit,
+                                         opennsl_field_entry_t* ingress_fp_entry)
+{
+    opennsl_l4_port_t      L4_dst_port = OPS_COPP_L4_PORT_BFD;
+    opennsl_l4_port_t      L4_dst_port_mask = OPS_COPP_L4_PORT_MASK;
+    uint8                  address_data = OPS_COPP_DST_IP_LOCAL_DATA;
+    uint8                  address_mask = OPS_COPP_DST_IP_LOCAL_MASK;
+    uint8                  prot_type = OPS_COPP_IP_PROTOCOL_IP_NUMBER_UDP;
+    uint8                  prot_mask = OPS_COPP_IP_PROTOCOL_IP_NUMBER_MASK;
+    int32                  retval = -1;
+
+    if (!ingress_fp_entry) {
+        return(OPS_COPP_FAILURE_CODE);
+    }
+
+    /*
+     * Add the FP qualifier rules for BFD. Qualify the BFD packets
+     * on the following rules:-
+     * 1. L4 destination port is 3784 & 4784 for bfd_multi_hop
+     * 2. The destination IP address is local to the box
+     * 3. The protocol in IP packet is UDP.
+     */
+    retval = opennsl_field_qualify_L4DstPort(unit, *ingress_fp_entry,
+                                             L4_dst_port, L4_dst_port_mask);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("     Ingress: Failed to qualify on L4 destination "
+                 "port %s \n", opennsl_errmsg(retval));
+        return(OPS_COPP_FAILURE_CODE);
+    }
+
+    retval = opennsl_field_qualify_IpProtocol(unit, *ingress_fp_entry,
+                                              prot_type, prot_mask);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("     Ingress: Failed to qualify on IP protocol "
+                 "number %s \n", opennsl_errmsg(retval));
+        return(OPS_COPP_FAILURE_CODE);
+    }
+
+    retval = opennsl_field_qualify_DstIpLocal(unit, *ingress_fp_entry,
+                                              address_data, address_mask);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("     Ingress: Failed to qualify on destination "
+                 "IP being Local %s \n", opennsl_errmsg(retval));
+        return(OPS_COPP_FAILURE_CODE);
+    }
+
+    return(OPS_COPP_SUCCESS_CODE);
+}
+
+int ops_copp_ingress_fp_bfd_L4_src_port (uint32 unit,
+                                         opennsl_field_entry_t* ingress_fp_entry)
+{
+    opennsl_l4_port_t      L4_src_port = OPS_COPP_L4_PORT_BFD;
+    opennsl_l4_port_t      L4_src_port_mask = OPS_COPP_L4_PORT_MASK;
+    uint8                  address_data = OPS_COPP_DST_IP_LOCAL_DATA;
+    uint8                  address_mask = OPS_COPP_DST_IP_LOCAL_MASK;
+    uint8                  prot_type = OPS_COPP_IP_PROTOCOL_IP_NUMBER_UDP;
+    uint8                  prot_mask = OPS_COPP_IP_PROTOCOL_IP_NUMBER_MASK;
+    int32                  retval = -1;
+
+    if (!ingress_fp_entry) {
+        return(OPS_COPP_FAILURE_CODE);
+    }
+
+    /*
+     * Add the FP qualifier rules for BFD. Qualify the BFD packets
+     * on the following rules:-
+     * 1. L4 source port is 3784
+     * 2. The destination IP address is local to the box
+     * 3. The protocol in IP packet is UDP.
+     */
+    retval = opennsl_field_qualify_L4SrcPort(unit, *ingress_fp_entry,
+                                             L4_src_port, L4_src_port_mask);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("     Ingress: Failed to qualify on L4 source "
+                 "port %s \n", opennsl_errmsg(retval));
+        return(OPS_COPP_FAILURE_CODE);
+    }
+
+    retval = opennsl_field_qualify_IpProtocol(unit, *ingress_fp_entry,
+                                              prot_type, prot_mask);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("     Ingress: Failed to qualify on IP protocol "
+                 "number %s \n", opennsl_errmsg(retval));
+        return(OPS_COPP_FAILURE_CODE);
+    }
+
+    retval = opennsl_field_qualify_DstIpLocal(unit, *ingress_fp_entry,
+                                              address_data, address_mask);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("     Ingress: Failed to qualify on destination "
+                 "IP being Local %s \n", opennsl_errmsg(retval));
+        return(OPS_COPP_FAILURE_CODE);
+    }
+
+    return(OPS_COPP_SUCCESS_CODE);
+}
+
+/*
+ * ops_copp_egress_fp_bfd
+ *
+ * This function programs the qualifiers for identifying a BFD
+ * packet in egress pipeline.
+ */
+int ops_copp_egress_fp_bfd (uint32 unit,
+                            opennsl_field_entry_t* egress_fp_entry,
+                            uint8 ingress_cpu_queue_number)
+{
+    int32                  retval = -1;
+    uint8                  prot_type = OPS_COPP_IP_PROTOCOL_IP_NUMBER_UDP;
+    uint8                  prot_mask = OPS_COPP_IP_PROTOCOL_IP_NUMBER_MASK;
+    opennsl_port_t         port = OPS_COPP_OUT_PORT;
+    opennsl_port_t         port_mask = OPS_COPP_OUT_PORT_MASK;
+
+    if (!egress_fp_entry) {
+        return(OPS_COPP_FAILURE_CODE);
+    }
+
+    /*
+     * Add the FP qualifier rules for BFD. Qualify the BFD packets
+     * on the following rules:-
+     * 1. The out port should be zero as the packet is destined to CPU.
+     * 2. The packet's meta data should contain the CPU queue set in ingress
+     *    pipeline.
+     */
+
+    retval = opennsl_field_qualify_IpProtocol(unit, *egress_fp_entry,
+                                              prot_type, prot_mask);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("     Egress: Failed to qualify on IP protocol "
+                 "number %s \n", opennsl_errmsg(retval));
+        return(OPS_COPP_FAILURE_CODE);
+    }
+
+    retval = opennsl_field_qualify_OutPort(unit, *egress_fp_entry,
+                                           port, port_mask);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("     Egress: Failed to qualify on out port %s\n",
+                 opennsl_errmsg(retval));
+        return(OPS_COPP_FAILURE_CODE);
+    }
+
+    retval = opennsl_field_qualify_CpuQueue(unit,
+                             *egress_fp_entry, ingress_cpu_queue_number, 0xff);
+    if (OPENNSL_FAILURE(retval)) {
+        VLOG_ERR("     Egress: Failed to qualify on CPU queue %s\n",
+                 opennsl_errmsg(retval));
+        return(OPS_COPP_FAILURE_CODE);
+    }
+
+    return(OPS_COPP_SUCCESS_CODE);
+}
+
+
 /*
  * ops_copp_ingress_fp_bgp
  *
@@ -4123,6 +4283,8 @@ copp_packet_class_mapper(enum copp_protocol_class ops_class)
             return PLUGIN_COPP_SFLOW_PACKET;
         case COPP_STP_BPDU:
             return PLUGIN_COPP_STP_PACKET;
+        case COPP_BFD:
+            return PLUGIN_COPP_BFD_PACKET;
         case COPP_UNKNOWN_IP_UNICAST:
             return PLUGIN_COPP_UNKNOWN_IP_UNICAST_PACKET;
         case COPP_IPv4_OPTIONS:
