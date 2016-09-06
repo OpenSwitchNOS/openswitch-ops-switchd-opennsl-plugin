@@ -166,6 +166,12 @@ typedef int (*ops_copp_packet_class_function_pointer)(uint32 unit);
 #define OPS_COPP_L4_PORT_BGP                    179
 
 /*
+ * BFD related constants
+ */
+#define OPS_COPP_L4_PORT_BFD                    3784
+#define OPS_COPP_L4_PORT_BFD_MULTI_HOP          4784
+
+/*
  * DHCPv4 related constants
  */
 #define OPS_COPP_L4_PORT_DHCPV4                 67
@@ -272,6 +278,13 @@ extern int ops_copp_egress_fp_lldp (uint32 unit,
 extern int ops_copp_ingress_fp_stp (uint32 unit,
                                     opennsl_field_entry_t* ingress_fp_entry);
 extern int ops_copp_egress_fp_stp (uint32 unit,
+                                   opennsl_field_entry_t* egress_fp_entry,
+                                   uint8 ingress_cpu_queue_number);
+extern int ops_copp_ingress_fp_bfd_L4_dst_port (uint32 unit,
+                                                opennsl_field_entry_t* ingress_fp_entry);
+extern int ops_copp_ingress_fp_bfd_L4_src_port (uint32 unit,
+                                                opennsl_field_entry_t* ingress_fp_entry);
+extern int ops_copp_egress_fp_bfd (uint32 unit,
                                    opennsl_field_entry_t* egress_fp_entry,
                                    uint8 ingress_cpu_queue_number);
 extern int ops_copp_ingress_fp_bgp (uint32 unit,
