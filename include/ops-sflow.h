@@ -112,7 +112,7 @@ ops_sflow_set_sampling_rate(const int unit, const int port,
                             const int ingress_rate, const int egress_rate);
 
 extern void
-ops_sflow_set_max_datagram_size(const int size);
+ops_sflow_set_max_datagram_size(const uint32_t size);
 
 extern void
 ops_sflow_set_header_size(const int size);

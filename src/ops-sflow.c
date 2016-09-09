@@ -32,6 +32,7 @@
 #include <netdb.h>
 #include <platform-defines.h>
 #include <diag_dump.h>
+#include <openvswitch/vlog.h>
 
 #include "ofproto/collectors.h"
 #include "ops-stats.h"
@@ -211,6 +212,8 @@ void ops_sflow_write_sampled_pkt(int unit, opennsl_pkt_t *pkt)
     SFLSampled_header       *header;
     SFLSampler              *sampler;
     struct netdev_stats     stats;
+    uint32_t                dsIndex;
+    SFLDataSource_instance  dsi;
 
     memset(&stats, 0, sizeof stats);
 
@@ -228,7 +231,10 @@ void ops_sflow_write_sampled_pkt(int unit, opennsl_pkt_t *pkt)
         return;
     }
 
-    sampler = ops_sflow_agent->samplers;
+    dsIndex = 1000 + sflow_options->sub_id;
+    SFL_DS_SET(dsi, SFL_DSCLASS_PHYSICAL_ENTITY, dsIndex, 0);
+
+    sampler = sfl_agent_getSampler(ops_sflow_agent, &dsi);
     if (sampler == NULL) {
         VLOG_ERR("Sampler on sFlow Agent uninitialized.");
         log_event("SFLOW_SAMPLER_FAILURE", NULL);
@@ -311,9 +317,6 @@ void
 ops_sflow_set_per_interface (const int unit, const int port, bool set)
 {
     int rc;
-    SFLSampler  *sampler;
-    uint32_t    dsIndex;
-    SFLDataSource_instance  dsi;
     int ingress_rate, egress_rate;
 
     if (port <= 0) {
@@ -335,17 +338,6 @@ ops_sflow_set_per_interface (const int unit, const int port, bool set)
     /* enable sFlow on port. This is default config. When sFlow is enabled
      * globally, it's enabled on all ports by default. */
     if (set) {
-        dsIndex = 1000 + sflow_options->sub_id;
-        SFL_DS_SET(dsi, SFL_DSCLASS_PHYSICAL_ENTITY, dsIndex, 0);
-        sampler = sfl_agent_getSampler(ops_sflow_agent, &dsi);
-
-        if (sampler == NULL) {
-            VLOG_ERR("There is no Sampler for sFlow Agent.");
-            log_event("SFLOW_SAMPLER_MISSING_FAILURE",
-                      EV_KV("port", "%d", port));
-            return;
-        }
-
         ingress_rate = egress_rate = sflow_options->sampling_rate;
 
         rc = opennsl_port_sample_rate_set(unit, port, ingress_rate, egress_rate);
@@ -918,7 +910,7 @@ ops_sflow_set_sampling_rate(const int unit, const int port,
 }
 
 void
-ops_sflow_set_max_datagram_size(const int size)
+ops_sflow_set_max_datagram_size(const uint32_t size)
 {
     SFLReceiver *receiver;
 
@@ -1130,8 +1122,6 @@ ops_sflow_agent_enable(struct bcmsdk_provider_node *ofproto,
     uint32_t    dsIndex;
     time_t      now;
     uint32_t    rate;
-    int         af;
-    void        *addr;
     uint32_t    header;
     uint32_t    datagram;
     int         ret;
@@ -1172,22 +1162,12 @@ ops_sflow_agent_enable(struct bcmsdk_provider_node *ofproto,
     if (oso->agent_ip) {
         if (strchr(oso->agent_ip, ':'))  {
             memset(&myIP6, 0, sizeof myIP6);
-            af = AF_INET6;
             agentIP.type = SFLADDRESSTYPE_IP_V6;
-            addr = &myIP6;
         } else {
             memset(&myIP, 0, sizeof myIP);
-            af = AF_INET;
             agentIP.type = SFLADDRESSTYPE_IP_V4;
-            addr = &myIP;
         }
 
-        if (inet_pton(af, oso->agent_ip, addr) != 1) {
-            /* This error condition should not happen. */
-            VLOG_ERR("sFlow Agent device IP is malformed:%s", oso->agent_ip);
-            log_event("SFLOW_AGENT_IP_CONFIG_FAILURE",
-                      EV_KV("ip_address", "%s", oso->agent_ip));
-        }
         if (agentIP.type == SFLADDRESSTYPE_IP_V4) {
             agentIP.address.ip_v4.addr = myIP.s_addr;
         } else {
@@ -1318,8 +1298,6 @@ ops_sflow_agent_ip(const char *ip)
 {
     struct  in_addr addr;
     struct  in6_addr addr6;
-    void    *ptr;
-    int     af;
 
     SFLAddress  myIP;
     SFLReceiver *receiver;
@@ -1330,6 +1308,8 @@ ops_sflow_agent_ip(const char *ip)
     }
 
     memset(&myIP, 0, sizeof myIP);
+    memset(&addr, 0, sizeof addr);
+    memset(&addr6, 0, sizeof addr6);
 
     /* This is possible. User provided interface that doesn't have IP
      * configured. */
@@ -1340,26 +1320,10 @@ ops_sflow_agent_ip(const char *ip)
         goto assign;
     }
 
-    /* IP is non-NULL. */
     if (strchr(ip, ':')) {  /* v6 */
-        af = AF_INET6;
-        ptr = &addr6;
-    } else {    /* v4 */
-        af = AF_INET;
-        ptr = &addr;
-    }
-
-    /* validate input IP addr. Will not happen. Placed for safety. */
-    if (inet_pton(af, ip, ptr) <= 0) {
-        VLOG_ERR("Invalid IP address(%s). Failed to assign IP.", ip);
-        log_event("SFLOW_AGENT_IP_CONFIG_FAILURE",
-                  EV_KV("ip_address", "%s", ip));
-        return;
-    }
-    if (af == AF_INET6) {
         myIP.type = SFLADDRESSTYPE_IP_V6;
         memcpy(myIP.address.ip_v6.addr, addr6.s6_addr, 16);
-    } else {
+    } else { /* v4 */
         myIP.type = SFLADDRESSTYPE_IP_V4;
         myIP.address.ip_v4.addr = addr.s_addr;
     }
