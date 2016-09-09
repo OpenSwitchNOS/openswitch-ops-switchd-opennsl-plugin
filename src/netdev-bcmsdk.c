@@ -71,6 +71,11 @@ struct kernel_l3_tx_stats {
     uint64_t ipv6_mc_tx_bytes;
 };
 
+/* FP groups for L3 RX and TX stats.
+ */
+opennsl_field_group_t l3_rx_stats_fp_grps[MAX_SWITCH_UNITS];
+opennsl_field_group_t l3_tx_stats_fp_grps[MAX_SWITCH_UNITS];
+
 struct netdev_bcmsdk {
     struct netdev up;
 
@@ -80,9 +85,12 @@ struct netdev_bcmsdk {
     /* Protects all members below. */
     struct ovs_mutex mutex OVS_ACQ_AFTER(bcmsdk_list_mutex);
 
+    /* Mutex for updating stats structure inside the netdev */
+    struct ovs_mutex stats_mutex;
+
     uint8_t hwaddr[ETH_ADDR_LEN] OVS_GUARDED;
     int mtu OVS_GUARDED;
-    struct netdev_stats stats OVS_GUARDED;
+    struct netdev_stats stats OVS_GUARDED_BY(stats_mutex);
     enum netdev_flags flags OVS_GUARDED;
     long long int link_resets OVS_GUARDED;
 
@@ -190,7 +198,32 @@ static int
 netdev_bcmsdk_populate_l3_stats(struct netdev_bcmsdk *netdev,
                                 struct netdev_stats *stats);
 
-static int netdev_bcmsdk_construct(struct netdev *);
+opennsl_field_group_t
+ops_l3intf_ingress_stats_group_id_for_hw_unit(int unit)
+{
+    if(unit < 0) {
+       return -1;
+    }
+
+    return l3_rx_stats_fp_grps[unit];
+}
+
+opennsl_field_group_t
+ops_l3intf_egress_stats_group_id_for_hw_unit(int unit)
+{
+    if(unit < 0) {
+       return -1;
+    }
+
+    return l3_tx_stats_fp_grps[unit];
+}
+
+/* Global struct to keep track of L3 ingress stats mode */
+struct l3_stats_mode_t {
+    uint32_t mode_id;
+    uint32_t ref_count;
+};
+struct l3_stats_mode_t l3_ingress_stats_mode = {0};
 
 /* Global struct to keep track of L3 ingress stats mode */
 struct l3_stats_mode_t {
@@ -275,6 +308,17 @@ netdev_from_hw_id(int hw_unit, int hw_id)
                 netdev->port_info->lanes_split_status == true) {
                 continue;
             }
+
+            /*
+             * If the port is a subport and the parent is not split,
+             * then skip it.
+             */
+            if (netdev->is_split_subport &&
+                netdev->split_parent_portp &&
+                netdev->split_parent_portp->lanes_split_status == false) {
+                continue;
+            }
+
             found = true;
             break;
         }
@@ -295,8 +339,8 @@ void netdev_port_name_from_hw_id(int hw_unit,
 
     netdev = netdev_from_hw_id(hw_unit, hw_id);
 
-    if (netdev && netdev->port_info) {
-        strncpy(str, netdev->port_info->name, PORT_NAME_SIZE);
+    if (netdev) {
+        strncpy(str, netdev->up.name, PORT_NAME_SIZE);
     }
 }
 
@@ -341,6 +385,7 @@ netdev_bcmsdk_construct(struct netdev *netdev_)
     netdev->port_info = NULL;
     netdev->intf_initialized = false;
     memset(&netdev->stats, 0, sizeof(struct netdev_stats));
+    ovs_mutex_init(&netdev->stats_mutex);
 
     netdev->is_split_parent = false;
     netdev->is_split_subport = false;
@@ -1175,7 +1220,7 @@ netdev_bcmsdk_populate_sflow_stats(bool ingress, int hw_unit, int hw_port,
 
     netdev_bcm = netdev_from_hw_id(hw_unit, hw_port);
     if (netdev_bcm != NULL) {
-         ovs_mutex_lock(&netdev_bcm->mutex);
+         ovs_mutex_lock(&netdev_bcm->stats_mutex);
          if (ingress) {
              netdev_bcm->stats.sflow_ingress_packets++;
              netdev_bcm->stats.sflow_ingress_bytes += bytes;
@@ -1183,7 +1228,7 @@ netdev_bcmsdk_populate_sflow_stats(bool ingress, int hw_unit, int hw_port,
              netdev_bcm->stats.sflow_egress_packets++;
              netdev_bcm->stats.sflow_egress_bytes += bytes;
          }
-         ovs_mutex_unlock(&netdev_bcm->mutex);
+         ovs_mutex_unlock(&netdev_bcm->stats_mutex);
     } else {
         VLOG_ERR("Unable to get netdev for hw unit : %d hw_port : %d",
                  hw_unit, hw_port);
@@ -1200,12 +1245,12 @@ static void
 netdev_bcmsdk_get_sflow_stats(const struct netdev_bcmsdk *netdev_bcm,
                               struct netdev_stats *stats)
 {
-    ovs_mutex_lock(&netdev_bcm->mutex);
+    ovs_mutex_lock(&netdev_bcm->stats_mutex);
     stats->sflow_ingress_packets = netdev_bcm->stats.sflow_ingress_packets;
     stats->sflow_ingress_bytes = netdev_bcm->stats.sflow_ingress_bytes;
     stats->sflow_egress_packets = netdev_bcm->stats.sflow_egress_packets;
     stats->sflow_egress_bytes = netdev_bcm->stats.sflow_egress_bytes;
-    ovs_mutex_unlock(&netdev_bcm->mutex);
+    ovs_mutex_unlock(&netdev_bcm->stats_mutex);
 }
 
 static int
@@ -1225,10 +1270,10 @@ netdev_bcmsdk_get_stats(const struct netdev *netdev_, struct netdev_stats *stats
     }
 
     /* Store the tx_packets and rx_packets into the netdev's stats structure. */
-    ovs_mutex_lock(&netdev->mutex);
+    ovs_mutex_lock(&netdev->stats_mutex);
     netdev->stats.rx_packets = stats->rx_packets;
     netdev->stats.tx_packets = stats->tx_packets;
-    ovs_mutex_unlock(&netdev->mutex);
+    ovs_mutex_unlock(&netdev->stats_mutex);
 
     /* L3 stats */
     rc = netdev_bcmsdk_populate_l3_stats(netdev, stats);
@@ -2039,14 +2084,10 @@ netdev_bcmsdk_l3intf_fp_stats_create(const struct netdev *netdev_, opennsl_vlan_
         return OPENNSL_E_NONE;
     }
 
-    opennsl_field_stat_t stat_ifp[2]= {opennslFieldStatPackets, opennslFieldStatBytes};
 
-    netdev->l3_stat_fp_entries = (opennsl_field_entry_t *) xzalloc(sizeof(opennsl_field_entry_t) \
-                                                                   * NUM_L3_FP_STATS);
-    netdev->l3_stat_fp_ids = (int *) xzalloc(sizeof(int) * NUM_L3_FP_STATS);
-
-    opennsl_field_entry_t *fp_entries = netdev->l3_stat_fp_entries;
-    int *stat_ids = netdev->l3_stat_fp_ids;
+    if (!netdev) {
+        return OPENNSL_E_NONE;
+    }
 
     rc = ops_create_l3_fp_group(hw_unit);
     if (OPENNSL_FAILURE(rc)) {
@@ -2688,8 +2729,8 @@ netdev_bcmsdk_get_interface_stats(int hw_unit, int hw_port,
     if (!netdev) {
         return;
     }
-    ovs_mutex_lock(&netdev->mutex);
+    ovs_mutex_lock(&netdev->stats_mutex);
     stats->rx_packets = netdev->stats.rx_packets;
     stats->tx_packets = netdev->stats.tx_packets;
-    ovs_mutex_unlock(&netdev->mutex);
+    ovs_mutex_unlock(&netdev->stats_mutex);
 }

@@ -40,14 +40,14 @@ bcmsdk_mirrors_init (int unit)
 
     rc = opennsl_switch_control_set(unit, opennslSwitchDirectedMirroring, TRUE);
     if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("opennsl_switch_control_set failed: unit %d: %s (%d)",
+        VLOG_ERR("opennsl_switch_control_set FAILED: unit %d: %s (%d)",
                 unit, opennsl_errmsg(rc), rc);
         return 1;
     }
 
     rc = opennsl_mirror_init(unit);
     if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("opennsl_mirror_init failed: unit %d: %s (%d)",
+        VLOG_ERR("opennsl_mirror_init FAILED: unit %d: %s (%d)",
                 unit, opennsl_errmsg(rc), rc);
         return 1;
     }
@@ -67,12 +67,15 @@ bcmsdk_simple_port_mirror_endpoint_create (
 {
     opennsl_error_t rc;
 
+    VLOG_DBG("creating a simple port mirror endpoint; unit %d port %d",
+            unit, port);
+
     /* apparently this never fails */
     opennsl_mirror_destination_t_init(mdestp);
 
     rc = opennsl_port_gport_get(unit, port, &mdestp->gport);
     if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("opennsl_port_gport_get failed: "
+        VLOG_ERR("opennsl_port_gport_get FAILED: "
                  "unit %d port %d: %s (%d)",
                      unit, port, opennsl_errmsg(rc), rc);
         return 1;
@@ -80,7 +83,7 @@ bcmsdk_simple_port_mirror_endpoint_create (
 
     rc = opennsl_mirror_destination_create(unit, mdestp);
     if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("opennsl_mirror_destination_create failed: "
+        VLOG_ERR("opennsl_mirror_destination_create FAILED: "
                  "unit %d port %d: %s (%d)",
                     unit, port, opennsl_errmsg(rc), rc);
         return 1;
@@ -102,6 +105,8 @@ bcmsdk_lag_mirror_endpoint_create (
     int rc;
     opennsl_gport_t gport = 0;
 
+    VLOG_DBG("creating a lag mirror endpoint; lag id %d", lag_id);
+
     /* apparently this never fails */
     opennsl_mirror_destination_t_init(mdestp);
 
@@ -110,7 +115,7 @@ bcmsdk_lag_mirror_endpoint_create (
     mdestp->gport = gport;
     rc = opennsl_mirror_destination_create(0, mdestp);
     if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("bcmsdk_lag_mirror_endpoint_create failed: lag id %d: %s (%d)",
+        VLOG_ERR("bcmsdk_lag_mirror_endpoint_create FAILED: lag id %d: %s (%d)",
                     lag_id, opennsl_errmsg(rc), rc);
         return 1;
     }
@@ -172,7 +177,7 @@ bcmsdk_mirror_endpoint_destroy (
 
     rc = opennsl_mirror_destination_destroy(unit, mirror_endpoint_id);
     if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("opennsl_mirror_destination_destroy failed: "
+        VLOG_ERR("opennsl_mirror_destination_destroy FAILED: "
                  "unit %d mirror_endpoint_id %d: %s (%d)",
                     unit, mirror_endpoint_id, opennsl_errmsg(rc), rc);
         return 1;
@@ -197,6 +202,11 @@ bcmsdk_mirror_endpoint_destroy (
 #define MIRROR_NAME_SIZE        66
 
 /*
+ * BCM supports mirroring only on the first 8 ports of a lag
+ */
+#define LAG_PORT_LIMIT   8
+
+/*
  * This structure represents a 'compacted' form of a mirrored port.
  * The 'flags' is constructed from a combination of whether the
  * port is included in the 'srcs' (ingress) and/or 'dsts' (egress)
@@ -207,6 +217,8 @@ bcmsdk_mirror_endpoint_destroy (
  */
 typedef struct mirrored_port_s {
 
+    struct bcmsdk_provider_ofport_node *ofport;
+    int bcm_unit, bcm_port;
     /* bundle for this port */
     struct ofbundle *port_bundle;
 
@@ -234,6 +246,7 @@ typedef struct mirror_object_s {
     void *aux;
 
     /* The endpoint bundle of this mirror object */
+    struct ofproto_mirror_bundle *mout;
     struct ofbundle *mtp;
 
     /* set of ingress/egress ports to be mirrored */
@@ -391,6 +404,38 @@ bundle_is_a_lag (struct ofbundle *bundle)
 }
 
 /*
+ * expand the bundle to its individual ports and obtain
+ * the corresponding bcmsdk_provider_ofport_nodes, unit numbers
+ * and port numbers along the way.  The function returns how
+ * many total ports are in the bundle but will only fill up
+ * to limit entries.
+ */
+static int
+bundle_expand (struct ofbundle *bundle, int limit,
+        /* params below here are returned to caller */
+        struct bcmsdk_provider_ofport_node **ports,
+        int *bcm_units,
+        int *bcm_ports)
+{
+    struct bcmsdk_provider_ofport_node *port, *next_port;
+    int hw_unit, hw_port;
+    int count = 0;
+
+    LIST_FOR_EACH_SAFE(port, next_port, bundle_node, &bundle->ports) {
+        if (count < limit) {
+            netdev_bcmsdk_get_hw_info(port->up.netdev, &hw_unit, &hw_port, NULL);
+            if (ports) ports[count] = port;
+            bcm_units[count] = hw_unit;
+            bcm_ports[count] = hw_port;
+            VLOG_DBG("bundle %s port expanded %d: hw unit %d hw port %d",
+                    bundle->name, count, hw_unit, hw_port);
+        }
+        count++;
+    }
+    return count;
+}
+
+/*
  * obtains the hw_unit & hw_port numbers of a bundle.  If the bundle is
  * a lag/trunk, then sets the hw_unit to 0 and hw_port to trunk_id.
  */
@@ -435,6 +480,30 @@ bundle_get_hw_info (struct ofbundle *bundle,
 
     VLOG_DBG("bundle %s (0x%p): obtained hw_unit %d hw_port %d",
             bundle->name, bundle, *hw_unit, *hw_port);
+
+}
+
+/*
+ * return the bcm hw particulars for a source port.  If source is
+ * a lag port, it gets expanded out to each individual port and
+ * the expanded values are placed into 'ofports', 'bcm_units' and
+ * 'bcm_ports' respectively.
+ */
+static int
+source_bundle_get_hw_info (struct ofbundle *bundle,
+        int limit,
+        struct bcmsdk_provider_ofport_node **ofports,
+        int *bcm_units,
+        int *bcm_ports)
+{
+    int count;
+
+    VLOG_DBG("source_bundle_get_hw_info called for bundle %s (0x%p)",
+            bundle->name, bundle);
+    count = bundle_expand(bundle, limit, ofports, bcm_units, bcm_ports);
+    VLOG_DBG("bundle %s (0x%p): expanded to %d individual ports",
+            bundle->name, bundle, count);
+    return count;
 }
 
 /*
@@ -602,18 +671,33 @@ mirror_object_destroy_with_mtp (struct ofbundle *mtp)
     mirror_object_destroy(NULL, NULL, NULL, mtp);
 }
 
+/*
+ * when a destination is a lag, we have to collect all the
+ * counters of all the lag members and add them up for the result
+ */
 static int
 mirror_get_stats (struct ofbundle *mtp, uint64_t *packets, uint64_t *bytes)
 {
-    int hw_unit, hw_port;
     struct netdev_stats stats;
+    int hw_units[LAG_PORT_LIMIT];
+    int hw_ports[LAG_PORT_LIMIT];
+    int i, n;
 
-    bundle_get_hw_info(mtp, &hw_unit, &hw_port);
-    if (bcmsdk_get_port_stats(hw_unit, hw_port, &stats))
-        return INTERNAL_ERROR;
-
-    *packets = stats.tx_packets;
-    *bytes = stats.tx_bytes;
+    n = bundle_expand(mtp, LAG_PORT_LIMIT, NULL, hw_units, hw_ports);
+    if (n > LAG_PORT_LIMIT) n = LAG_PORT_LIMIT;
+    *packets = *bytes = 0;
+    for (i = 0; i < n; i++) {
+        if (bcmsdk_get_port_stats(hw_units[i], hw_ports[i], &stats)) {
+            VLOG_ERR("bcmsdk_get_port_stats FAILED for unit %d port %d",
+                    hw_units[i], hw_ports[i]);
+            continue;
+        }
+        VLOG_DBG("adding %"PRIu64" packets & %"PRIu64" bytes to "
+                "final stats from unit %d port %d",
+                stats.tx_packets, stats.tx_bytes, hw_units[i], hw_ports[i]);
+        *packets += stats.tx_packets;
+        *bytes += stats.tx_bytes;
+    }
 
     VLOG_DBG("base stats for mtp %s set: packets %"PRIu64", "
             "bytes %"PRIu64"", mtp->name, *packets, *bytes);
@@ -704,6 +788,7 @@ mirror_object_create (const char *name,
     mtp->mirror_data = xmalloc(sizeof(opennsl_mirror_destination_t));
     strncpy(mirror->name, name, MIRROR_NAME_SIZE);
     mirror->aux = aux;
+    mirror->mout = mout;
     mirror->mtp = mtp;
 
     /* obtain the bcm unit and port id */
@@ -883,6 +968,9 @@ mirror_set__ (struct ofproto *ofproto_,
     int error = 0;
     int i;
 
+    VLOG_DBG("*****************************************************");
+    VLOG_DBG("**************** MIRROR CALL ************************");
+    VLOG_DBG("*****************************************************");
     VLOG_DBG("mirror_set__ called");
 
     /* aux MUST always be available */
@@ -955,6 +1043,9 @@ mirror_get_stats__ (struct ofproto *ofproto_,
 {
     mirror_object_t *mirror;
 
+    VLOG_DBG("*****************************************************");
+    VLOG_DBG("**************** STATS CALL *************************");
+    VLOG_DBG("*****************************************************");
     VLOG_DBG("getting stats for mirror aux 0x%p", aux);
 
     mirror = find_mirror_with_aux(aux);
@@ -978,7 +1069,15 @@ mirror_get_stats__ (struct ofproto *ofproto_,
 bool
 is_mirror_output_bundle (const struct ofproto *ofproto_, void *aux)
 {
+    int i;
+    mirror_object_t *m;
+
     VLOG_DBG("is_mirror_output_bundle called");
+    for (i = 0; i < MAX_MIRRORS; i++) {
+        m = &all_mirrors[i];
+        if (mirror_slot_is_free(m)) continue;
+        if (m->mout->aux == aux) return true;
+    }
     return false;
 }
 
