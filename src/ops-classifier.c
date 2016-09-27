@@ -1458,7 +1458,7 @@ apply_fail:
  */
 int
 ops_cls_opennsl_remove(const struct uuid                *list_id,
-                       const char                       *list_name,
+                       const char                       *list_name OVS_UNUSED,
                        enum ops_cls_type                 list_type OVS_UNUSED,
                        struct ofproto                   *ofproto,
                        void                             *aux,
@@ -1535,7 +1535,7 @@ remove_fail:
  */
 int
 ops_cls_opennsl_replace(const struct uuid               *list_id_orig,
-                        const char                      *list_name_orig,
+                        const char                      *list_name_orig OVS_UNUSED,
                         struct ops_cls_list             *list_new,
                         struct ofproto                  *ofproto,
                         void                            *aux,

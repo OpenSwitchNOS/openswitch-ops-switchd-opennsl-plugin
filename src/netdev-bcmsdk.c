@@ -71,6 +71,11 @@ struct kernel_l3_tx_stats {
     uint64_t ipv6_mc_tx_bytes;
 };
 
+/* FP groups for L3 RX and TX stats.
+ */
+opennsl_field_group_t l3_rx_stats_fp_grps[MAX_SWITCH_UNITS];
+opennsl_field_group_t l3_tx_stats_fp_grps[MAX_SWITCH_UNITS];
+
 struct netdev_bcmsdk {
     struct netdev up;
 
@@ -195,6 +200,33 @@ netdev_bcmsdk_populate_l3_stats(struct netdev_bcmsdk *netdev,
 
 static int netdev_bcmsdk_construct(struct netdev *);
 
+opennsl_field_group_t
+ops_l3intf_ingress_stats_group_id_for_hw_unit(int unit)
+{
+    if(unit < 0) {
+       return -1;
+    }
+
+    return l3_rx_stats_fp_grps[unit];
+}
+
+opennsl_field_group_t
+ops_l3intf_egress_stats_group_id_for_hw_unit(int unit)
+{
+    if(unit < 0) {
+       return -1;
+    }
+
+    return l3_tx_stats_fp_grps[unit];
+}
+
+/* Global struct to keep track of L3 ingress stats mode */
+struct l3_stats_mode_t {
+    uint32_t mode_id;
+    uint32_t ref_count;
+};
+struct l3_stats_mode_t l3_ingress_stats_mode = {0};
+
 /* Global struct to keep track of L3 ingress stats mode */
 struct l3_stats_mode_t {
     uint32_t mode_id;
@@ -278,6 +310,17 @@ netdev_from_hw_id(int hw_unit, int hw_id)
                 netdev->port_info->lanes_split_status == true) {
                 continue;
             }
+
+            /*
+             * If the port is a subport and the parent is not split,
+             * then skip it.
+             */
+            if (netdev->is_split_subport &&
+                netdev->split_parent_portp &&
+                netdev->split_parent_portp->lanes_split_status == false) {
+                continue;
+            }
+
             found = true;
             break;
         }
@@ -298,8 +341,8 @@ void netdev_port_name_from_hw_id(int hw_unit,
 
     netdev = netdev_from_hw_id(hw_unit, hw_id);
 
-    if (netdev && netdev->port_info) {
-        strncpy(str, netdev->port_info->name, PORT_NAME_SIZE);
+    if (netdev) {
+        strncpy(str, netdev->up.name, PORT_NAME_SIZE);
     }
 }
 
@@ -2043,22 +2086,19 @@ netdev_bcmsdk_l3intf_fp_stats_create(const struct netdev *netdev_, opennsl_vlan_
         return OPENNSL_E_NONE;
     }
 
-    opennsl_field_stat_t stat_ifp[2]= {opennslFieldStatPackets, opennslFieldStatBytes};
 
-    netdev->l3_stat_fp_entries = (opennsl_field_entry_t *) xzalloc(sizeof(opennsl_field_entry_t) \
-                                                                   * NUM_L3_FP_STATS);
-    netdev->l3_stat_fp_ids = (int *) xzalloc(sizeof(int) * NUM_L3_FP_STATS);
-
-    opennsl_field_entry_t *fp_entries = netdev->l3_stat_fp_entries;
-    int *stat_ids = netdev->l3_stat_fp_ids;
+    if (!netdev) {
+        return OPENNSL_E_NONE;
+    }
 
     rc = ops_create_l3_fp_group(hw_unit);
     if (OPENNSL_FAILURE(rc)) {
-        VLOG_ERR("Failed to create FP group for L3 features \
-                Unit=%d port=%d rc=%s",
-                hw_unit, hw_port, opennsl_errmsg(rc));
+            VLOG_ERR("Failed to create FP group Unit=%d, rc=%s",
+                    hw_unit, opennsl_errmsg(rc));
         return rc;
     }
+        VLOG_DBG("%s, Created FP Group = %d for unit = %d",
+                 __FUNCTION__, l3_tx_stats_fp_grps[hw_unit], hw_unit);
 
     rc = netdev_bcmsdk_qualify_ingress_unicast_entries(hw_unit, fp_entries,
                                                        stat_ids, &(stat_ifp[0]),
