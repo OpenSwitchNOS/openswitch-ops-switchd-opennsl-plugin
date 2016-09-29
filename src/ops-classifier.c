@@ -499,6 +499,22 @@ ops_cls_set_action(int                          unit,
         } else {
             VLOG_DBG("Drop action added at entry 0x%x.", entry);
         }
+
+        /*
+         By default broadcom sends a copy of packet destined to CPU even
+         when a rule is configured to drop the packet. The option to disable
+         that action.
+        */
+        rc = opennsl_field_action_add(unit, entry, opennslFieldActionL3Switch,
+                                      100000, 0);
+        if (OPENNSL_FAILURE(rc)) {
+            VLOG_ERR("Failed to copy to cpu cancel action at entry 0x%x: rc=%s", entry,
+                     opennsl_errmsg(rc));
+            return rc;
+        } else {
+            VLOG_DBG("Copy to cpu cancel action added at entry 0x%x.", entry);
+        }
+
     }
 
     if (cls_entry->act_flags & OPS_CLS_ACTION_COUNT) {
