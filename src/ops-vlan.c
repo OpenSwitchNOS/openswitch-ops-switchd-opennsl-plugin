@@ -1302,6 +1302,36 @@ void set_created_by_user(int vid, bool status)
     }
 
 }
+
+int
+ops_vlan_get_cfg_access_ports_for_vlan(int unit, int vid, opennsl_pbmp_t *pbm)
+{
+    ops_vlan_data_t *vlanp;
+
+    vlanp = get_vlan_data(vid, false);
+    if (!vlanp) {
+        VLOG_ERR("Failed to allocate & save access ports "
+                 "for VID %d", vid);
+        return -1;
+    }
+    *pbm = vlanp->cfg_access_ports[unit];
+    return 0;
+}
+
+int
+ops_vlan_get_cfg_trunk_ports_for_vlan(int unit, int vid, opennsl_pbmp_t *pbm)
+{
+    ops_vlan_data_t *vlanp;
+
+    vlanp = get_vlan_data(vid, false);
+    if (!vlanp) {
+        VLOG_ERR("Failed to allocate & save access ports "
+                 "for VID %d", vid);
+        return -1;
+    }
+    *pbm = vlanp->cfg_trunk_ports[unit];
+    return 0;
+}
 ///////////////////////////////// INIT /////////////////////////////////
 
 int

@@ -25,6 +25,8 @@
 
 #include <opennsl/types.h>
 #include "ops-vxlan.h"
+#include "bridge.h"
+
 
 struct netdev;
 
@@ -58,4 +60,8 @@ int   ops_vport_bind_mac(int hw_unit, char *vport, int ptype, int vni,
 int   ops_vport_unbind_mac(int hw_unit, int vni, struct eth_addr *ether_mac);
 int   ops_vport_unbind_all(struct netdev *netdev);
 int   ops_vport_update_egr(struct netdev *netdev, int egr_id);
+int   ops_vport_bind_all_ports_on_vlan(int vni, int vlan);
+int   ops_vport_unbind_all_ports_on_vlan(int vni, int vlan);
+int   ops_vport_bind_port_on_vlan(int vni, int vlan, struct port *port);
+int   ops_vport_unbind_port_on_vlan(int vni, int vlan, struct port *port);
 #endif /* __OPS_VPORT_H__ */
