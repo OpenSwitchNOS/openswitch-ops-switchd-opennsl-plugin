@@ -52,5 +52,11 @@ extern void vlan_reconfig_on_link_change(int unit, opennsl_port_t hw_port, int l
 extern bool is_vlan_membership_empty(int vid);
 extern bool is_user_created_vlan(int vid);
 extern void set_created_by_user(int vid, bool status);
+extern int ops_vlan_get_cfg_access_ports_for_vlan(int unit,
+                                                  int vid,
+                                                  opennsl_pbmp_t *pbm);
+extern int ops_vlan_get_cfg_trunk_ports_for_vlan(int unit,
+                                                 int vid,
+                                                 opennsl_pbmp_t *pbm);
 
 #endif /* __OPS_VLAN_H__ */

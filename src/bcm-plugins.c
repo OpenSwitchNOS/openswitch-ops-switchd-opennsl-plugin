@@ -33,6 +33,7 @@
 #include "copp-asic-provider.h"
 #include "ops-mac-learning.h"
 #include "ops-logical-switch.h"
+#include "ops-vport.h"
 
 #define init libovs_bcm_plugin_LTX_init
 #define run libovs_bcm_plugin_LTX_run
@@ -55,6 +56,10 @@ struct asic_plugin_interface opennsl_interface ={
     .get_stg_default = &get_stg_default,
     .get_mac_learning_hmap = &ops_mac_learning_get_hmap,
     .set_logical_switch = &ops_set_logical_switch,
+    .vport_bind_all_ports_on_vlan = &ops_vport_bind_all_ports_on_vlan,
+    .vport_unbind_all_ports_on_vlan = &ops_vport_unbind_all_ports_on_vlan,
+    .vport_bind_port_on_vlan = &ops_vport_bind_port_on_vlan,
+    .vport_unbind_port_on_vlan = &ops_vport_unbind_port_on_vlan,
 };
 
 struct copp_asic_plugin_interface copp_opennsl_interface ={
