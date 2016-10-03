@@ -26,7 +26,6 @@
 #include "errno.h"
 #include <netinet/ether.h>
 #include <openvswitch/vlog.h>
-#include <vswitch-idl.h>
 #include <opennsl/error.h>
 #include <opennsl/types.h>
 #include <opennsl/l2.h>
@@ -40,6 +39,7 @@
 #include "netdev-bcmsdk-vport.h"
 #include "netdev-bcmsdk.h"
 #include "ofproto-bcm-provider.h"
+#include "ops-vlan.h"
 
 VLOG_DEFINE_THIS_MODULE(ops_vport);
 
@@ -703,6 +703,7 @@ ops_vport_bind_access_port(int hw_unit, opennsl_pbmp_t pbm, int vni, int vlan)
 
     OPENNSL_PBMP_ITER(pbm, aport) {
         port.port = aport;
+        VLOG_DBG("Binding port %d", aport);
         rc = bcmsdk_vxlan_port_operation(hw_unit, BCMSDK_VXLAN_OPCODE_CREATE,
                                          &port);
         if (rc) {
@@ -974,4 +975,143 @@ hmap_vnode_print(struct ds *ds)
         ds_put_format(ds, "\n");
     }
     ds_put_format(ds, "Total %d vxlan port(s)\n",count);
+}
+
+int
+ops_vport_bind_all_ports_on_vlan(int vni, int vlan)
+{
+    opennsl_pbmp_t pbm;
+    int ret;
+    int unit;
+    // bind all access ports on this vlan
+    for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
+        OPENNSL_PBMP_CLEAR(pbm);
+        ret = ops_vlan_get_cfg_access_ports_for_vlan(unit, vlan, &pbm);
+        if (ret < 0) {
+            VLOG_ERR("Failed to get access port bitmap for [VLAN:VNI] [%d:%d]",
+                     vlan, vni);
+            return ret;
+        }
+
+        ret = ops_vport_bind_access_port(unit, pbm, vni, vlan);
+        if (ret < 0)
+            return ret;
+
+        /* XXX: Take care of trunk ports later.
+        // bind all trunk ports on this vlan
+        OPENNSL_PBMP_CLEAR(pbm);
+        VLOG_DBG("binding trunk ports");
+        ret = ops_vlan_get_cfg_trunk_ports_for_vlan(unit, vlan, &pbm);
+        if (ret < 0) {
+            VLOG_ERR("Failed to get trunk port bitmap for [VLAN:VNI] [%d:%d]",
+                     vlan, vni);
+            return ret;
+        }
+        ret = ops_vport_bind_access_port(unit, pbm, vni, vlan);
+        if (ret < 0)
+            return ret;
+        */
+    }
+    return 0;
+}
+
+
+int
+ops_vport_unbind_all_ports_on_vlan(int vni, int vlan)
+{
+    opennsl_pbmp_t pbm;
+    int ret;
+    int unit;
+    // unbind all access ports on this vlan
+    for (unit = 0; unit <= MAX_SWITCH_UNIT_ID; unit++) {
+        OPENNSL_PBMP_CLEAR(pbm);
+        ret = ops_vlan_get_cfg_access_ports_for_vlan(unit, vlan, &pbm);
+        if (ret < 0) {
+            VLOG_ERR("Failed to get access port bitmap for [VLAN:VNI] [%d:%d]",
+                     vlan, vni);
+            return ret;
+        }
+
+        ret = ops_vport_unbind_access_port(unit, pbm, vni);
+        if (ret < 0)
+            return ret;
+
+        /* XXX: Take care of trunk ports later.
+        // unbind all trunk ports on this vlan
+        OPENNSL_PBMP_CLEAR(pbm);
+        VLOG_DBG("unbinding trunk ports");
+        ret = ops_vlan_get_cfg_trunk_ports_for_vlan(unit, vlan, &pbm);
+        if (ret < 0) {
+            VLOG_ERR("Failed to get trunk port bitmap for [VLAN:VNI] [%d:%d]",
+                     vlan, vni);
+            return ret;
+        }
+        ret = ops_vport_unbind_access_port(unit, pbm, vni, vlan);
+        if (ret < 0)
+            return ret;
+        */
+    }
+    return 0;
+}
+
+
+int ops_vport_bind_port_on_vlan(int vni, int vlan, struct port *port)
+{
+    struct iface *iface;
+    int hw_unit, hw_id;
+    opennsl_pbmp_t pbmp;
+    int rc;
+
+    if (!port) {
+        VLOG_ERR("Invalid port");
+        return -1;
+    }
+
+    OPENNSL_PBMP_CLEAR(pbmp);
+    LIST_FOR_EACH(iface, port_elem, &port->ifaces) {
+        VLOG_INFO("Bind interface %d on VLAN %d, tunnel %d",
+                  iface->ofp_port, vlan, vni);
+        netdev_bcmsdk_get_hw_info(iface->netdev, &hw_unit, &hw_id, NULL);
+        OPENNSL_PBMP_PORT_ADD(pbmp, hw_id);
+    }
+    rc = ops_vport_bind_access_port(hw_unit, pbmp, vni, vlan);
+    if (rc < 0) {
+        VLOG_ERR("Failed to bind port %s on [VLAN: VNI] [%d: %d]",
+                 port->name, vlan, vni);
+    } else {
+        VLOG_INFO("Successfully bound port %s on [VLAN: VNI] [%d: %d]",
+                 port->name, vlan, vni);
+    }
+    return rc;
+}
+
+
+int ops_vport_unbind_port_on_vlan(int vni, int vlan, struct port *port)
+{
+    struct iface *iface;
+    int hw_unit, hw_id;
+    opennsl_pbmp_t pbmp;
+    int rc;
+
+    if (!port) {
+        VLOG_ERR("Invalid port");
+        return -1;
+    }
+
+    OPENNSL_PBMP_CLEAR(pbmp);
+    LIST_FOR_EACH(iface, port_elem, &port->ifaces) {
+        VLOG_INFO("Unbind interface %d on VLAN %d, tunnel %d",
+                  iface->ofp_port, vlan, vni);
+        netdev_bcmsdk_get_hw_info(iface->netdev, &hw_unit, &hw_id, NULL);
+        OPENNSL_PBMP_PORT_ADD(pbmp, hw_id);
+    }
+    rc = ops_vport_unbind_access_port(hw_unit, pbmp, vni);
+    if (rc < 0) {
+        VLOG_ERR("Failed to unbind port %s on [VLAN: VNI] [%d: %d]",
+                 port->name, vlan, vni);
+    } else {
+        VLOG_INFO("Successfully unbound port %s on [VLAN: VNI] [%d: %d]",
+                  port->name, vlan, vni);
+    }
+    return rc;
 }
