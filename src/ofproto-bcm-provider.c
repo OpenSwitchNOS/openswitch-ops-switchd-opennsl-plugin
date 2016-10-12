@@ -73,9 +73,6 @@ static struct bcmsdk_provider_ofport_node *get_ofp_port(
                           ofp_port_t ofp_port);
 static int  vport_create( struct ofbundle *bundle, struct netdev *netdev);
 static int  vport_delete( struct ofbundle *bundle, struct netdev *netdev);
-static void tnl_key_configure(int action, struct ofbundle *bundle,
-                              const struct ofproto_bundle_settings *s,
-                              opennsl_pbmp_t *temp_pbm);
 static void available_vrf_ids_init(void);
 static size_t allocate_vrf_id(void);
 static void release_vrf_id(size_t);
@@ -1113,23 +1110,6 @@ handle_trunk_vlan_changes(unsigned long *old_trunks, unsigned long *new_trunks,
     bitmap_free(added_vlans);
 }
 
-static int
-bundle_get_tnl_key(const struct ofproto_bundle_settings *set)
-{
-    int idx;
-    if(!set) {
-        VLOG_ERR("Invalid pointer %s", __func__);
-        return -1;
-    }
-    for (idx = 0; idx < set->binding_cnt; idx++) {
-        if(set->vlan == set->binding_vlans[idx] &&
-           set->vlan_mode == PORT_VLAN_ACCESS) {
-            return set->binding_tunnel_keys[idx];
-        }
-    }
-    return -1;
-}
-
 /*
  * used externally, do NOT make static
  */
@@ -1247,10 +1227,6 @@ bundle_destroy(struct ofbundle *bundle)
                     bundle->l3_intf = NULL;
                 }
             }
-            /* Unbinding access port from logical switch
-             * before unconfiguring vlan (if applied)
-             */
-            tnl_key_configure(TUNNEL_KEY_UNBIND, bundle, NULL, bundle->pbm);
             /* Unconfigure any existing VLAN in h/w. */
             unconfig_all_vlans(bundle->vlan_mode, bundle->vlan,
                     bundle->trunks, bundle->pbm);
@@ -1658,7 +1634,6 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     const char *type = NULL;
     struct bcmsdk_provider_ofport_node *next_port;
     bool ok;
-    bool tnl_key_unbinding;
     bool tunnel = false;
 
     VLOG_DBG("%s: entry, ofproto_=%p, aux=%p, s=%p",
@@ -1691,7 +1666,6 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         list_init(&bundle->ports);
         bundle->vlan_mode = PORT_VLAN_ACCESS;
         bundle->vlan = -1;
-        bundle->tunnel_key = -1;
         bundle->trunks = NULL;
         bundle->trunk_all_vlans = false;
         bundle->pbm = NULL;
@@ -2170,7 +2144,6 @@ add_port:
      * configure everything on the new ports. */
     if (bundle->pbm == NULL || bcmsdk_pbmp_is_empty(bundle->pbm)) {
         config_all_vlans(s->vlan_mode, s->vlan, new_trunks, all_pbm);
-        tnl_key_configure(TUNNEL_KEY_BIND, bundle, s, all_pbm);
         goto done;
     }
 
@@ -2185,7 +2158,6 @@ add_port:
      * been removed from this logical port. */
     bcmsdk_pbmp_remove(temp_pbm, bundle->pbm, all_pbm);
     if (!bcmsdk_pbmp_is_empty(temp_pbm)) {
-        tnl_key_configure(TUNNEL_KEY_UNBIND, bundle, s, temp_pbm);
         unconfig_all_vlans(bundle->vlan_mode, bundle->vlan,
                            bundle->trunks, temp_pbm);
         bcmsdk_clear_pbmp(temp_pbm);
@@ -2195,23 +2167,9 @@ add_port:
     bcmsdk_pbmp_remove(temp_pbm, all_pbm, bundle->pbm);
     if (!bcmsdk_pbmp_is_empty(temp_pbm)) {
         config_all_vlans(s->vlan_mode, s->vlan, new_trunks, temp_pbm);
-        tnl_key_configure(TUNNEL_KEY_BIND, bundle, s, temp_pbm);
         bcmsdk_clear_pbmp(temp_pbm);
     }
-    /*
-     * For existing interface, check if we need to unbind
-     * tunnel_key first before any vlan/vni reconfiguring
-     */
-    tnl_key_unbinding = ((bundle->vlan_mode != s->vlan_mode)
-              || (bundle->vlan != s->vlan)
-              || (bundle->tunnel_key != bundle_get_tnl_key(s)));
-    if(tnl_key_unbinding) {
-        VLOG_DBG("Detect change, unbind tunnel key if applied\n");
-        bcmsdk_pbmp_and(temp_pbm, all_pbm, bundle->pbm);
-        if (!bcmsdk_pbmp_is_empty(temp_pbm)) {
-            tnl_key_configure(TUNNEL_KEY_UNBIND, bundle, s, temp_pbm);
-        }
-    }
+
     /* For existing interfaces, configure only changed VLANs. */
     bcmsdk_pbmp_and(temp_pbm, all_pbm, bundle->pbm);
     if (!bcmsdk_pbmp_is_empty(temp_pbm)) {
@@ -2371,10 +2329,6 @@ add_port:
 
 label_bcmsdk_destroy_pbmp:
 
-    if(tnl_key_unbinding) {
-        tnl_key_configure(TUNNEL_KEY_BIND, bundle, s, temp_pbm);
-    }
-
     /* Done with temp_pbm. */
     bcmsdk_destroy_pbmp(temp_pbm);
 
@@ -2396,29 +2350,6 @@ done:
     bundle->trunk_all_vlans = trunk_all_vlans;
 
     return 0;
-}
-
-static void
-tnl_key_configure(int action, struct ofbundle *bundle,
-                  const struct ofproto_bundle_settings *s,
-                  opennsl_pbmp_t *temp_pbm)
-{
-    if(action == TUNNEL_KEY_UNBIND) {
-        if(bundle->tunnel_key != -1 &&
-           !ops_vport_unbind_access_port(bundle->hw_unit,
-                                         *temp_pbm, bundle->tunnel_key)) {
-            bundle->tunnel_key = -1;
-            VLOG_DBG("Successfully Unbind tunnel_key %d", bundle->tunnel_key);
-        }
-    } else if(s) {
-        int new_vni = bundle_get_tnl_key(s);
-        if((new_vni != -1) &&
-            !ops_vport_bind_access_port(bundle->hw_unit, *temp_pbm,
-                                        new_vni, s->vlan)) {
-            bundle->tunnel_key = new_vni;
-            VLOG_DBG("Successfully Bind tunnel key %d", new_vni);
-        }
-    }
 }
 
 static void
@@ -3369,9 +3300,7 @@ update_l2_mac_table(const struct ofproto *ofproto_,
             case OFP_MAC_TBL_ADD:
                 if(port->is_tunnel) {
                     port_type = TUNNEL;
-                } else if(bundle->tunnel_key != -1) {
-                    port_type = PORT_VNI;  /* Port using VNI */
-                } else {
+                }else {
                     port_type = PORT_VLAN; /* Port using VLAN */
                 }
                 rc1 = ops_vport_bind_mac(bundle->hw_unit, bundle->name,
