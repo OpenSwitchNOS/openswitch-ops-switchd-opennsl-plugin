@@ -25,15 +25,16 @@
 #include "ofproto-bcm-provider.h"
 #include "plugin-extensions.h"
 #include "asic-plugin.h"
-#include "log-switch-asic-provider.h"
 #include "netdev-bcmsdk-vport.h"
 #include "ops-stg.h"
 #include "eventlog.h"
 #include "ops-copp.h"
 #include "copp-asic-provider.h"
+#include "vxlan-asic-plugin.h"
 #include "ops-mac-learning.h"
 #include "ops-logical-switch.h"
 #include "ops-vport.h"
+
 
 #define init libovs_bcm_plugin_LTX_init
 #define run libovs_bcm_plugin_LTX_run
@@ -55,11 +56,6 @@ struct asic_plugin_interface opennsl_interface ={
     .get_stg_port_state = &get_stg_port_state,
     .get_stg_default = &get_stg_default,
     .get_mac_learning_hmap = &ops_mac_learning_get_hmap,
-    .set_logical_switch = &ops_set_logical_switch,
-    .vport_bind_all_ports_on_vlan = &ops_vport_bind_all_ports_on_vlan,
-    .vport_unbind_all_ports_on_vlan = &ops_vport_unbind_all_ports_on_vlan,
-    .vport_bind_port_on_vlan = &ops_vport_bind_port_on_vlan,
-    .vport_unbind_port_on_vlan = &ops_vport_unbind_port_on_vlan,
 };
 
 struct copp_asic_plugin_interface copp_opennsl_interface ={
@@ -71,6 +67,18 @@ struct copp_asic_plugin_interface copp_opennsl_interface ={
     .copp_hw_status_get = &copp_opennsl_hw_status_get,
 };
 
+struct vxlan_asic_plugin_interface vxlan_opennsl_interface ={
+    /*
+     * The function pointers are set to the interfacing functions
+     * implemented by vxlan in the opennsl-plugin
+     */
+    .set_logical_switch = &ops_set_logical_switch,
+    .vport_bind_all_ports_on_vlan = &ops_vport_bind_all_ports_on_vlan,
+    .vport_unbind_all_ports_on_vlan = &ops_vport_unbind_all_ports_on_vlan,
+    .vport_bind_port_on_vlan = &ops_vport_bind_port_on_vlan,
+    .vport_unbind_port_on_vlan = &ops_vport_unbind_port_on_vlan,
+};
+
 /* To avoid compiler warning... */
 static void netdev_change_seq_changed(const struct netdev *) __attribute__((__unused__));
 
@@ -79,12 +87,12 @@ init(void) {
 
     struct plugin_extension_interface opennsl_extension;
     struct plugin_extension_interface copp_opennsl_extension;
+    struct plugin_extension_interface vxlan_opennsl_extension;
 
     opennsl_extension.plugin_name = ASIC_PLUGIN_INTERFACE_NAME;
     opennsl_extension.major = ASIC_PLUGIN_INTERFACE_MAJOR;
     opennsl_extension.minor = ASIC_PLUGIN_INTERFACE_MINOR;
     opennsl_extension.plugin_interface = (void *)&opennsl_interface;
-
 
     register_plugin_extension(&opennsl_extension);
     VLOG_INFO("The %s asic plugin interface was registered", ASIC_PLUGIN_INTERFACE_NAME);
@@ -97,6 +105,14 @@ init(void) {
     register_plugin_extension(&copp_opennsl_extension);
     VLOG_INFO("The %s asic plugin interface was registered",
                                               COPP_ASIC_PLUGIN_INTERFACE_NAME);
+
+    vxlan_opennsl_extension.plugin_name = VXLAN_ASIC_PLUGIN_INTERFACE_NAME;
+    vxlan_opennsl_extension.major = VXLAN_ASIC_PLUGIN_INTERFACE_MAJOR;
+    vxlan_opennsl_extension.minor = VXLAN_ASIC_PLUGIN_INTERFACE_MINOR;
+    vxlan_opennsl_extension.plugin_interface = (void *)&vxlan_opennsl_interface;
+    register_plugin_extension(&vxlan_opennsl_extension);
+    VLOG_INFO("The %s asic plugin interface was registered",
+              VXLAN_ASIC_PLUGIN_INTERFACE_NAME);
 
     /* Register plugins */
     register_classifier_plugins();
